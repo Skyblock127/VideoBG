@@ -13,8 +13,8 @@ IDR_FONT_QUICKSAND RCDATA "fonts/Quicksand.otf"
 1 RT_MANIFEST "app.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 1,3,2,0
-PRODUCTVERSION 1,3,2,0
+FILEVERSION 1,4,0,0
+PRODUCTVERSION 1,4,0,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -24,11 +24,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "VideoBG"
       VALUE "FileDescription", "VideoBG"
-      VALUE "FileVersion", "1.3.2"
+      VALUE "FileVersion", "1.4.0"
       VALUE "InternalName", "VideoBG"
       VALUE "OriginalFilename", "VideoBG.exe"
       VALUE "ProductName", "VideoBG - video wallpaper"
-      VALUE "ProductVersion", "1.3.2"
+      VALUE "ProductVersion", "1.4.0"
     END
   END
   BLOCK "VarFileInfo"
