@@ -56,8 +56,9 @@ Using it
       * Font: Audiowide, Michroma, Orbitron or Syncopate, for the whole
         clock. Anurati (the original Mond font) is free for personal use
         only, so it isn't included: in the font list, "Get it" opens its
-        download page; VideoBG then finds it in your Downloads (or use
-        "Add font file", a .zip works too).
+        download; VideoBG then finds it in your Downloads and keeps its own
+        copy, so you can delete the download (or use "Add font file", a .zip
+        works too).
       * Size, opacity, glow (strength, size and colour) and 12/24-hour time.
   - Sound, Playback and Power saving pages: sound source, speed, frame rate,
     and pausing while apps cover the desktop or on battery.
@@ -81,7 +82,8 @@ Remove
   back and asks whether to delete your settings too), then
   delete the folder.
 
-Settings live in %APPDATA%\VideoBG, video versions in %LOCALAPPDATA%\VideoBG.
+Settings live in %APPDATA%\VideoBG; video versions and fonts you added (like
+Anurati, kept in its Fonts folder) in %LOCALAPPDATA%\VideoBG.
 The fonts built into VideoBG are under the SIL Open Font License (Audiowide,
 Michroma, Orbitron, Quicksand) and the Apache License (Syncopate): see the
 "Font license" files.

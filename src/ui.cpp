@@ -23,6 +23,7 @@ float kH = 660;            // client height: taller when the screen has room (se
 constexpr UINT WM_UI_FRAME = WM_APP + 100, WM_UI_INFO = WM_APP + 101, WM_UI_OPT_PROGRESS = WM_APP + 103,
                WM_UI_OPT_DONE = WM_APP + 104, WM_UI_STILL = WM_APP + 106;
 constexpr UINT_PTR TIMER_STATUS = 1;
+constexpr UINT_PTR TIMER_SCROLL = 2;  // the font list gliding to where the wheel sent it
 
 enum Id {
     ID_NONE, ID_POWER, ID_CHOOSE, ID_CROP, ID_LOCK, ID_TIMELINE, ID_SCALE, ID_SPEED, ID_VOLUME, ID_FPS,
@@ -30,7 +31,7 @@ enum Id {
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_SHUFFLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_EYEDROP, ID_CLK_SIZE, ID_CLK_HOURS,
-    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR, ID_CLK_FONT, ID_FNT_SCRIM, ID_FNT_DONE,
+    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR, ID_CLK_FONT, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR,
     ID_DLG_SCRIM, ID_DLG_SV, ID_DLG_HUE, ID_DLG_PREVIEW, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
@@ -1334,7 +1335,7 @@ void PaintGeneralPage(float x, float w) {
     };
     float iy = fy + kCardHead - 4;
     folder(iy, ID_OPEN_DATA, L"Settings, each video's crop and clock look, saved colours and the log", L"%APPDATA%\\VideoBG");
-    folder(iy + itemH, ID_OPEN_LOCAL, L"Lighter versions of your videos and videos made from GIFs", L"%LOCALAPPDATA%\\VideoBG");
+    folder(iy + itemH, ID_OPEN_LOCAL, L"Lighter versions of your videos, videos made from GIFs and fonts you added", L"%LOCALAPPDATA%\\VideoBG");
     Text(L"Your original videos stay where they are", R(lx, iy + 2 * itemH, x + w - kPad, iy + 2 * itemH + 20), u.fSmall, t.text3);
 }
 
@@ -2077,8 +2078,24 @@ struct FontDialog {
     std::vector<D2D1_SIZE_F> sizes;  // in DIPs
     std::vector<bool> tried;
     std::wstring note;
-    float scroll = 0, maxScroll = 0;  // the list, in DIPs
+    float scroll = 0, target = 0, maxScroll = 0;  // the list, in DIPs: where it is, and where it's gliding to
+    float trackTop = 0, trackH = 0, thumbH = 0, grab = 0;  // the scroll bar, for dragging it
 } fnt;
+
+// The wheel and the arrow keys glide the list to `to`; dragging the bar moves it at once.
+void FontScrollTo(float to, bool glide) {
+    fnt.target = std::clamp(to, 0.f, fnt.maxScroll);
+    if (!glide) fnt.scroll = fnt.target;
+    else SetTimer(u.hwnd, TIMER_SCROLL, 15, nullptr);
+}
+
+// Pressing the bar grabs the thumb where it was pressed, or brings the thumb's middle there.
+void FontBarDrag(float y, bool start) {
+    if (fnt.trackH <= fnt.thumbH || fnt.maxScroll <= 0) return;
+    const float thumbTop = fnt.trackTop + (fnt.trackH - fnt.thumbH) * fnt.scroll / fnt.maxScroll;
+    if (start) fnt.grab = y >= thumbTop && y <= thumbTop + fnt.thumbH ? y - thumbTop : fnt.thumbH / 2;
+    FontScrollTo((y - fnt.grab - fnt.trackTop) / (fnt.trackH - fnt.thumbH) * fnt.maxScroll, false);
+}
 
 void ReleaseFontSamples() {
     for (ID2D1Bitmap*& b : fnt.samples) SafeRelease(b);
@@ -2158,7 +2175,7 @@ void EnsureFontSample(int i) {
     if (!Clock_FontReady(f.key)) return;
     ClockLook l;
     l.font = f.key;
-    l.size = 0.55f;
+    l.size = 0.8f;
     l.h24 = EditedLook()->h24;
     l.color = Fmt(L"%d,%d,%d", (int)lroundf(u.th.text.r * 255), (int)lroundf(u.th.text.g * 255), (int)lroundf(u.th.text.b * 255));
     SYSTEMTIME t;
@@ -2176,7 +2193,7 @@ void PaintFontDialog() {
     Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
     AddHit(ID_FNT_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
     const int n = Clock_FontCount();
-    const float rowH = 104, W = kDialogW, listH = std::min(n * rowH, 3.6f * rowH), H = 84 + listH + 8 + 64;
+    const float rowH = 132, W = kDialogW, listH = std::min(n * rowH, 3.4f * rowH), H = 84 + listH + 8 + 64;
     const float L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
     const D2D1_RECT_F panel = R(L, T, L + W, T + H);
     const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
@@ -2194,7 +2211,8 @@ void PaintFontDialog() {
     const D2D1_RECT_F view = R(L + 1, T + 84, L + W - 1, T + 84 + listH);
     fnt.maxScroll = std::max(0.f, n * rowH - listH);
     fnt.scroll = std::clamp(fnt.scroll, 0.f, fnt.maxScroll);
-    const float barW = fnt.maxScroll > 0 ? 12 : 0;
+    fnt.target = std::clamp(fnt.target, 0.f, fnt.maxScroll);
+    const float barW = fnt.maxScroll > 0 ? 14 : 0;
     const size_t firstHit = u.hits.size();
     u.rt->PushAxisAlignedClip(view, D2D1_ANTIALIAS_MODE_ALIASED);
     float y = view.top - fnt.scroll;
@@ -2214,16 +2232,16 @@ void PaintFontDialog() {
         const float cy = (r.top + r.bottom) / 2;
         Circle(r.left + 22, cy, 8, sel ? t.accent : ready ? t.text2 : t.text3);
         Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
-        Text(f.key, R(r.left + 42, cy - 22, r.left + 220, cy + 2), u.fStrong, ready ? t.text : t.text2);
+        Text(f.key, R(r.left + 42, cy - 22, r.left + 150, cy + 2), u.fStrong, ready ? t.text : t.text2);
         const wchar_t* about = !f.getUrl ? L"Included"
                                : ready   ? L"Your copy"
                                          : L"Free for personal use only, so not included";
-        Text(about, R(r.left + 42, cy + 2, r.left + (ready ? 220 : 300), cy + 24), u.fSmall, t.text2);
+        Text(about, R(r.left + 42, cy + 2, r.left + (ready ? 150 : 290), cy + 40), ready ? u.fSmall : u.fWrap, t.text2);
         if (ready) {
             EnsureFontSample(i);
             if (fnt.samples[i]) {
                 D2D1_SIZE_F sz = fnt.sizes[i];
-                float sc = std::min({1.f, (rowH - 22) / sz.height, (r.right - r.left - 230) / sz.width});
+                float sc = std::min({1.f, (rowH - 20) / sz.height, (r.right - r.left - 150) / sz.width});
                 float dw = sz.width * sc, dh = sz.height * sc;
                 D2D1_RECT_F dst = R(r.right - 16 - dw, cy - dh / 2, r.right - 16, cy + dh / 2);
                 if (u.dc) u.dc->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
@@ -2240,10 +2258,16 @@ void PaintFontDialog() {
         hr = R(std::max(hr.left, view.left), std::max(hr.top, view.top), std::min(hr.right, view.right), std::min(hr.bottom, view.bottom));
         if (hr.bottom <= hr.top) hr = R(0, 0, 0, 0);
     }
-    if (fnt.maxScroll > 0) {  // where the list is (the mouse wheel scrolls it)
-        const float thumbH = std::max(32.f, listH * listH / (n * rowH)), thumbY = view.top + (listH - thumbH) * fnt.scroll / fnt.maxScroll;
-        Fill(R(L + W - 14, view.top + 4, L + W - 10, view.bottom - 4), Mix(face, t.text, 0.06f), 2);
-        Fill(R(L + W - 14, thumbY + 4, L + W - 10, thumbY + thumbH - 4), t.text3, 2);
+    if (fnt.maxScroll > 0) {  // the scroll bar: drag its thumb, or press the track to jump there
+        fnt.trackTop = view.top + 4;
+        fnt.trackH = listH - 8;
+        fnt.thumbH = std::max(36.f, fnt.trackH * listH / (n * rowH));
+        const float thumbY = fnt.trackTop + (fnt.trackH - fnt.thumbH) * fnt.scroll / fnt.maxScroll;
+        const bool active = IsHot(ID_FNT_BAR) || u.drag == ID_FNT_BAR;
+        const float bx = L + W - 13, bw = active ? 8.f : 5.f;
+        Fill(R(bx - bw / 2, fnt.trackTop, bx + bw / 2, fnt.trackTop + fnt.trackH), Mix(face, t.text, 0.06f), bw / 2);
+        Fill(R(bx - bw / 2, thumbY, bx + bw / 2, thumbY + fnt.thumbH), active ? t.text2 : t.text3, bw / 2);
+        AddHit(ID_FNT_BAR, K_AREA, R(L + W - 22, view.top, L + W - 2, view.bottom));
     }
 
     const float by = T + H - 48;
@@ -3136,7 +3160,7 @@ bool OnKey(UINT vk) {
     }
     if (fnt.open) {
         if (vk == VK_ESCAPE || vk == VK_RETURN) CloseFontDialog();
-        if (vk == VK_UP || vk == VK_DOWN) fnt.scroll = std::clamp(fnt.scroll + (vk == VK_DOWN ? 52.f : -52.f), 0.f, fnt.maxScroll);
+        if (vk == VK_UP || vk == VK_DOWN) FontScrollTo(fnt.target + (vk == VK_DOWN ? 80.f : -80.f), true);
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
@@ -3217,6 +3241,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                         if (ht.kind == K_SLIDER) OnSlider(ht.id, SliderFrac(ht, x), false);
                         else if (ht.id == ID_C_AREA) DragCrop(x, y);
                         else if (ht.id == ID_CLK_AREA) ClockDrag(x, y, false);
+                        else if (ht.id == ID_FNT_BAR) FontBarDrag(y, false);
                         else if (ht.id == ID_DLG_SV || ht.id == ID_DLG_HUE) DlgDrag(ht.id, x, y);
                         break;
                     }
@@ -3324,6 +3349,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             } else if (ht->kind == K_SEG) {
                 int s = SegAt(*ht, x);
                 if (s >= 0) OnSeg(ht->id, s);
+            } else if (ht->id == ID_FNT_BAR) {
+                u.drag = ht->id;
+                FontBarDrag(y, true);
             } else if (ht->id == ID_CLK_AREA) {
                 u.drag = ht->id;
                 u.overClock = true;
@@ -3388,8 +3416,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             break;
         case WM_MOUSEWHEEL:
             if (fnt.open) {
-                fnt.scroll = std::clamp(fnt.scroll - GET_WHEEL_DELTA_WPARAM(w) / 120.f * 52, 0.f, fnt.maxScroll);
-                InvalidateRect(h, nullptr, FALSE);
+                FontScrollTo(fnt.target - GET_WHEEL_DELTA_WPARAM(w) / 120.f * 80, true);
             } else if (u.page == 1) {
                 ZoomCrop(GET_WHEEL_DELTA_WPARAM(w) > 0 ? 0.92f : 1 / 0.92f);
             }
@@ -3418,6 +3445,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             break;
         case WM_TIMER:
             if (w == TIMER_STATUS) InvalidateRect(h, nullptr, FALSE);  // status, memory, the clock's minute
+            if (w == TIMER_SCROLL) {  // ease towards the target: a third of the way each frame
+                fnt.scroll += (fnt.target - fnt.scroll) * 0.3f;
+                if (!fnt.open || std::abs(fnt.target - fnt.scroll) < 0.5f) {
+                    fnt.scroll = fnt.target;
+                    KillTimer(h, TIMER_SCROLL);
+                }
+                InvalidateRect(h, nullptr, FALSE);
+            }
             return 0;
         case WM_UI_STILL: {
             auto* sm = (StillMsg*)l;

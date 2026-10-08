@@ -36,7 +36,7 @@ const FontDef kFonts[] = {
     {{L"Michroma", nullptr}, IDR_FONT_MICHROMA, 0.83f, 0.75f},
     {{L"Orbitron", nullptr}, IDR_FONT_ORBITRON, 0.98f, 0.88f},
     {{L"Syncopate", nullptr}, IDR_FONT_SYNCOPATE, 0.96f, 0.86f},
-    {{L"Anurati", L"https://www.dafont.com/search.php?q=anurati"}, 0, 0.97f, 0.87f},
+    {{L"Anurati", L"https://befonts.com/downfile/3ee31d3025c55bd25cff640e2675cbf5.30052"}, 0, 0.97f, 0.87f},  // its free version
 };
 
 const FontDef& FindFont(const std::wstring& key) {
