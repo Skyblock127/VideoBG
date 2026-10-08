@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"1.4.1"
+#define APP_VERSION  L"1.4.2"
 #define HOST_CLASS   L"VideoBG.Host"
 #define RCTL_CLASS   L"VideoBG.RendererCtl"
 #define WALL_CLASS   L"VideoBG.Wallpaper"
