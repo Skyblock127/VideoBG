@@ -2,6 +2,7 @@
 // system light/dark theme and accent colour). Everything here - D2D, DirectWrite, Media
 // Foundation for previews - is loaded when the window opens and released when it closes.
 #include "mfhelp.h"
+#include "resource.h"
 #include <d2d1_1.h>
 #include <dwrite.h>
 #include <dwmapi.h>
@@ -314,6 +315,7 @@ struct UI {
     int stillW = 0, stillH = 0, stillSrcW = 0, stillSrcH = 0, stillStyle = 0;  // style: 0 fill 1 fit 2 stretch 3 centre
     D2D1_COLOR_F stillBg = D2D1::ColorF(0, 0, 0);
     ID2D1Bitmap* still = nullptr;
+    ID2D1Bitmap* logo = nullptr;      // the app icon in the header
     bool stillLoading = false;
     Crop optCrop;
     double optTime = -1;
@@ -434,6 +436,7 @@ void ReleaseTarget() {
     SafeRelease(u.frame);
     SafeRelease(u.clockBmp);
     SafeRelease(u.still);
+    SafeRelease(u.logo);
     SafeRelease(u.br);
     SafeRelease(u.dc);
     SafeRelease(u.rt);
@@ -459,6 +462,34 @@ void EnsureFrameBitmap() {
     if (u.frame || u.framePx.empty() || !u.rt) return;
     D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
     u.rt->CreateBitmap(D2D1::SizeU((UINT32)u.fw, (UINT32)u.fh), u.framePx.data(), (UINT32)u.fw * 4, &bp, &u.frame);
+}
+
+// The app icon's largest image, for the header (drawn smaller with a high-quality filter).
+void EnsureLogoBitmap() {
+    if (u.logo || !u.rt) return;
+    const int n = 256;
+    HICON ico = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, n, n, 0);
+    ICONINFO ii{};
+    if (!ico || !GetIconInfo(ico, &ii)) {
+        if (ico) DestroyIcon(ico);
+        return;
+    }
+    std::vector<uint32_t> px((size_t)n * n);
+    BITMAPINFO bi{};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), n, -n, 1, 32, BI_RGB};
+    HDC dc = GetDC(nullptr);
+    bool ok = GetDIBits(dc, ii.hbmColor, 0, n, px.data(), &bi, DIB_RGB_COLORS) == n;
+    ReleaseDC(nullptr, dc);
+    DeleteObject(ii.hbmColor);
+    DeleteObject(ii.hbmMask);
+    DestroyIcon(ico);
+    if (!ok) return;
+    for (uint32_t& p : px) {  // straight alpha -> premultiplied
+        uint32_t a = p >> 24;
+        p = a << 24 | ((p >> 16 & 255) * a / 255) << 16 | ((p >> 8 & 255) * a / 255) << 8 | (p & 255) * a / 255;
+    }
+    D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    u.rt->CreateBitmap(D2D1::SizeU(n, n), px.data(), n * 4, &bp, &u.logo);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -914,8 +945,15 @@ const NavItem kNav[NAV_COUNT] = {{L"\uE714", L"Video"},    {L"\uE121", L"Desktop
 void PaintHeader() {
     const Theme& t = u.th;
     D2D1_RECT_F logo = R(24, 20, 60, 56);
-    Fill(logo, Mix(t.accent, Rgb(0x7C5CFF), 0.5f), 9);
-    Text(L"\uE768", logo, u.fIcon, Rgb(0xFFFFFF), DWRITE_TEXT_ALIGNMENT_CENTER);
+    EnsureLogoBitmap();
+    if (u.logo) {
+        D2D1_RECT_F icon = R(21.5f, 17.5f, 62.5f, 58.5f);  // the icon's rounded square has a 6% margin
+        if (u.dc) u.dc->DrawBitmap(u.logo, &icon, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
+        else u.rt->DrawBitmap(u.logo, &icon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
+    } else {
+        Fill(logo, Mix(t.accent, Rgb(0x7C5CFF), 0.5f), 9);
+        Text(L"\uE768", logo, u.fIcon, Rgb(0xFFFFFF), DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
     Text(L"VideoBG", R(72, 16, 400, 42), u.fTitle, t.text);
     Text(L"Video wallpaper and desktop clock  \u00B7  " + HotkeyToString(g_settings.hkMods, g_settings.hkVk) +
              L" turns the wallpaper on or off",

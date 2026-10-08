@@ -1,9 +1,20 @@
 """Generates res/app.ico (on) and res/app_off.ico (off) for VideoBG."""
+import math
 from pathlib import Path
 from PIL import Image, ImageDraw
 
 SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
 RES = Path(__file__).resolve().parent.parent / "res"
+
+
+def star(d: ImageDraw.ImageDraw, cx: float, cy: float, r: float, fill) -> None:
+    """A four-pointed sparkle: long thin points with a pinched waist."""
+    pts = []
+    for i in range(8):
+        a = math.pi / 4 * i - math.pi / 2
+        rr = r if i % 2 == 0 else r * 0.26
+        pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
+    d.polygon(pts, fill=fill)
 
 
 def render(size: int, on: bool) -> Image.Image:
@@ -14,11 +25,13 @@ def render(size: int, on: bool) -> Image.Image:
     box = (pad, pad, n - pad, n - pad)
     radius = round(n * 0.22)
 
-    # background: vertical gradient inside a rounded square
+    # night sky: vertical gradient inside a rounded square
     if on:
         top, bottom = (124, 92, 255), (36, 164, 255)
+        far, near = (255, 255, 255, 46), (44, 26, 120, 235)
     else:
         top, bottom = (132, 136, 146), (92, 96, 106)
+        far, near = (255, 255, 255, 40), (58, 60, 68, 235)
     grad = Image.new("RGBA", (n, n))
     gd = ImageDraw.Draw(grad)
     for y in range(n):
@@ -29,20 +42,34 @@ def render(size: int, on: bool) -> Image.Image:
     ImageDraw.Draw(mask).rounded_rectangle(box, radius=radius, fill=255)
     img.paste(grad, (0, 0), mask)
 
-    d = ImageDraw.Draw(img)
-    # rolling "hills" silhouette along the bottom (the wallpaper)
-    if size >= 24:
-        hill = Image.new("L", (n, n), 0)
-        hd = ImageDraw.Draw(hill)
-        hd.ellipse((-n * 0.2, n * 0.66, n * 0.75, n * 1.3), fill=255)
-        hd.ellipse((n * 0.35, n * 0.72, n * 1.25, n * 1.35), fill=255)
-        hill = Image.composite(hill, Image.new("L", (n, n), 0), mask)
-        overlay = Image.new("RGBA", (n, n), (255, 255, 255, 60))
-        img.paste(overlay, (0, 0), hill)
+    def layer(points, fill):
+        shape = Image.new("L", (n, n), 0)
+        ImageDraw.Draw(shape).polygon([(x * n, y * n) for x, y in points], fill=255)
+        shape = Image.composite(shape, Image.new("L", (n, n), 0), mask)
+        over = Image.new("RGBA", (n, n), fill[:3] + (0,))
+        over.putalpha(shape.point(lambda v: v * fill[3] // 255))
+        img.alpha_composite(over)
+
+    # stars (left out where they would only be a smudge)
+    if size >= 32:
+        d = ImageDraw.Draw(img)
+        white = (255, 255, 255, 235)
+        star(d, n * 0.24, n * 0.25, n * 0.075, white)
+        star(d, n * 0.80, n * 0.20, n * 0.05, white)
+        star(d, n * 0.84, n * 0.44, n * 0.035, white)
+        if size >= 48:
+            star(d, n * 0.17, n * 0.47, n * 0.03, white)
+
+    # mountains: a pale far range and a dark near range along the bottom
+    if size >= 20:
+        layer([(0, 0.72), (0.26, 0.50), (0.50, 0.70), (0.78, 0.46), (1, 0.64), (1, 1), (0, 1)], far)
+    layer([(0, 0.84), (0.16, 0.72), (0.28, 0.80), (0.52, 0.58), (0.76, 0.82),
+           (0.88, 0.74), (1, 0.82), (1, 1), (0, 1)], near)
 
     # play triangle
-    cx, cy = n * 0.52, n * 0.47
-    r = n * 0.24
+    d = ImageDraw.Draw(img)
+    cx, cy = n * 0.52, n * 0.45
+    r = n * 0.22
     tri = [(cx - r * 0.72, cy - r), (cx - r * 0.72, cy + r), (cx + r * 1.05, cy)]
     d.polygon(tri, fill=(255, 255, 255, 255 if on else 235))
     return img.resize((size, size), Image.LANCZOS)
