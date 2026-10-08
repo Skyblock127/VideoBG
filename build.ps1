@@ -1,5 +1,5 @@
 # Builds dist\VideoBG.exe with MinGW-w64 (g++ / windres on PATH). -Zip also packs dist\VideoBG.zip, the
-# download for someone else: the exe, How to use.txt and Install.cmd / Uninstall.cmd.
+# download for someone else: the exe, How to use.txt, Install.cmd / Uninstall.cmd and the font license.
 param([switch]$Debug, [switch]$Zip)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -43,6 +43,7 @@ if ($Zip) {
     Remove-Item $pkg -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory $pkg | Out-Null
     Copy-Item "$root\dist\VideoBG.exe", "$root\install.ps1", "$root\uninstall.ps1", "$root\package\*" $pkg
+    Copy-Item "$root\res\fonts\OFL.txt" "$pkg\Quicksand font license.txt"
     Compress-Archive "$pkg\*" "$root\dist\VideoBG.zip" -Force
     $zsize = [math]::Round((Get-Item "$root\dist\VideoBG.zip").Length / 1KB)
     Write-Host "Packed dist\VideoBG.zip ($zsize KB)"

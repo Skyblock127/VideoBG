@@ -6,7 +6,7 @@ What it does
     when it's off the video part isn't running at all (no CPU, ~3 MB RAM).
   - Shows a clock on the desktop (day, date and time), with its own place,
     colour, size and glow for the video wallpaper and for your normal
-    wallpaper. It comes and goes with VideoBG; nothing else to install.
+    wallpaper. It comes and goes with VideoBG.
 
 Install (no admin rights needed)
   1. Right-click the zip > Extract All. Put the extracted VideoBG folder
@@ -50,6 +50,10 @@ Using it
         colours: click a box, then "Save to box"; double-click a box to use
         it). Ctrl+V pastes a colour code like #72ABDE.
       * Size, opacity, glow (strength, size and colour) and 12/24-hour time.
+      * The day name uses the Anurati font of the original Mond clock if you
+        install it (free for personal use, so it isn't included: search for
+        "Anurati font", right-click the file > Install). Until then it's
+        written in Quicksand.
   - Sound, Playback and Power saving pages: sound source, speed, frame rate,
     and pausing while apps cover the desktop or on battery.
   - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.
@@ -72,4 +76,6 @@ Remove
   back and asks whether to delete your settings too), then
   delete the folder.
 
-Settings live in %APPDATA%\VideoBG, light copies in %LOCALAPPDATA%\VideoBG.
+Settings live in %APPDATA%\VideoBG, video versions in %LOCALAPPDATA%\VideoBG.
+The Quicksand font built into VideoBG is under the SIL Open Font License
+(Quicksand font license.txt).
