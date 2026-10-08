@@ -1,6 +1,7 @@
-// Desktop clock: day name, date and time in the design of the "Mond" Rainmeter clock (Anurati and
-// Quicksand, the sizes and spacing of its Clock.ini; see Credits in README.md), drawn by VideoBG
-// itself: one small see-through, click-through window on the desktop that redraws once a minute.
+// Desktop clock: day name, date and time in the design of the "Mond" Rainmeter clock (the sizes and
+// spacing of its Clock.ini; see Credits in README.md), drawn by VideoBG itself: one small see-through,
+// click-through window on the desktop that redraws once a minute. Mond's day font, Anurati, is free
+// for personal use only, so the day name is in Audiowide; the date and time are in Quicksand, as in Mond.
 // DirectWrite/Direct2D are loaded only while drawing.
 #include "common.h"
 #include "resource.h"
@@ -25,9 +26,8 @@ struct Painter {
     HMODULE dw = nullptr, d2 = nullptr;
     IDWriteFactory5* f = nullptr;
     IDWriteInMemoryFontFileLoader* loader = nullptr;
-    IDWriteFontCollection1* fonts = nullptr;  // Quicksand (embedded) and Anurati (if installed), private to us
+    IDWriteFontCollection1* fonts = nullptr;  // the two fonts embedded in the exe, private to us
     ID2D1Factory* d2f = nullptr;
-    bool anurati = false;
     bool failed = false;
 } P;
 
@@ -41,27 +41,6 @@ bool AddFont(IDWriteFontSetBuilder1* b, int id) {
     if (SUCCEEDED(hr)) hr = b->AddFontFile(file);
     Rel(file);
     return SUCCEEDED(hr);
-}
-
-// Anurati is free for personal use only, so VideoBG doesn't ship it: the day name uses it when
-// it's installed on the PC (for everyone or just this user), and Quicksand otherwise.
-bool AddInstalledFont(IDWriteFontSetBuilder1* b, const wchar_t* family) {
-    IDWriteFontCollection1* sys = nullptr;
-    IDWriteFontFamily1* fam = nullptr;
-    UINT32 index = 0;
-    BOOL exists = FALSE;
-    bool added = false;
-    if (SUCCEEDED(P.f->GetSystemFontCollection(FALSE, &sys, FALSE)) && SUCCEEDED(sys->FindFamilyName(family, &index, &exists)) &&
-        exists && SUCCEEDED(sys->GetFontFamily(index, &fam))) {
-        for (UINT32 i = 0, n = fam->GetFontCount(); i < n; i++) {
-            IDWriteFontFaceReference* ref = nullptr;
-            if (SUCCEEDED(fam->GetFontFaceReference(i, &ref)) && SUCCEEDED(b->AddFontFaceReference(ref))) added = true;
-            Rel(ref);
-        }
-    }
-    Rel(fam);
-    Rel(sys);
-    return added;
 }
 
 bool OpenPainter() {
@@ -83,8 +62,7 @@ bool OpenPainter() {
     IDWriteFontSetBuilder1* b = nullptr;
     IDWriteFontSet* set = nullptr;
     if (SUCCEEDED(hr)) hr = P.f->CreateFontSetBuilder(&b);
-    if (SUCCEEDED(hr) && !AddFont(b, IDR_FONT_QUICKSAND)) hr = E_FAIL;
-    if (SUCCEEDED(hr)) P.anurati = AddInstalledFont(b, L"Anurati");
+    if (SUCCEEDED(hr) && !(AddFont(b, IDR_FONT_AUDIOWIDE) && AddFont(b, IDR_FONT_QUICKSAND))) hr = E_FAIL;
     if (SUCCEEDED(hr)) hr = b->CreateFontSet(&set);
     if (SUCCEEDED(hr)) hr = P.f->CreateFontCollectionFromFontSet(set, &P.fonts);
     Rel(set);
@@ -324,7 +302,7 @@ void Clock_ReleasePainter() {
 }
 
 // Layout as in Mond's Clock.ini (Scale = the look's size): three lines centred on one axis -
-//   day   Anurati   40 pt, letter spacing 10 before and after each letter, at y = 0
+//   day   Audiowide 40 pt, letter spacing 10 before and after each letter, at y = 0
 //   date  Quicksand 14 pt, "%d  %B,  %Y."                                 at y = 75 x Scale
 //   time  Quicksand 14 pt, "- %#I:%M %p -"                                at y = 120 x Scale
 // Rainmeter treats font sizes and letter spacing as points (x 4/3 for DIPs); everything is then
@@ -343,7 +321,7 @@ bool Clock_Paint(const ClockLook& look, bool h24, float k, const SYSTEMTIME& t, 
         float pt, y, spacing;
         IDWriteTextLayout* layout;
         DWRITE_TEXT_METRICS m;
-    } lines[3] = {{kDays[t.wDayOfWeek % 7], P.anurati ? L"Anurati" : L"Quicksand", 40, 0, 10, nullptr, {}},
+    } lines[3] = {{kDays[t.wDayOfWeek % 7], L"Audiowide", 40, 0, 10, nullptr, {}},
                   {date, L"Quicksand", 14, 75, 0, nullptr, {}},
                   {time, L"Quicksand", 14, 120, 0, nullptr, {}}};
     HRESULT hr = S_OK;
