@@ -1,5 +1,5 @@
-VideoBG 1.3 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
-==========================================================================
+VideoBG 1.3.2 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+============================================================================
 
 What it does
   - Plays a video behind your desktop icons. Ctrl+Alt+B turns it on and off;
@@ -42,8 +42,9 @@ Using it
     single-picture background on Windows 11 24H2 or newer.)
   - Desktop clock page:
       * Video wallpaper / Still wallpaper (top right) picks which clock
-        you're editing. For the video wallpaper, All videos / This video
-        picks the clock every video shares or one just for this video.
+        you're editing. For the video wallpaper, This video / All videos
+        picks a clock just for this video or the one every video shares.
+        Everything under the preview belongs to the clock you're editing.
       * Show clock / Hide clock shows or hides the clock you're editing,
         e.g. on the video wallpaper but not on the still one.
       * Drag the clock on the preview to place it (it snaps to the middle;

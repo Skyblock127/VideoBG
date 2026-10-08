@@ -71,10 +71,10 @@ void SyncClock(bool force = false) {
     }
     ClockLook look = WantedLook();
     wchar_t where[64];
-    swprintf(where, 64, L"%.5f|%.5f|%d|", look.x, look.y, g_settings.clock24h);
+    swprintf(where, 64, L"%.5f|%.5f|", look.x, look.y);
     std::wstring key = where + Clock_StyleKey(look);
     if (!force && g_clockShown == key) return;
-    Clock_Show(g_wnd, look, g_settings.clock24h);
+    Clock_Show(g_wnd, look);
     g_clockShown = key;
     Log(L"clock: %ls look (%.1f%%, %.1f%%, colour %ls, size %.0f%%, opacity %.0f%%, glow %.0f%%)",
         WallpaperShowing() ? L"video wallpaper" : L"still wallpaper", look.x * 100, look.y * 100, look.color.c_str(), look.size * 100,
@@ -721,7 +721,7 @@ bool Host_ClockLive() { return WallpaperShowing(); }
 
 void Host_ClockMove(const ClockLook& look) {
     if (!look.show) return;
-    Clock_Show(g_wnd, look, g_settings.clock24h);
+    Clock_Show(g_wnd, look);
     g_clockShown.clear();  // the next sync puts the saved look back in full
 }
 

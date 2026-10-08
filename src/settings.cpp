@@ -330,17 +330,20 @@ static float ReadFloat(const wchar_t* ini, const wchar_t* sec, const wchar_t* ke
 }
 
 static ClockLook ReadLook(const wchar_t* ini, const wchar_t* sec, const std::wstring& prefix, const ClockLook& def) {
+    // Place, colour, size and time format are always written; the rest only when not the default.
+    const ClockLook base;
     ClockLook l;
     l.x = ReadFloat(ini, sec, (prefix + L"X").c_str(), def.x, 0, 1);
     l.y = ReadFloat(ini, sec, (prefix + L"Y").c_str(), def.y, 0, 1);
     l.size = ReadFloat(ini, sec, (prefix + L"Size").c_str(), def.size, 0.5f, 2.5f);
-    l.opacity = ReadFloat(ini, sec, (prefix + L"Opacity").c_str(), def.opacity, 0.2f, 1);
-    l.glow = ReadFloat(ini, sec, (prefix + L"Glow").c_str(), def.glow, 0, 1);
-    l.glowSize = ReadFloat(ini, sec, (prefix + L"GlowSize").c_str(), def.glowSize, 2, 40);
+    l.opacity = ReadFloat(ini, sec, (prefix + L"Opacity").c_str(), base.opacity, 0.2f, 1);
+    l.glow = ReadFloat(ini, sec, (prefix + L"Glow").c_str(), base.glow, 0, 1);
+    l.glowSize = ReadFloat(ini, sec, (prefix + L"GlowSize").c_str(), base.glowSize, 2, 40);
     l.color = ReadStr(ini, sec, (prefix + L"Color").c_str());
     if (l.color.empty()) l.color = def.color;
     l.glowColor = ReadStr(ini, sec, (prefix + L"GlowColor").c_str());  // "" = the text colour
     l.show = GetPrivateProfileIntW(sec, (prefix + L"Show").c_str(), 1, ini) != 0;
+    l.h24 = GetPrivateProfileIntW(sec, (prefix + L"Hours").c_str(), def.h24 ? 24 : 12, ini) == 24;
     return l;
 }
 
@@ -362,6 +365,7 @@ static void WriteLook(const wchar_t* ini, const wchar_t* sec, const std::wstring
     WritePrivateProfileStringW(sec, (prefix + L"GlowSize").c_str(), l && l->glowSize != 12 ? buf : nullptr, ini);
     WritePrivateProfileStringW(sec, (prefix + L"GlowColor").c_str(), l && !l->glowColor.empty() ? l->glowColor.c_str() : nullptr, ini);
     WritePrivateProfileStringW(sec, (prefix + L"Show").c_str(), l && !l->show ? L"0" : nullptr, ini);
+    WritePrivateProfileStringW(sec, (prefix + L"Hours").c_str(), l ? (l->h24 ? L"24" : L"12") : nullptr, ini);
 }
 
 // The colour dialog's saved colours: [Clock] MyColors=RRGGBB,,RRGGBB,... (16 boxes, empty ones blank).
@@ -424,7 +428,8 @@ void LoadSettings(Settings& s) {
     s.pipeline = ReadInt(ini, L"Pipeline", 0, 0, 2);
     s.lockFollow = ReadInt(ini, L"LockScreenFollows", 1, 0, 1) != 0;
     s.clockStill.size = s.clockLive.size = ReadFloat(ini, L"Clock", L"Size", 1.06f, 0.5f, 2.5f);  // older: one size for all
-    s.clock24h = GetPrivateProfileIntW(L"Clock", L"Hours", 12, ini) == 24;
+    // Older versions had one 12/24-hour setting for every look: it's where each look starts from.
+    s.clockStill.h24 = s.clockLive.h24 = GetPrivateProfileIntW(L"Clock", L"Hours", 12, ini) == 24;
     s.clockStill = ReadLook(ini, L"Clock", L"Still", s.clockStill);
     s.clockLive = ReadLook(ini, L"Clock", L"Live", s.clockLive);
     LoadMyColors(ini, s);
@@ -474,8 +479,7 @@ void SaveSettings(const Settings& s) {
     WritePrivateProfileStringW(L"General", L"PreviewTime", nullptr, ini);  // per video now
     wchar_t buf[64];
 
-    WritePrivateProfileStringW(L"Clock", L"Hours", s.clock24h ? L"24" : L"12", ini);
-    for (const wchar_t* old : {L"Skin", L"Variable", L"RainmeterExe", L"Size", L"Enabled"})  // from older versions
+    for (const wchar_t* old : {L"Skin", L"Variable", L"RainmeterExe", L"Size", L"Enabled", L"Hours"})  // from older versions
         WritePrivateProfileStringW(L"Clock", old, nullptr, ini);
     WriteLook(ini, L"Clock", L"Still", &s.clockStill);
     WriteLook(ini, L"Clock", L"Live", &s.clockLive);

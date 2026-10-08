@@ -86,7 +86,6 @@ bool OpenPainter() {
 struct ClockWindow {
     HWND hwnd = nullptr, host = nullptr, desktop = nullptr;
     ClockLook look;
-    bool h24 = false;
     std::wstring drawn;  // what the window shows now (style + minute), to skip identical redraws
     int w = 0, h = 0;
     bool closing = false;
@@ -144,11 +143,11 @@ void DrawClock() {
     GetLocalTime(&t);
     float k = Clock_PixelScale();
     wchar_t when[64];
-    swprintf(when, 64, L"|%d|%.3f|%04d%02d%02d%02d%02d", W.h24, k, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
+    swprintf(when, 64, L"|%.3f|%04d%02d%02d%02d%02d", k, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
     std::wstring key = Clock_StyleKey(W.look) + when;
     if (W.drawn != key) {
         ClockImage img;
-        if (Clock_Paint(W.look, W.h24, k, t, &img)) {
+        if (Clock_Paint(W.look, k, t, &img)) {
             BITMAPINFO bi{};
             bi.bmiHeader.biSize = sizeof bi.bmiHeader;
             bi.bmiHeader.biWidth = img.w;
@@ -249,7 +248,8 @@ void AddGlow(uint32_t* px, int w, int h, float radius, float strength, D2D1_COLO
 
 std::wstring Clock_StyleKey(const ClockLook& l) {
     wchar_t b[160];
-    swprintf(b, 160, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize, l.glowColor.c_str());
+    swprintf(b, 160, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize, l.glowColor.c_str(),
+             l.h24);
     return b;
 }
 
@@ -308,12 +308,12 @@ void Clock_ReleasePainter() {
 // Rainmeter treats font sizes and letter spacing as points (x 4/3 for DIPs); everything is then
 // scaled to real pixels by k. Checked against a capture of the Rainmeter skin: same rows, widths
 // within a few pixels.
-bool Clock_Paint(const ClockLook& look, bool h24, float k, const SYSTEMTIME& t, ClockImage* out) {
+bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out) {
     const float size = look.size;
     if (!OpenPainter()) return false;
     wchar_t date[64], time[32];
     swprintf(date, 64, L"%02d  %ls,  %d.", t.wDay, kMonths[(t.wMonth + 11) % 12], t.wYear);
-    if (h24) swprintf(time, 32, L"- %02d:%02d -", t.wHour, t.wMinute);
+    if (look.h24) swprintf(time, 32, L"- %02d:%02d -", t.wHour, t.wMinute);
     else swprintf(time, 32, L"- %d:%02d %ls -", (t.wHour + 11) % 12 + 1, t.wMinute, t.wHour < 12 ? L"AM" : L"PM");
     struct Line {
         const wchar_t* text;
@@ -406,10 +406,9 @@ bool Clock_Paint(const ClockLook& look, bool h24, float k, const SYSTEMTIME& t, 
     return ok;
 }
 
-void Clock_Show(HWND host, const ClockLook& look, bool h24) {
+void Clock_Show(HWND host, const ClockLook& look) {
     W.host = host;
     W.look = look;
-    W.h24 = h24;
     if (!W.hwnd && !CreateClockWindow()) {
         Log(L"clock: no desktop to put the clock on yet");
         return;

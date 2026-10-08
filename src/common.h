@@ -69,9 +69,10 @@ struct ClockLook {
     float glowSize = 12;             // how far the glow reaches, in DIPs at size 1
     std::wstring glowColor;          // "r,g,b", "" = the text colour
     bool show = true;                // the clock shows at all with this look
+    bool h24 = false;                // 24-hour time (else 12-hour)
     bool operator==(const ClockLook& o) const {
         return x == o.x && y == o.y && color == o.color && size == o.size && opacity == o.opacity && glow == o.glow &&
-               glowSize == o.glowSize && glowColor == o.glowColor && show == o.show;
+               glowSize == o.glowSize && glowColor == o.glowColor && show == o.show && h24 == o.h24;
     }
 };
 
@@ -97,8 +98,7 @@ struct Settings {
     Crop crop;                // crop for the current video (stored per video)
 
     // Desktop clock: one look while the video wallpaper shows, one for the still wallpaper. A video
-    // can have its own look instead of clockLive. Each look also says whether the clock shows at all.
-    bool clock24h = false;
+    // can have its own look instead of clockLive. Everything about the clock is part of its look.
     ClockLook clockStill{0.5f, 0.25f, L"0,0,0"};
     ClockLook clockLive{0.5f, 0.5f, L"255,255,255"};
     bool clockVideoOwn = false;   // the current video uses its own look (stored per video)
@@ -237,9 +237,9 @@ struct ClockImage {
     int pad = 0;               // room for the glow on each side (the text box is w - 2 pad by h - 2 pad)
 };
 // pixelScale: pixels per 96-DPI unit. Loads DirectWrite on first use; Clock_ReleasePainter frees it.
-bool Clock_Paint(const ClockLook& look, bool h24, float pixelScale, const SYSTEMTIME& t, ClockImage* out);
+bool Clock_Paint(const ClockLook& look, float pixelScale, const SYSTEMTIME& t, ClockImage* out);
 void Clock_ReleasePainter();
-void Clock_Show(HWND host, const ClockLook& look, bool h24);  // create / update / move
+void Clock_Show(HWND host, const ClockLook& look);  // create / update / move
 void Clock_Hide();
 void Clock_Refresh();   // time jumped, display changed, woke from sleep: redraw and re-place
 float Clock_PixelScale();

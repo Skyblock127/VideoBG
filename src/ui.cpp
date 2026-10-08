@@ -263,6 +263,8 @@ struct UI {
 
     std::vector<Hit> hits;
     int hot = 0, hotSeg = -1, press = 0, drag = 0;
+    int keySlider = 0;      // the slider clicked last: arrow keys move it a step at a time
+    bool keyStepped = false;  // it moved by key and isn't saved yet (saved when the key goes up)
     bool tracking = false;
 
     Worker worker;
@@ -635,6 +637,11 @@ void Slider(int id, const D2D1_RECT_F& r, float frac, bool enabled = true) {
     D2D1_ELLIPSE e{D2D1::Point2F(x, cy), 10, 10};
     u.rt->DrawEllipse(&e, u.br, 1, nullptr);
     Circle(x, cy, u.drag == id ? 5 : hot ? 7 : 6, enabled ? u.th.accent : u.th.text3);
+    if (u.keySlider == id && enabled) {  // arrow keys move this one
+        u.br->SetColor(&u.th.accent);
+        D2D1_ELLIPSE ring{D2D1::Point2F(x, cy), 13, 13};
+        u.rt->DrawEllipse(&ring, u.br, 1.5f, nullptr);
+    }
     AddHit(id, K_SLIDER, r, enabled);
 }
 
@@ -1397,12 +1404,11 @@ void EnsureClockBitmap(const ClockLook& look) {
     SYSTEMTIME t;
     GetLocalTime(&t);
     float k = Clock_PixelScale();
-    std::wstring key = Clock_StyleKey(look) + Fmt(L"|%d|%.3f|%04d%02d%02d%02d%02d", g_settings.clock24h, k, t.wYear, t.wMonth,
-                                                  t.wDay, t.wHour, t.wMinute);
+    std::wstring key = Clock_StyleKey(look) + Fmt(L"|%.3f|%04d%02d%02d%02d%02d", k, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
     if (key != u.clockKey) {
         u.clockKey = key;
         SafeRelease(u.clockBmp);
-        if (!Clock_Paint(look, g_settings.clock24h, k, t, &u.clockImg)) u.clockImg = ClockImage{};
+        if (!Clock_Paint(look, k, t, &u.clockImg)) u.clockImg = ClockImage{};
     }
     if (!u.clockBmp && u.clockImg.w > 0 && u.rt) {
         D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
@@ -1605,7 +1611,7 @@ void PaintClockPage(float x, float w) {
     // Two equal columns: the wallpaper choice sits right above Show / Hide.
     const float segW = (iw - 16) / 2, ry = y + kCardHead;
     Seg(ID_CLK_MODE, R(x + w - kPad - segW, y + 12, x + w - kPad, y + 44), {L"Video wallpaper", L"Still wallpaper"}, u.clockEdit);
-    Seg(ID_CLK_SCOPE, R(lx, ry, lx + segW, ry + 32), {L"All videos", L"This video"}, g_settings.clockVideoOwn ? 1 : 0,
+    Seg(ID_CLK_SCOPE, R(lx, ry, lx + segW, ry + 32), {L"This video", L"All videos"}, g_settings.clockVideoOwn ? 0 : 1,
         u.clockEdit == 0 && !video.empty());
     Seg(ID_CLK_SHOW, R(x + w - kPad - segW, ry, x + w - kPad, ry + 32), {L"Show clock", L"Hide clock"}, EditedLook()->show ? 0 : 1);
 
@@ -1668,7 +1674,7 @@ void PaintClockPage(float x, float w) {
     sliderRow(rx, ID_CLK_GLOWSIZE, L"Glow size", (look->glowSize - 2) / 38, Fmt(L"%.0f", look->glowSize), glowOn);
     yy += rowH;
     Row(lx, yy, labW, L"Time", rowH, on);
-    Seg(ID_CLK_HOURS, SegRect(lx + labW, yy, cw, rowH), {L"12-hour", L"24-hour"}, g_settings.clock24h ? 1 : 0, on);
+    Seg(ID_CLK_HOURS, SegRect(lx + labW, yy, cw, rowH), {L"12-hour", L"24-hour"}, look->h24 ? 1 : 0, on);
     Row(rx, yy, labW, L"Glow colour", rowH, glowOn);
     ColorButton(ID_CLK_GLOWCOLOR, R(rx + labW, yy + 3, rx + colW, yy + rowH - 3),
                 look->glowColor.empty() ? look->color : look->glowColor,
@@ -1685,8 +1691,8 @@ void PaintClockPage(float x, float w) {
             break;
         case ID_CLK_MODE: help = L"Video wallpaper: the clock while a video plays. Still wallpaper: while the video wallpaper is off"; break;
         case ID_CLK_SCOPE:
-            help = u.clockEdit == 1 ? L"Only for the video wallpaper: one clock for every video, or one just for this video"
-                                    : L"One clock look for every video, or this video's own (it keeps its own when you switch back)";
+            help = u.clockEdit == 1 ? L"Only for the video wallpaper: a clock just for this video, or the one every video shares"
+                                    : L"This video's own clock, or the one every video shares (this video keeps its own)";
             break;
         case ID_CLK_CUSTOM: help = L"Any colour, from a colour field, a hex code or your saved colours (Ctrl+V pastes a code)"; break;
         case ID_CLK_EYEDROP:
@@ -1695,7 +1701,7 @@ void PaintClockPage(float x, float w) {
             break;
         case ID_CLK_SIZE: help = L"The clock's size in this look"; break;
         case ID_CLK_OPACITY: help = L"How solid the clock is; lower lets the wallpaper show through (glow included)"; break;
-        case ID_CLK_HOURS: help = L"12-hour (1:30 PM) or 24-hour (13:30) time, for every look"; break;
+        case ID_CLK_HOURS: help = L"12-hour (1:30 PM) or 24-hour (13:30) time"; break;
         case ID_CLK_GLOW: help = L"A soft glow behind the letters that makes the clock stand out on busy wallpapers"; break;
         case ID_CLK_GLOWSIZE: help = L"How far the glow spreads"; break;
         case ID_CLK_GLOWCOLOR: help = L"The glow's colour; a dark glow works as a soft shadow"; break;
@@ -2697,6 +2703,52 @@ void OnSlider(int id, float frac, bool final) {
     }
 }
 
+// Arrow keys on the slider clicked last: one smallest step at a time, shown at once and saved
+// when the key goes up.
+bool StepSlider(int dir) {
+    switch (u.keySlider) {
+        case ID_SPEED: g_settings.speed = std::clamp(g_settings.speed + 5 * dir, 25, 200); break;
+        case ID_VOLUME:
+            if (g_settings.sound == 0) return false;
+            g_settings.volume = std::clamp(g_settings.volume + dir, 0, 100);
+            break;
+        case ID_TIMELINE: {
+            if (!u.infoOk || u.info.duration <= 0) return false;
+            double step = u.info.fps > 0 ? 1 / u.info.fps : 0.1;  // one frame
+            g_settings.previewTime = std::clamp(PreviewTime() + dir * step, 0.0, std::max(0.0, u.info.duration - step));
+            RequestFrame();
+            break;
+        }
+        case ID_CLK_SIZE:
+        case ID_CLK_OPACITY:
+        case ID_CLK_GLOW:
+        case ID_CLK_GLOWSIZE: {
+            ClockLook* look = EditedLook();
+            if (!ClockUsable() || (u.keySlider == ID_CLK_GLOWSIZE && look->glow <= 0)) return false;
+            if (u.keySlider == ID_CLK_SIZE) look->size = std::clamp(roundf(look->size * 100 + dir) / 100, 0.5f, 2.0f);
+            if (u.keySlider == ID_CLK_OPACITY) look->opacity = std::clamp(roundf(look->opacity * 20 + dir) / 20, 0.2f, 1.0f);
+            if (u.keySlider == ID_CLK_GLOW) look->glow = std::clamp(roundf(look->glow * 20 + dir) / 20, 0.0f, 1.0f);
+            if (u.keySlider == ID_CLK_GLOWSIZE) look->glowSize = std::clamp(look->glowSize + dir, 2.0f, 40.0f);
+            LiveClock(true);
+            break;
+        }
+        default: return false;
+    }
+    u.keyStepped = true;
+    return true;
+}
+
+void FinishStep() {
+    if (!u.keyStepped) return;
+    u.keyStepped = false;
+    switch (u.keySlider) {
+        case ID_SPEED:
+        case ID_VOLUME: Host_SettingsChanged(); break;
+        case ID_TIMELINE: Host_FrameChanged(); break;
+        default: ClockEdited();
+    }
+}
+
 void OnSeg(int id, int i) {
     switch (id) {
         case ID_SCALE: g_settings.scale = i; break;
@@ -2719,8 +2771,8 @@ void OnSeg(int id, int i) {
             u.clockEdit = i;
             return;
         case ID_CLK_SCOPE:
-            if ((i == 1) == g_settings.clockVideoOwn) return;
-            g_settings.clockVideoOwn = i == 1;
+            if ((i == 0) == g_settings.clockVideoOwn) return;
+            g_settings.clockVideoOwn = i == 0;
             if (g_settings.clockVideoOwn) {
                 // Back to the look it had before, or start from the shared one the first time.
                 if (!g_settings.clockVideoSaved) g_settings.clockVideo = g_settings.clockLive;
@@ -2735,7 +2787,10 @@ void OnSeg(int id, int i) {
                 u.clockEdit == 1 ? L"still" : (g_settings.clockVideoOwn ? L"video's own" : L"shared video"));
             ClockEdited();
             return;
-        case ID_CLK_HOURS: g_settings.clock24h = i == 1; break;
+        case ID_CLK_HOURS:
+            EditedLook()->h24 = i == 1;
+            ClockEdited();
+            return;
         default: return;
     }
     Host_SettingsChanged();
@@ -2887,6 +2942,16 @@ bool OnKey(UINT vk) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
+    if (u.keySlider && u.page == 0 && (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN)) {
+        if (StepSlider(vk == VK_RIGHT || vk == VK_UP ? 1 : -1)) InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (vk == VK_ESCAPE && u.keySlider) {
+        FinishStep();
+        u.keySlider = 0;
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
     if (vk == VK_ESCAPE && u.picking) {
         u.picking = false;
         u.pickColor.clear();
@@ -3030,6 +3095,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             SetFocus(h);
             const Hit* ht = HitAt(x, y);
             if (u.recording && (!ht || ht->id != ID_HOTKEY)) StopRecording();
+            FinishStep();
+            u.keySlider = ht && ht->kind == K_SLIDER && ht->enabled ? ht->id : 0;
             if (dlg.open && DlgMouseDown(ht, x, y)) {
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
@@ -3127,6 +3194,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
             if (OnKey((UINT)w)) return 0;
+            break;
+        case WM_KEYUP:
+            if (w == VK_LEFT || w == VK_RIGHT || w == VK_UP || w == VK_DOWN) FinishStep();
             break;
         case WM_SYSKEYUP:
         case WM_SYSCHAR:
