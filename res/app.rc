@@ -1,0 +1,35 @@
+#include <windows.h>
+#include "../src/resource.h"
+
+IDI_APP ICON "app.ico"
+IDI_OFF ICON "app_off.ico"
+
+IDR_FONT_ANURATI RCDATA "fonts/Anurati.otf"
+IDR_FONT_QUICKSAND RCDATA "fonts/Quicksand.otf"
+
+1 RT_MANIFEST "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "VideoBG"
+      VALUE "FileDescription", "VideoBG"
+      VALUE "FileVersion", "1.0.0"
+      VALUE "InternalName", "VideoBG"
+      VALUE "OriginalFilename", "VideoBG.exe"
+      VALUE "ProductName", "VideoBG - video wallpaper"
+      VALUE "ProductVersion", "1.0.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

@@ -1,0 +1,75 @@
+VideoBG 1.1 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+==========================================================================
+
+What it does
+  - Plays a video behind your desktop icons. Ctrl+Alt+B turns it on and off;
+    when it's off the video part isn't running at all (no CPU, ~3 MB RAM).
+  - Shows a clock on the desktop (day, date and time), with its own place,
+    colour, size and glow for the video wallpaper and for your normal
+    wallpaper. It comes and goes with VideoBG; nothing else to install.
+
+Install (no admin rights needed)
+  1. Right-click the zip > Extract All. Put the extracted VideoBG folder
+     where it can stay, for example C:\Tools\VideoBG (not in Downloads if
+     you clean that out: VideoBG runs from this folder).
+  2. Double-click Install.cmd. It adds VideoBG to the Start menu and to your
+     startup apps, and opens VideoBG.
+     If Windows says "Windows protected your PC", click "More info" >
+     "Run anyway" (the app isn't code-signed, that's all).
+  3. On the Video page: Choose video, top right (MP4, MOV, MKV, WebM,
+     AVI...). An animated GIF works too: VideoBG turns it into a video once.
+  VideoBG then lives in the tray (notification area): click its icon, or
+  open VideoBG from the Start menu, to get the settings back.
+
+Using it
+  - Ctrl+Alt+B: wallpaper on/off (change the keys on the General page).
+  - VideoBG starts the way you left it (on or off); change that on the
+    General page ("When app starts").
+  - Video page: "Crop" (on the preview) picks the part of the video shown.
+    "Versions" (next to the video's details) lists smaller copies of it
+    (your screen's size, 900p, 720p...) with the memory each takes: click
+    one to see it on your desktop first, then "Make it" (a few seconds) or
+    "Use it" to switch to one you made before. The original isn't touched.
+  - While the wallpaper is paused for a while (PC locked, screen off, or
+    covered by apps if you chose that on the Power saving page), VideoBG
+    lets go of the video's memory and picks up at the same frame later.
+  - Show on lock screen (switch under the preview, on by default): while
+    the video wallpaper is on, the lock screen and the Windows desktop
+    background (seen behind admin prompts and at sign-in) show a frame of
+    the video (pick it with the Preview slider); while it's off, your own
+    pictures. Exiting VideoBG from the tray puts your own pictures back.
+    (The desktop background only follows with one screen and a
+    single-picture background on Windows 11 24H2 or newer.)
+  - Desktop clock page:
+      * Video wallpaper / Still wallpaper picks which look you're editing.
+        "Just for this video" gives the current video its own look.
+      * Drag the clock on the preview to place it (it snaps to the middle;
+        hold Alt to place it freely, arrow keys nudge it).
+      * Colour: swatches; Pick takes a colour from the wallpaper; More opens
+        the colour dialog (colour field, hex codes, and 16 boxes for your own
+        colours: click a box, then "Save to box"; double-click a box to use
+        it). Ctrl+V pastes a colour code like #72ABDE.
+      * Size, opacity, glow (strength, size and colour) and 12/24-hour time.
+  - Sound, Playback and Power saving pages: sound source, speed, frame rate,
+    and pausing while apps cover the desktop or on battery.
+  - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.
+
+If a video won't play
+  VideoBG says why on the Video page (and in a notification), with the fix.
+  Most often Windows needs a codec extension for it. AV1 videos (common in
+  4K downloads from YouTube) need the free "AV1 Video Extension": click
+  "Get it free", install it from Microsoft Store, come back to VideoBG and
+  the wallpaper starts by itself. VP9 and MPEG-2 have free extensions too;
+  HEVC (H.265) needs "HEVC Video Extensions" (small fee).
+
+Update (no need to uninstall first)
+  Tray icon > Exit, extract the new zip into the same folder (choose
+  "Replace the files"), then double-click Install.cmd again. Your settings
+  are kept.
+
+Remove
+  Double-click Uninstall.cmd in the VideoBG folder (it puts your own pictures
+  back and asks whether to delete your settings too), then
+  delete the folder.
+
+Settings live in %APPDATA%\VideoBG, light copies in %LOCALAPPDATA%\VideoBG.
