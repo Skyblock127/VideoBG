@@ -1,5 +1,5 @@
-VideoBG 1.3.2 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
-============================================================================
+VideoBG 1.4 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+==========================================================================
 
 What it does
   - Plays a video behind your desktop icons. Ctrl+Alt+B turns it on and off;
@@ -49,10 +49,15 @@ Using it
         e.g. on the video wallpaper but not on the still one.
       * Drag the clock on the preview to place it (it snaps to the middle;
         hold Alt to place it freely, arrow keys nudge it).
-      * Colour: swatches; Pick takes a colour from the wallpaper; More opens
-        the colour dialog (colour field, hex codes, and 16 boxes for your own
-        colours: click a box, then "Save to box"; double-click a box to use
-        it). Ctrl+V pastes a colour code like #72ABDE.
+      * Colour: click it for the colour dialog (colour field, hex codes, and
+        16 boxes for your own colours: click a box, then "Save to box";
+        double-click a box to use it); the eyedropper next to it takes a
+        colour from the wallpaper. Ctrl+V pastes a colour code like #72ABDE.
+      * Font: Audiowide, Michroma, Orbitron or Syncopate, for the whole
+        clock. Anurati (the original Mond font) is free for personal use
+        only, so it isn't included: in the font list, "Get it" opens its
+        download page; VideoBG then finds it in your Downloads (or use
+        "Add font file", a .zip works too).
       * Size, opacity, glow (strength, size and colour) and 12/24-hour time.
   - Sound, Playback and Power saving pages: sound source, speed, frame rate,
     and pausing while apps cover the desktop or on battery.
@@ -77,5 +82,6 @@ Remove
   delete the folder.
 
 Settings live in %APPDATA%\VideoBG, video versions in %LOCALAPPDATA%\VideoBG.
-The Audiowide and Quicksand fonts built into VideoBG are under the SIL Open
-Font License (Font license.txt).
+The fonts built into VideoBG are under the SIL Open Font License (Audiowide,
+Michroma, Orbitron, Quicksand) and the Apache License (Syncopate): see the
+"Font license" files.

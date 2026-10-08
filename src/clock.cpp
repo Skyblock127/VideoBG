@@ -1,12 +1,12 @@
-// Desktop clock: day name, date and time in the design of the "Mond" Rainmeter clock (the sizes and
-// spacing of its Clock.ini; see Credits in README.md), drawn by VideoBG itself: one small see-through,
-// click-through window on the desktop that redraws once a minute. Mond's day font, Anurati, is free
-// for personal use only, so the day name is in Audiowide; the date and time are in Quicksand, as in Mond.
-// DirectWrite/Direct2D are loaded only while drawing.
+// Desktop clock: day name, date and time in the design of the "Mond" Rainmeter clock (its sizes and
+// spacing; see Credits in README.md), drawn by VideoBG itself: one small see-through, click-through
+// window on the desktop that redraws once a minute. Each look picks the clock's font. DirectWrite and
+// Direct2D, and only the font being drawn, are loaded only while drawing.
 #include "common.h"
 #include "resource.h"
 #include <d2d1.h>
 #include <dwrite_3.h>
+#include <shlobj.h>
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
@@ -22,29 +22,109 @@ const wchar_t* const kDays[] = {L"SUNDAY", L"MONDAY", L"TUESDAY", L"WEDNESDAY", 
 const wchar_t* const kMonths[] = {L"JANUARY", L"FEBRUARY", L"MARCH",     L"APRIL",   L"MAY",      L"JUNE",
                                   L"JULY",    L"AUGUST",   L"SEPTEMBER", L"OCTOBER", L"NOVEMBER", L"DECEMBER"};
 
+// ---- Fonts ----------------------------------------------------------------------------------
+// The whole clock is in one font. Each has scales that make every font about as wide as Audiowide
+// at the same size: one for the day, one for the date and time. Fonts VideoBG can't include come
+// from the user: installed on the PC, or added through the font picker into its fonts folder.
+struct FontDef {
+    ClockFontInfo info;
+    int res;           // RCDATA id; 0 = not included
+    float day, small;  // scales of the day, and of the date and time
+};
+const FontDef kFonts[] = {
+    {{L"Audiowide", nullptr}, IDR_FONT_AUDIOWIDE, 1.00f, 0.90f},
+    {{L"Michroma", nullptr}, IDR_FONT_MICHROMA, 0.83f, 0.75f},
+    {{L"Orbitron", nullptr}, IDR_FONT_ORBITRON, 0.98f, 0.88f},
+    {{L"Syncopate", nullptr}, IDR_FONT_SYNCOPATE, 0.96f, 0.86f},
+    {{L"Anurati", L"https://www.dafont.com/search.php?q=anurati"}, 0, 0.97f, 0.87f},
+};
+
+const FontDef& FindFont(const std::wstring& key) {
+    for (const FontDef& f : kFonts)
+        if (!_wcsicmp(f.info.key, key.c_str())) return f;
+    return kFonts[0];
+}
+
+std::wstring FontsDir() { return LocalDataDir() + L"\\Fonts"; }
+
+bool IsFontName(const std::wstring& name) {
+    size_t dot = name.find_last_of(L'.');
+    return dot != std::wstring::npos && (!_wcsicmp(name.c_str() + dot, L".otf") || !_wcsicmp(name.c_str() + dot, L".ttf"));
+}
+
+// The first font file in dir matching pattern.
+std::wstring FindFontFile(const std::wstring& dir, const std::wstring& pattern) {
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\" + pattern).c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return L"";
+    std::wstring found;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && IsFontName(fd.cFileName)) found = dir + L"\\" + fd.cFileName;
+    } while (found.empty() && FindNextFileW(h, &fd));
+    FindClose(h);
+    return found;
+}
+
+// The file of a font VideoBG doesn't include: the copy added through VideoBG, else one installed on
+// the PC (for this user or for everyone), found by its file name.
+std::wstring FontFile(const FontDef& f) {
+    if (f.res) return L"";
+    const std::wstring key = f.info.key;
+    std::wstring file = FindFontFile(FontsDir(), key + L".*");
+    wchar_t buf[MAX_PATH];
+    if (file.empty() && ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\Windows\\Fonts", buf, MAX_PATH))
+        file = FindFontFile(buf, L"*" + key + L"*");
+    if (file.empty() && GetWindowsDirectoryW(buf, MAX_PATH)) file = FindFontFile(std::wstring(buf) + L"\\Fonts", L"*" + key + L"*");
+    return file;
+}
+
+// The fonts embedded in the exe stay in memory for good, so DirectWrite reads them where they are
+// instead of copying them: this owner keeps nothing alive.
+struct StaticOwner : IUnknown {
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** p) override {
+        *p = IsEqualIID(riid, IID_IUnknown) ? this : nullptr;
+        return *p ? S_OK : E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+} g_exeMemory;
+
 struct Painter {
     HMODULE dw = nullptr, d2 = nullptr;
     IDWriteFactory5* f = nullptr;
     IDWriteInMemoryFontFileLoader* loader = nullptr;
-    IDWriteFontCollection1* fonts = nullptr;  // the two fonts embedded in the exe, private to us
     ID2D1Factory* d2f = nullptr;
+    IDWriteFontCollection1* fonts = nullptr;  // just the font being drawn (and Quicksand for digits it lacks)
+    std::wstring fontKey;                     // which font that is
+    std::wstring family, smallFamily;         // its family, and the one for the date and time
+    float dayCap = 0.7f, smallCap = 0.7f;     // their capital letters' height, per em
+    float dayScale = 1, smallScale = 1;
     bool failed = false;
 } P;
 
-bool AddFont(IDWriteFontSetBuilder1* b, int id) {
+bool AddResFont(IDWriteFontSetBuilder1* b, int id) {
     HRSRC r = FindResourceW(nullptr, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10) /* RT_RCDATA */);
     HGLOBAL g = r ? LoadResource(nullptr, r) : nullptr;
     const void* data = g ? LockResource(g) : nullptr;
     if (!data) return false;
     IDWriteFontFile* file = nullptr;
-    HRESULT hr = P.loader->CreateInMemoryFontFileReference(P.f, data, SizeofResource(nullptr, r), nullptr, &file);
+    HRESULT hr = P.loader->CreateInMemoryFontFileReference(P.f, data, SizeofResource(nullptr, r), &g_exeMemory, &file);
     if (SUCCEEDED(hr)) hr = b->AddFontFile(file);
     Rel(file);
     return SUCCEEDED(hr);
 }
 
+bool AddFileFont(IDWriteFontSetBuilder1* b, const std::wstring& path) {
+    IDWriteFontFile* file = nullptr;
+    HRESULT hr = P.f->CreateFontFileReference(path.c_str(), nullptr, &file);
+    if (SUCCEEDED(hr)) hr = b->AddFontFile(file);
+    Rel(file);
+    return SUCCEEDED(hr);
+}
+
+// Factories only: fonts are loaded by UseFont, one at a time.
 bool OpenPainter() {
-    if (P.fonts) return true;
+    if (P.f) return true;
     if (P.failed) return false;
     P.dw = LoadLibraryExW(L"dwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     P.d2 = LoadLibraryExW(L"d2d1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -53,26 +133,87 @@ bool OpenPainter() {
     auto dwCreate = P.dw ? (DWCreate)(void*)GetProcAddress(P.dw, "DWriteCreateFactory") : nullptr;
     auto d2Create = P.d2 ? (D2DCreate)(void*)GetProcAddress(P.d2, "D2D1CreateFactory") : nullptr;
     HRESULT hr = dwCreate && d2Create ? S_OK : E_NOINTERFACE;
-    // Isolated factory (needs Windows 10 1703+): the embedded fonts never reach other apps.
+    // Isolated factory (needs Windows 10 1703+): the clock's fonts never reach other apps.
     if (SUCCEEDED(hr)) hr = dwCreate(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory5), (IUnknown**)&P.f);
     D2D1_FACTORY_OPTIONS opt{D2D1_DEBUG_LEVEL_NONE};
     if (SUCCEEDED(hr)) hr = d2Create(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), &opt, (void**)&P.d2f);
     if (SUCCEEDED(hr)) hr = P.f->CreateInMemoryFontFileLoader(&P.loader);
     if (SUCCEEDED(hr)) hr = P.f->RegisterFontFileLoader(P.loader);
-    IDWriteFontSetBuilder1* b = nullptr;
-    IDWriteFontSet* set = nullptr;
-    if (SUCCEEDED(hr)) hr = P.f->CreateFontSetBuilder(&b);
-    if (SUCCEEDED(hr) && !(AddFont(b, IDR_FONT_AUDIOWIDE) && AddFont(b, IDR_FONT_QUICKSAND))) hr = E_FAIL;
-    if (SUCCEEDED(hr)) hr = b->CreateFontSet(&set);
-    if (SUCCEEDED(hr)) hr = P.f->CreateFontCollectionFromFontSet(set, &P.fonts);
-    Rel(set);
-    Rel(b);
     if (FAILED(hr)) {
         Log(L"clock: can't set up text drawing (0x%08lx)", (unsigned long)hr);
         Clock_ReleasePainter();
         P.failed = true;
         return false;
     }
+    return true;
+}
+
+// A family of a collection: its name, its capitals' height per em, and whether it has digits.
+bool FamilyInfo(IDWriteFontCollection1* c, UINT32 index, std::wstring* name, float* cap, bool* digits) {
+    IDWriteFontFamily1* fam = nullptr;
+    IDWriteLocalizedStrings* names = nullptr;
+    IDWriteFont3* font = nullptr;
+    bool ok = SUCCEEDED(c->GetFontFamily(index, &fam)) && SUCCEEDED(fam->GetFamilyNames(&names)) && SUCCEEDED(fam->GetFont(0, &font));
+    UINT32 len = 0;
+    if (ok && SUCCEEDED(names->GetStringLength(0, &len))) {
+        name->resize(len + 1);
+        ok = SUCCEEDED(names->GetString(0, name->data(), len + 1));
+        name->resize(len);
+    }
+    if (ok) {
+        DWRITE_FONT_METRICS1 m{};
+        font->GetMetrics(&m);
+        *cap = m.designUnitsPerEm && m.capHeight ? (float)m.capHeight / m.designUnitsPerEm : 0.7f;
+        *digits = font->HasCharacter(L'0') && font->HasCharacter(L':');
+    }
+    Rel(font);
+    Rel(names);
+    Rel(fam);
+    return ok;
+}
+
+bool BuildCollection(const FontDef& f, const std::wstring& file, bool withQuicksand) {
+    IDWriteFontSetBuilder1* b = nullptr;
+    IDWriteFontSet* set = nullptr;
+    HRESULT hr = P.f->CreateFontSetBuilder(&b);
+    if (SUCCEEDED(hr) && !(f.res ? AddResFont(b, f.res) : AddFileFont(b, file))) hr = E_FAIL;
+    if (SUCCEEDED(hr) && withQuicksand && !AddResFont(b, IDR_FONT_QUICKSAND)) hr = E_FAIL;
+    if (SUCCEEDED(hr)) hr = b->CreateFontSet(&set);
+    if (SUCCEEDED(hr)) hr = P.f->CreateFontCollectionFromFontSet(set, &P.fonts);
+    Rel(set);
+    Rel(b);
+    return SUCCEEDED(hr);
+}
+
+// Loads the font to draw with, letting go of the one before.
+bool UseFont(const std::wstring& key) {
+    if (P.fonts && P.fontKey == key) return true;
+    Rel(P.fonts);
+    P.fontKey.clear();
+    const FontDef& f = FindFont(key);
+    const std::wstring file = FontFile(f);
+    if (!f.res && file.empty()) return false;
+    bool digits = false, unused = false;
+    if (!BuildCollection(f, file, false) || !FamilyInfo(P.fonts, 0, &P.family, &P.dayCap, &digits)) {
+        Rel(P.fonts);
+        return false;
+    }
+    P.dayScale = f.day;
+    P.smallScale = f.small;
+    P.smallFamily = P.family;
+    P.smallCap = P.dayCap;
+    if (!digits) {  // Anurati's free version: the date and time in Quicksand instead, as in Mond
+        Rel(P.fonts);
+        UINT32 qi = 0;
+        BOOL found = FALSE;
+        if (!BuildCollection(f, file, true) || FAILED(P.fonts->FindFamilyName(L"Quicksand", &qi, &found)) || !found ||
+            !FamilyInfo(P.fonts, qi, &P.smallFamily, &P.smallCap, &unused)) {
+            Rel(P.fonts);
+            return false;
+        }
+        P.smallScale = 1;
+    }
+    P.fontKey = key;
     return true;
 }
 
@@ -248,8 +389,8 @@ void AddGlow(uint32_t* px, int w, int h, float radius, float strength, D2D1_COLO
 
 std::wstring Clock_StyleKey(const ClockLook& l) {
     wchar_t b[160];
-    swprintf(b, 160, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize, l.glowColor.c_str(),
-             l.h24);
+    swprintf(b, 160, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
+             l.glowColor.c_str(), l.h24, l.font.c_str());
     return b;
 }
 
@@ -289,8 +430,8 @@ float Clock_PixelScale() {
 }
 
 void Clock_ReleasePainter() {
-    if (P.f && P.loader) P.f->UnregisterFontFileLoader(P.loader);
     Rel(P.fonts);
+    if (P.f && P.loader) P.f->UnregisterFontFileLoader(P.loader);
     Rel(P.loader);
     Rel(P.f);
     Rel(P.d2f);
@@ -302,15 +443,17 @@ void Clock_ReleasePainter() {
 }
 
 // Layout as in Mond's Clock.ini (Scale = the look's size): three lines centred on one axis -
-//   day   Audiowide 40 pt, letter spacing 10 before and after each letter, at y = 0
-//   date  Quicksand 14 pt, "%d  %B,  %Y."                                 at y = 75 x Scale
-//   time  Quicksand 14 pt, "- %#I:%M %p -"                                at y = 120 x Scale
-// Rainmeter treats font sizes and letter spacing as points (x 4/3 for DIPs); everything is then
-// scaled to real pixels by k. Checked against a capture of the Rainmeter skin: same rows, widths
-// within a few pixels.
+//   day   40 pt, letter spacing 10 before and after each letter
+//   date  14 pt, "%d  %B,  %Y."
+//   time  14 pt, "- %#I:%M %p -"
+// each times the font's scale. Rainmeter treats font sizes and letter spacing as points (x 4/3 for
+// DIPs); everything is then scaled to real pixels by k. The lines are placed by their capitals, with
+// Mond's gaps measured from the skin: the date's 25.7 DIPs below the day's baseline, the time's 31.5
+// below the date's (x Scale), so every font keeps the same rhythm.
 bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out) {
     const float size = look.size;
     if (!OpenPainter()) return false;
+    if (!UseFont(look.font) && !UseFont(kFonts[0].info.key)) return false;  // a font that's gone: the default
     wchar_t date[64], time[32];
     swprintf(date, 64, L"%02d  %ls,  %d.", t.wDay, kMonths[(t.wMonth + 11) % 12], t.wYear);
     if (look.h24) swprintf(time, 32, L"- %02d:%02d -", t.wHour, t.wMinute);
@@ -318,19 +461,23 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
     struct Line {
         const wchar_t* text;
         const wchar_t* font;
-        float pt, y, spacing;
+        float pt, spacing, cap;
         IDWriteTextLayout* layout;
         DWRITE_TEXT_METRICS m;
-    } lines[3] = {{kDays[t.wDayOfWeek % 7], L"Audiowide", 40, 0, 10, nullptr, {}},
-                  {date, L"Quicksand", 14, 75, 0, nullptr, {}},
-                  {time, L"Quicksand", 14, 120, 0, nullptr, {}}};
+        float top;  // where the layout's top goes
+    } lines[3] = {{kDays[t.wDayOfWeek % 7], P.family.c_str(), 40 * P.dayScale, 10 * P.dayScale, P.dayCap, nullptr, {}, 0},
+                  {date, P.smallFamily.c_str(), 14 * P.smallScale, 0, P.smallCap, nullptr, {}, 0},
+                  {time, P.smallFamily.c_str(), 14 * P.smallScale, 0, P.smallCap, nullptr, {}, 0}};
+    const float gaps[3] = {0, 25.7f, 31.5f};
     HRESULT hr = S_OK;
-    float maxW = 0;
-    for (auto& l : lines) {
+    float maxW = 0, capTop = 0, minTop = 0, bottom = 0;
+    for (int i = 0; i < 3; i++) {
+        Line& l = lines[i];
         IDWriteTextFormat* fmt = nullptr;
         UINT32 len = (UINT32)wcslen(l.text);
+        const float px = l.pt * size * 4 / 3 * k;
         hr = P.f->CreateTextFormat(l.font, P.fonts, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                   l.pt * size * 4 / 3 * k, L"en-us", &fmt);
+                                   px, L"en-us", &fmt);
         if (SUCCEEDED(hr)) {
             fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             hr = P.f->CreateTextLayout(l.text, len, fmt, 8192, 8192, &l.layout);
@@ -344,14 +491,22 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
             }
         }
         if (SUCCEEDED(hr)) hr = l.layout->GetMetrics(&l.m);
+        DWRITE_LINE_METRICS lm{};
+        UINT32 count = 0;
+        if (SUCCEEDED(hr)) hr = l.layout->GetLineMetrics(&lm, 1, &count);
         if (FAILED(hr)) break;
         maxW = std::max(maxW, l.m.widthIncludingTrailingWhitespace);
+        // Capitals start the gap below the line above (the day's at 0).
+        if (i > 0) capTop += lines[i - 1].cap * lines[i - 1].pt * size * 4 / 3 * k + gaps[i] * size * k;
+        l.top = capTop - (lm.baseline - l.cap * px);
+        minTop = i ? std::min(minTop, l.top) : l.top;
+        bottom = i ? std::max(bottom, l.top + l.m.height) : l.top + l.m.height;
     }
     const float glowR = look.glow > 0 ? look.glowSize * size * k : 0;
     const int pad = (int)ceilf(glowR);
     const float margin = ceilf(4 * k) + pad;
     const int w = SUCCEEDED(hr) ? (int)ceilf(maxW + 2 * margin) : 0;
-    const int h = SUCCEEDED(hr) ? (int)ceilf(lines[2].y * size * k + lines[2].m.height + 2 * margin) : 0;
+    const int h = SUCCEEDED(hr) ? (int)ceilf(bottom - minTop + 2 * margin) : 0;
     bool ok = false;
     if (w > 0 && h > 0 && w < 16384 && h < 16384) {
         BITMAPINFO bi{};
@@ -379,7 +534,7 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
                 rt->Clear(D2D1::ColorF(0, 0, 0, 0));
                 rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
                 for (auto& l : lines)
-                    rt->DrawTextLayout(D2D1::Point2F((w - l.m.widthIncludingTrailingWhitespace) / 2, margin + l.y * size * k), l.layout,
+                    rt->DrawTextLayout(D2D1::Point2F((w - l.m.widthIncludingTrailingWhitespace) / 2, margin + l.top - minTop), l.layout,
                                        brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
                 ok = SUCCEEDED(rt->EndDraw());
             }
@@ -426,4 +581,170 @@ void Clock_Refresh() {
     if (!W.hwnd) return;
     W.drawn.clear();
     DrawClock();
+}
+
+// ---------------------------------------------------------------------------------------
+// Clock fonts
+
+int Clock_FontCount() { return (int)std::size(kFonts); }
+
+const ClockFontInfo& Clock_Font(int i) { return kFonts[std::clamp(i, 0, Clock_FontCount() - 1)].info; }
+
+bool Clock_FontReady(const std::wstring& key) {
+    const FontDef& f = FindFont(key);
+    return f.res || !FontFile(f).empty();
+}
+
+namespace {
+
+bool ReadStream(IStream* st, std::string* data) {
+    data->clear();
+    char buf[65536];
+    ULONG got = 0;
+    while (SUCCEEDED(st->Read(buf, sizeof buf, &got)) && got > 0) {
+        data->append(buf, got);
+        if (data->size() > 32u << 20) return false;  // no font is this big
+    }
+    return !data->empty();
+}
+
+// The font file in a .zip (opened as a folder by the shell, a level of subfolders deep), preferring
+// one named after the font.
+bool ReadZipFont(IShellItem* folder, const std::wstring& key, int depth, std::string* data, std::wstring* name) {
+    IEnumShellItems* items = nullptr;
+    if (FAILED(folder->BindToHandler(nullptr, BHID_EnumItems, IID_PPV_ARGS(&items)))) return false;
+    IShellItem* best = nullptr;
+    std::wstring bestName;
+    IShellItem* it = nullptr;
+    bool found = false;
+    while (!found && items->Next(1, &it, nullptr) == S_OK) {
+        wchar_t* nm = nullptr;
+        SFGAOF attr = 0;
+        it->GetAttributes(SFGAO_FOLDER | SFGAO_STREAM, &attr);
+        if (SUCCEEDED(it->GetDisplayName(SIGDN_PARENTRELATIVEPARSING, &nm))) {
+            std::wstring n = nm;
+            CoTaskMemFree(nm);
+            std::wstring lower = n, k = key;
+            for (auto& c : lower) c = (wchar_t)towlower(c);
+            for (auto& c : k) c = (wchar_t)towlower(c);
+            if (IsFontName(n) && (!best || lower.find(k) != std::wstring::npos)) {
+                Rel(best);
+                best = it;
+                best->AddRef();
+                bestName = n;
+            } else if ((attr & SFGAO_FOLDER) && !(attr & SFGAO_STREAM) && depth < 2 && !best) {
+                found = ReadZipFont(it, key, depth + 1, data, name);
+            }
+        }
+        Rel(it);
+    }
+    items->Release();
+    if (!found && best) {
+        IStream* st = nullptr;
+        if (SUCCEEDED(best->BindToHandler(nullptr, BHID_Stream, IID_PPV_ARGS(&st)))) {
+            found = ReadStream(st, data);
+            st->Release();
+        }
+        *name = bestName;
+    }
+    Rel(best);
+    return found;
+}
+
+bool ReadFontSource(const std::wstring& path, const std::wstring& key, std::string* data, std::wstring* name) {
+    size_t dot = path.find_last_of(L'.');
+    if (dot != std::wstring::npos && !_wcsicmp(path.c_str() + dot, L".zip")) {
+        IShellItem* zip = nullptr;
+        if (FAILED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&zip)))) return false;
+        bool ok = ReadZipFont(zip, key, 0, data, name);
+        zip->Release();
+        return ok;
+    }
+    if (!IsFontName(path)) return false;
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz{};
+    bool ok = GetFileSizeEx(h, &sz) && sz.QuadPart > 0 && sz.QuadPart < (32ll << 20);
+    if (ok) {
+        data->resize((size_t)sz.QuadPart);
+        DWORD got = 0;
+        ok = ReadFile(h, data->data(), (DWORD)data->size(), &got, nullptr) && got == data->size();
+    }
+    CloseHandle(h);
+    *name = path.substr(path.find_last_of(L"\\/") + 1);
+    return ok;
+}
+
+}  // namespace
+
+HRESULT Clock_AddFontFile(const std::wstring& key, const std::wstring& path) {
+    const FontDef& f = FindFont(key);
+    if (f.res || _wcsicmp(f.info.key, key.c_str())) return E_INVALIDARG;
+    std::string data;
+    std::wstring name;
+    if (!ReadFontSource(path, key, &data, &name)) return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    if (!OpenPainter()) return E_FAIL;
+    // It has to be that font: a font file whose family is named after it.
+    IDWriteFontFile* file = nullptr;
+    IDWriteFontSetBuilder1* b = nullptr;
+    IDWriteFontSet* set = nullptr;
+    IDWriteFontCollection1* c = nullptr;
+    std::wstring family;
+    float cap = 0;
+    bool digits = false;
+    HRESULT hr = P.loader->CreateInMemoryFontFileReference(P.f, data.data(), (UINT32)data.size(), nullptr, &file);
+    if (SUCCEEDED(hr)) hr = P.f->CreateFontSetBuilder(&b);
+    if (SUCCEEDED(hr)) hr = b->AddFontFile(file);
+    if (SUCCEEDED(hr)) hr = b->CreateFontSet(&set);
+    if (SUCCEEDED(hr)) hr = P.f->CreateFontCollectionFromFontSet(set, &c);
+    if (SUCCEEDED(hr) && !FamilyInfo(c, 0, &family, &cap, &digits)) hr = E_FAIL;
+    Rel(c);
+    Rel(set);
+    Rel(b);
+    Rel(file);
+    std::wstring lower = family, k = key;
+    for (auto& ch : lower) ch = (wchar_t)towlower(ch);
+    for (auto& ch : k) ch = (wchar_t)towlower(ch);
+    if (FAILED(hr) || lower.find(k) == std::wstring::npos) {
+        Log(L"clock: %ls isn't the %ls font (%ls)", path.c_str(), key.c_str(), family.c_str());
+        return E_INVALIDARG;
+    }
+    // Into VideoBG's fonts folder, in place of any copy before.
+    const std::wstring dir = FontsDir();
+    CreateDirectoryW(dir.c_str(), nullptr);
+    for (std::wstring old; !(old = FindFontFile(dir, key + L".*")).empty();)
+        if (!DeleteFileW(old.c_str())) break;
+    const std::wstring dst = dir + L"\\" + key + name.substr(name.find_last_of(L'.')), tmp = dst + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    DWORD put = 0;
+    bool ok = h != INVALID_HANDLE_VALUE && WriteFile(h, data.data(), (DWORD)data.size(), &put, nullptr) && put == data.size();
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    ok = ok && MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING);
+    if (!ok) DeleteFileW(tmp.c_str());
+    if (P.fontKey == key) {  // drawn with the old file: load the new one next time
+        Rel(P.fonts);
+        P.fontKey.clear();
+    }
+    Log(L"clock: added the %ls font from %ls -> %ls", key.c_str(), path.c_str(), ok ? L"ok" : L"failed");
+    return ok ? S_OK : E_FAIL;
+}
+
+bool Clock_FindDownloadedFont(const std::wstring& key) {
+    wchar_t* p = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &p))) return false;
+    const std::wstring dir = p;
+    CoTaskMemFree(p);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*" + key + L"*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    bool added = false;
+    do {
+        std::wstring n = fd.cFileName;
+        size_t dot = n.find_last_of(L'.');
+        bool zip = dot != std::wstring::npos && !_wcsicmp(n.c_str() + dot, L".zip");
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && (zip || IsFontName(n)))
+            added = SUCCEEDED(Clock_AddFontFile(key, dir + L"\\" + n));
+    } while (!added && FindNextFileW(h, &fd));
+    FindClose(h);
+    return added;
 }

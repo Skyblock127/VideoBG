@@ -7,6 +7,7 @@
 #include <dwrite.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <wincodec.h>
 #include <windowsx.h>
 #include <algorithm>
@@ -29,14 +30,16 @@ enum Id {
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_SHUFFLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_EYEDROP, ID_CLK_SIZE, ID_CLK_HOURS,
-    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR,
+    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR, ID_CLK_FONT, ID_FNT_SCRIM, ID_FNT_DONE,
     ID_DLG_SCRIM, ID_DLG_SV, ID_DLG_HUE, ID_DLG_PREVIEW, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
-    ID_CLK_SW0 = 100,    // colour swatches: ID_CLK_SW0 + i
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
     ID_VER_ROW0 = 400,   // video versions dialog: a version's row, and its delete button
     ID_VER_DEL0 = 450,
+    ID_FNT_ROW0 = 500,   // font picker: a font's row, its "Get it" link and its "Add font file" button
+    ID_FNT_GET0 = 520,
+    ID_FNT_ADD0 = 540,
 };
 enum NavPage { NAV_VIDEO, NAV_CLOCK, NAV_SOUND, NAV_PLAYBACK, NAV_POWER, NAV_GENERAL, NAV_COUNT };  // sidebar order
 enum Kind { K_BUTTON, K_TOGGLE, K_SEG, K_SLIDER, K_AREA };
@@ -434,7 +437,10 @@ bool InitFactories() {
     return u.fTitle && u.fSubtitle && u.fHeader && u.fBody && u.fStrong && u.fSmall && u.fIcon && u.fIconSmall && u.fWrap;
 }
 
+void ReleaseFontSamples();
+
 void ReleaseTarget() {
+    ReleaseFontSamples();  // the font picker's, if it's open
     SafeRelease(u.frame);
     SafeRelease(u.clockBmp);
     SafeRelease(u.still);
@@ -1477,15 +1483,6 @@ void DrawWallpaper(const D2D1_RECT_F& box) {
     else DrawStill(box);
 }
 
-const wchar_t* const kSwatchNames[] = {L"White", L"Black", L"Light grey", L"Dark grey", L"Orange", L"Gold", L"Sky blue", L"Pink"};
-const wchar_t* const kSwatches[] = {L"255,255,255", L"0,0,0",     L"200,200,200", L"80,80,80",
-                                    L"250,126,0",   L"255,200,90", L"120,200,255", L"255,130,170"};
-
-bool SameColor(const std::wstring& a, const std::wstring& b) {
-    BYTE r1, g1, b1, r2, g2, b2;
-    return ParseColor(a, &r1, &g1, &b1) && ParseColor(b, &r2, &g2, &b2) && r1 == r2 && g1 == g2 && b1 == b2;
-}
-
 D2D1_COLOR_F LookColor(const std::wstring& s) {
     BYTE r = 255, g = 255, b = 255;
     ParseColor(s, &r, &g, &b);
@@ -1585,6 +1582,19 @@ void ColorButton(int id, const D2D1_RECT_F& r, const std::wstring& color, const 
     AddHit(id, K_BUTTON, r, enabled);
 }
 
+// A button that shows the clock's font and opens the font picker.
+void FontButton(int id, const D2D1_RECT_F& r, const std::wstring& font, bool enabled) {
+    const Theme& t = u.th;
+    bool hot = enabled && IsHot(id), pressed = enabled && u.press == id && u.hot == id;
+    Fill(r, pressed ? t.ctrlPress : hot ? t.ctrlHover : t.ctrl, 4);
+    Stroke(r, t.ctrlStroke, 4);
+    Text(L"\uE8D2", R(r.left + 8, r.top, r.left + 26, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
+    Text(font, R(r.left + 33, r.top, r.right - 28, r.bottom), u.fBody, enabled ? t.text : t.text3);
+    Text(L"\uE76C", R(r.right - 26, r.top, r.right - 10, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3,
+         DWRITE_TEXT_ALIGNMENT_CENTER);
+    AddHit(id, K_BUTTON, r, enabled);
+}
+
 // Under the clock page's preview: the colour row, three rows of settings and the help line.
 const float kClockBelow = 10 + 4 * 36 + 4 + 20;
 
@@ -1640,27 +1650,16 @@ void PaintClockPage(float x, float w) {
     AddHit(ID_CLK_AREA, K_AREA, box, on);
     float yy = box.bottom + 10;
 
-    // Colour: swatches, any colour (the colour dialog), an eyedropper for the wallpaper.
-    const float labW = 80, sx = lx + labW;
+    // Colour (the colour dialog, or an eyedropper for the wallpaper) and the font, side by side.
+    // Left column: the text (size, opacity, 12/24-hour). Right column: its glow.
+    const float labW = 80, colW = (iw - 24) / 2, rx = lx + colW + 24, cw = colW - labW;
     Row(lx, yy, labW, L"Colour", rowH, on);
-    for (int i = 0; i < (int)std::size(kSwatches); i++) {
-        float cxs = sx + i * 26 + 12, cys = yy + rowH / 2;
-        bool sel = SameColor(look->color, kSwatches[i]), hot = on && IsHot(ID_CLK_SW0 + i);
-        if (sel) Circle(cxs, cys, 13, on ? t.accent : t.text3);
-        Circle(cxs, cys, sel ? 10.5f : (hot ? 11.5f : 11), t.ctrlStroke);
-        Circle(cxs, cys, sel ? 9.5f : (hot ? 10.5f : 10), LookColor(kSwatches[i]));
-        AddHit(ID_CLK_SW0 + i, K_BUTTON, R(cxs - 13, cys - 13, cxs + 13, cys + 13), on);
-    }
-    const float mx = sx + 8 * 26 + 6;
-    Button(ID_CLK_CUSTOM, R(mx, yy + 3, mx + 80, yy + rowH - 3), L"More", L"\uE790", false, on);
-    Button(ID_CLK_EYEDROP, R(mx + 86, yy + 3, mx + 158, yy + rowH - 3), L"Pick", L"\uEF3C", u.picking, on);
-    Circle(mx + 174, yy + rowH / 2, 8, t.ctrlStroke);
-    Circle(mx + 174, yy + rowH / 2, 7, LookColor(look->color));
-    Text(Hex(look->color), R(mx + 188, yy, x + w - kPad, yy + rowH), u.fSmall, on ? t.text2 : t.text3);
+    ColorButton(ID_CLK_CUSTOM, R(lx + labW, yy + 3, lx + colW - 42, yy + rowH - 3), look->color, Hex(look->color), on);
+    Button(ID_CLK_EYEDROP, R(lx + colW - 36, yy + 3, lx + colW, yy + rowH - 3), L"", L"\uEF3C", u.picking, on);
+    Row(rx, yy, labW, L"Font", rowH, on);
+    FontButton(ID_CLK_FONT, R(rx + labW, yy + 3, rx + colW, yy + rowH - 3), look->font, on);
     yy += rowH;
 
-    // Left column: the text (size, opacity, 12/24-hour). Right column: its glow.
-    const float colW = (iw - 24) / 2, rx = lx + colW + 24, cw = colW - labW;
     const bool glowOn = on && look->glow > 0;
     auto sliderRow = [&](float cx0, int id, const wchar_t* label, float frac, const std::wstring& value, bool en) {
         Row(cx0, yy, labW, label, rowH, en);
@@ -1695,6 +1694,7 @@ void PaintClockPage(float x, float w) {
                                     : L"This video's own clock, or the one every video shares (this video keeps its own)";
             break;
         case ID_CLK_CUSTOM: help = L"Any colour, from a colour field, a hex code or your saved colours (Ctrl+V pastes a code)"; break;
+        case ID_CLK_FONT: help = L"The font of the whole clock in this look"; break;
         case ID_CLK_EYEDROP:
             help = u.picking ? L"Click here again (or press Esc) to stop picking"
                              : L"Take the colour from the wallpaper: click Pick, then the preview";
@@ -1706,8 +1706,7 @@ void PaintClockPage(float x, float w) {
         case ID_CLK_GLOWSIZE: help = L"How far the glow spreads"; break;
         case ID_CLK_GLOWCOLOR: help = L"The glow's colour; a dark glow works as a soft shadow"; break;
         case ID_CLK_AREA: help = L"Drag the clock to place it (Alt: no snapping); arrow keys nudge it (Shift: 10\u00D7)"; break;
-        default:
-            if (u.hot >= ID_CLK_SW0 && u.hot < ID_CLK_SW0 + (int)std::size(kSwatches)) help = kSwatchNames[u.hot - ID_CLK_SW0];
+        default: break;
     }
     if (u.picking && (u.hot == ID_CLK_AREA || help.empty()))
         help = u.pickColor.empty() ? L"Click the preview to take the wallpaper's colour there (Esc cancels)"
@@ -2064,6 +2063,174 @@ void PaintVersionsDialog() {
     Button(ID_VER_USE, R(L + W - 24 - 118, by, L + W - 24, by + 32), use, nullptr, true, enabled);
 }
 
+// ---------------------------------------------------------------------------------------
+// Font picker: every font, each drawn as the clock (in the page's text colour); a font VideoBG can't
+// include has a link to get it and a button to add its file instead. Clicking a font uses it at once
+// for the look being edited. Each font is loaded only while its sample is drawn.
+
+void ClockEdited();
+
+struct FontDialog {
+    bool open = false;
+    std::vector<ID2D1Bitmap*> samples;
+    std::vector<D2D1_SIZE_F> sizes;  // in DIPs
+    std::vector<bool> tried;
+    std::wstring note;
+} fnt;
+
+void ReleaseFontSamples() {
+    for (ID2D1Bitmap*& b : fnt.samples) SafeRelease(b);
+    const int n = Clock_FontCount();
+    fnt.samples.assign(n, nullptr);
+    fnt.sizes.assign(n, D2D1::SizeF(0, 0));
+    fnt.tried.assign(n, false);
+}
+
+// Fonts VideoBG can't include that were just downloaded: added from the Downloads folder.
+void FindDownloadedFonts() {
+    for (int i = 0; i < Clock_FontCount(); i++) {
+        const ClockFontInfo& f = Clock_Font(i);
+        if (f.getUrl && !Clock_FontReady(f.key) && Clock_FindDownloadedFont(f.key)) {
+            fnt.note = std::wstring(L"Found ") + f.key + L" in your Downloads and added it";
+            fnt.tried[i] = false;
+        }
+    }
+}
+
+void OpenFontDialog() {
+    fnt = FontDialog{};
+    ReleaseFontSamples();
+    fnt.open = true;
+    FindDownloadedFonts();
+}
+
+void CloseFontDialog() {
+    if (!fnt.open) return;
+    ReleaseFontSamples();
+    fnt.open = false;
+    Clock_ReleasePainter();  // the samples' fonts
+}
+
+void FontPick(int i) {
+    const ClockFontInfo& f = Clock_Font(i);
+    if (!Clock_FontReady(f.key)) return;
+    EditedLook()->font = f.key;
+    Log(L"ui: clock font %ls", f.key);
+    ClockEdited();
+}
+
+void FontGet(int i) {
+    const ClockFontInfo& f = Clock_Font(i);
+    if (!f.getUrl) return;
+    ShellExecuteW(u.hwnd, L"open", f.getUrl, nullptr, nullptr, SW_SHOWNORMAL);
+    fnt.note = std::wstring(L"Download ") + f.key + L", then come back: VideoBG looks for it in your Downloads";
+}
+
+void FontAddFile(int i) {
+    const ClockFontInfo& f = Clock_Font(i);
+    IFileOpenDialog* d = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) return;
+    const COMDLG_FILTERSPEC types[] = {{L"Fonts, or a .zip with one", L"*.otf;*.ttf;*.zip"}};
+    d->SetFileTypes(1, types);
+    d->SetTitle((std::wstring(L"Choose the ") + f.key + L" font file").c_str());
+    d->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
+    IShellItem* item = nullptr;
+    wchar_t* path = nullptr;
+    if (SUCCEEDED(d->Show(u.hwnd)) && SUCCEEDED(d->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+        HRESULT hr = Clock_AddFontFile(f.key, path);
+        fnt.note = SUCCEEDED(hr)          ? std::wstring(L"Added ") + f.key + L": click it to use it"
+                   : hr == E_INVALIDARG   ? std::wstring(L"That file isn't the ") + f.key + L" font"
+                                          : std::wstring(L"Couldn't read a font from that file");
+        fnt.tried[i] = false;
+        CoTaskMemFree(path);
+    }
+    if (item) item->Release();
+    d->Release();
+}
+
+// Draws font i as the clock, small, the first time its row shows.
+void EnsureFontSample(int i) {
+    if (fnt.samples[i] || fnt.tried[i] || !u.rt) return;
+    fnt.tried[i] = true;
+    const ClockFontInfo& f = Clock_Font(i);
+    if (!Clock_FontReady(f.key)) return;
+    ClockLook l;
+    l.font = f.key;
+    l.size = 0.42f;
+    l.h24 = EditedLook()->h24;
+    l.color = Fmt(L"%d,%d,%d", (int)lroundf(u.th.text.r * 255), (int)lroundf(u.th.text.g * 255), (int)lroundf(u.th.text.b * 255));
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    const float k = u.dpi / 96;
+    ClockImage img;
+    if (!Clock_Paint(l, k, t, &img) || img.w <= 0) return;
+    D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    u.rt->CreateBitmap(D2D1::SizeU((UINT32)img.w, (UINT32)img.h), img.px.data(), (UINT32)img.w * 4, &bp, &fnt.samples[i]);
+    fnt.sizes[i] = D2D1::SizeF(img.w / k, img.h / k);
+}
+
+void PaintFontDialog() {
+    const Theme& t = u.th;
+    Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
+    AddHit(ID_FNT_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
+    const int n = Clock_FontCount();
+    const float rowH = 82, W = 620, H = 100 + n * rowH + 72, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
+    const D2D1_RECT_F panel = R(L, T, L + W, T + H);
+    const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
+    Fill(R(L - 2, T, L + W + 2, T + H + 4), D2D1::ColorF(0, 0, 0, 0.2f), 10);  // shadow
+    Fill(panel, face, 8);
+    ID2D1RoundedRectangleGeometry* clip = PushRounded(panel, 8);
+    Fill(R(L, T + H - 64, L + W, T + H), bar);
+    Line(L, T + H - 64, L + W, T + H - 64, t.stroke);
+    PopRounded(clip);
+    Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
+
+    Text(L"Clock font", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
+    Text(L"For the whole clock, in the look you're editing. Click one to use it; your desktop shows it right away.",
+         R(L + 24, T + 52, L + W - 24, T + 92), u.fWrap, t.text2);
+
+    float y = T + 96;
+    for (int i = 0; i < n; i++, y += rowH) {
+        const ClockFontInfo& f = Clock_Font(i);
+        const bool ready = Clock_FontReady(f.key), sel = !_wcsicmp(EditedLook()->font.c_str(), f.key);
+        const D2D1_RECT_F r = R(L + 16, y, L + W - 16, y + rowH - 6);
+        const bool hot = ready && IsHot(ID_FNT_ROW0 + i);
+        if (sel) {
+            Fill(r, Mix(face, t.accent, 0.14f), 6);
+            Stroke(r, t.accent, 6);
+        } else if (hot) {
+            Fill(r, Mix(face, t.text, 0.05f), 6);
+        }
+        if (ready) AddHit(ID_FNT_ROW0 + i, K_BUTTON, r);
+        const float cy = (r.top + r.bottom) / 2;
+        Circle(r.left + 22, cy, 8, sel ? t.accent : ready ? t.text2 : t.text3);
+        Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
+        Text(f.key, R(r.left + 42, r.top + 10, r.left + 230, cy + 2), u.fStrong, ready ? t.text : t.text2);
+        const wchar_t* about = !f.getUrl ? L"Included"
+                               : ready   ? L"Your copy"
+                                         : L"Free for personal use only, so not included";
+        Text(about, R(r.left + 42, cy + 2, r.left + (ready ? 230 : 300), r.bottom - 8), u.fSmall, t.text2);
+        if (ready) {
+            EnsureFontSample(i);
+            if (fnt.samples[i]) {
+                D2D1_SIZE_F sz = fnt.sizes[i];
+                float sc = std::min({1.f, (rowH - 18) / sz.height, (W - 300) / sz.width});
+                float dw = sz.width * sc, dh = sz.height * sc;
+                D2D1_RECT_F dst = R(r.right - 16 - dw, cy - dh / 2, r.right - 16, cy + dh / 2);
+                if (u.dc) u.dc->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
+                else u.rt->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
+            }
+        } else {
+            Button(ID_FNT_ADD0 + i, R(r.right - 12 - 150, cy - 16, r.right - 12, cy + 16), L"Add font file\u2026");
+            Button(ID_FNT_GET0 + i, R(r.right - 12 - 150 - 8 - 96, cy - 16, r.right - 12 - 158, cy + 16), L"Get it", L"\uE8A7");
+        }
+    }
+
+    const float by = T + H - 48;
+    Text(fnt.note, R(L + 24, by - 2, L + W - 24 - 130, by + 34), u.fWrap, t.text3);
+    Button(ID_FNT_DONE, R(L + W - 24 - 110, by, L + W - 24, by + 32), L"Done", nullptr, true);
+}
+
 void PaintMain() {
     PaintHeader();
     PaintSidebar();
@@ -2078,6 +2245,7 @@ void PaintMain() {
     }
     if (dlg.open) PaintColorDialog();
     if (ver.open) PaintVersionsDialog();
+    if (fnt.open) PaintFontDialog();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2822,9 +2990,11 @@ void OnClick(int id) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
-    if (id >= ID_CLK_SW0 && id < ID_CLK_SW0 + (int)std::size(kSwatches)) {
-        EditedLook()->color = kSwatches[id - ID_CLK_SW0];
-        ClockEdited();
+    if (id >= ID_FNT_ROW0 && id < ID_FNT_ADD0 + 20) {
+        int i = (id - ID_FNT_ROW0) % 20;
+        if (id < ID_FNT_GET0) FontPick(i);
+        else if (id < ID_FNT_ADD0) FontGet(i);
+        else FontAddFile(i);
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
@@ -2883,6 +3053,8 @@ void OnClick(int id) {
             break;
         case ID_VERSIONS: OpenVersions(); break;
         case ID_VER_CANCEL: CloseVersions(); break;
+        case ID_CLK_FONT: OpenFontDialog(); break;
+        case ID_FNT_DONE: CloseFontDialog(); break;
         case ID_VER_USE: VerApply(); break;
         case ID_LOCK: Host_SetLockFollow(!g_settings.lockFollow); break;
         case ID_HOTKEY:
@@ -2939,6 +3111,11 @@ bool OnKey(UINT vk) {
         if (vk == VK_ESCAPE) CloseVersions();
         else if (vk == VK_RETURN) VerApply();
         else if ((vk == VK_UP || vk == VK_DOWN) && n) VerSelect(std::clamp(ver.sel + (vk == VK_DOWN ? 1 : -1), 0, n - 1));
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (fnt.open) {
+        if (vk == VK_ESCAPE || vk == VK_RETURN) CloseFontDialog();
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
@@ -3208,6 +3385,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_ACTIVATE:
             // Back from Microsoft Store or Settings with a fix: look at the video again.
             if (LOWORD(w) != WA_INACTIVE && u.fault != VF_NONE && !u.frameBusy) RequestFrame();
+            if (LOWORD(w) != WA_INACTIVE && fnt.open) {  // back from the browser with a font downloaded
+                FindDownloadedFonts();
+                InvalidateRect(h, nullptr, FALSE);
+            }
             break;
         case WM_TIMER:
             if (w == TIMER_STATUS) InvalidateRect(h, nullptr, FALSE);  // status, memory, the clock's minute
@@ -3312,6 +3493,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (u.d2dDll) FreeLibrary(u.d2dDll);
             if (u.dwDll) FreeLibrary(u.dwDll);
             u = UI{};
+            fnt = FontDialog{};
             Clock_ReleasePainter();  // the preview kept the clock's fonts loaded
             Host_TrimMemory();
             return 0;

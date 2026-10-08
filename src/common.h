@@ -70,9 +70,10 @@ struct ClockLook {
     std::wstring glowColor;          // "r,g,b", "" = the text colour
     bool show = true;                // the clock shows at all with this look
     bool h24 = false;                // 24-hour time (else 12-hour)
+    std::wstring font = L"Audiowide";  // the whole clock's font (a key from Clock_Font)
     bool operator==(const ClockLook& o) const {
         return x == o.x && y == o.y && color == o.color && size == o.size && opacity == o.opacity && glow == o.glow &&
-               glowSize == o.glowSize && glowColor == o.glowColor && show == o.show && h24 == o.h24;
+               glowSize == o.glowSize && glowColor == o.glowColor && show == o.show && h24 == o.h24 && font == o.font;
     }
 };
 
@@ -244,6 +245,18 @@ void Clock_Hide();
 void Clock_Refresh();   // time jumped, display changed, woke from sleep: redraw and re-place
 float Clock_PixelScale();
 std::wstring Clock_StyleKey(const ClockLook& look);  // everything that changes the picture (not the place)
+// The clock's fonts. Fonts VideoBG can't include (free for personal use only) are used once they're
+// on the PC: installed, or added through VideoBG (kept in %LOCALAPPDATA%\VideoBG\Fonts).
+struct ClockFontInfo {
+    const wchar_t* key;     // its name, as stored in a look
+    const wchar_t* getUrl;  // where to get it, for a font VideoBG doesn't include (else nullptr)
+};
+int Clock_FontCount();
+const ClockFontInfo& Clock_Font(int i);
+bool Clock_FontReady(const std::wstring& key);  // included, or its file is on this PC
+// A font file, or a .zip holding one, checked to be that font and copied into VideoBG's fonts folder.
+HRESULT Clock_AddFontFile(const std::wstring& key, const std::wstring& path);
+bool Clock_FindDownloadedFont(const std::wstring& key);  // adds it from the Downloads folder, if it's there
 bool ParseColor(const std::wstring& s, BYTE* r, BYTE* g, BYTE* b);  // "r,g,b", "#RRGGBB", "RRGGBB", "#RGB", "rgb(r,g,b)"
 // optimize.cpp
 bool LightCopySize(UINT vw, UINT vh, const Crop& c, int screenW, int screenH, UINT* ow, UINT* oh);

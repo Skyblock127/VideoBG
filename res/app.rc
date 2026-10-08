@@ -5,6 +5,9 @@ IDI_APP ICON "app.ico"
 IDI_OFF ICON "app_off.ico"
 
 IDR_FONT_AUDIOWIDE RCDATA "fonts/Audiowide.ttf"
+IDR_FONT_MICHROMA RCDATA "fonts/Michroma.ttf"
+IDR_FONT_ORBITRON RCDATA "fonts/Orbitron.ttf"
+IDR_FONT_SYNCOPATE RCDATA "fonts/Syncopate.ttf"
 IDR_FONT_QUICKSAND RCDATA "fonts/Quicksand.otf"
 
 1 RT_MANIFEST "app.manifest"

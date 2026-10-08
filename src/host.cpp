@@ -76,9 +76,9 @@ void SyncClock(bool force = false) {
     if (!force && g_clockShown == key) return;
     Clock_Show(g_wnd, look);
     g_clockShown = key;
-    Log(L"clock: %ls look (%.1f%%, %.1f%%, colour %ls, size %.0f%%, opacity %.0f%%, glow %.0f%%)",
-        WallpaperShowing() ? L"video wallpaper" : L"still wallpaper", look.x * 100, look.y * 100, look.color.c_str(), look.size * 100,
-        look.opacity * 100, look.glow * 100);
+    Log(L"clock: %ls look (%.1f%%, %.1f%%, %ls, colour %ls, size %.0f%%, opacity %.0f%%, glow %.0f%%)",
+        WallpaperShowing() ? L"video wallpaper" : L"still wallpaper", look.x * 100, look.y * 100, look.font.c_str(), look.color.c_str(),
+        look.size * 100, look.opacity * 100, look.glow * 100);
 }
 // The lock screen and desktop background, while they follow the wallpaper: the video's frame while
 // the wallpaper shows, the user's own pictures otherwise. The frame goes up only once the video shows

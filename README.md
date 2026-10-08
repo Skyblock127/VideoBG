@@ -29,8 +29,8 @@ it off stops the video part completely.
 - **Video versions:** lighter copies of a video (screen size, 900p, 720p, 540p) when you want
   it to use less memory.
 - **Crop:** choose which part of the video fills the screen.
-- **Desktop clock:** day, date and time, which you can drag anywhere, with your own colour, size,
-  opacity and glow.
+- **Desktop clock:** day, date and time, which you can drag anywhere, with your own font, colour,
+  size, opacity and glow.
 - **Lock screen:** while the wallpaper is on, the lock screen shows a frame of the video.
 - **Sound:** silent, the video's own sound, or your own music.
 - **Clear errors:** if a video won't play, VideoBG says why and gives you the fix.
@@ -73,7 +73,7 @@ and asks whether to delete your settings too. Then delete the folder.
 |---|---|
 | `Ctrl + Alt + B` | Turn the wallpaper on or off. The tray menu does the same. |
 | **Video** | **Choose video**, **Crop** it, and pick the lock screen frame with the **Preview** slider. **Versions** makes lighter copies. |
-| **Desktop clock** | Drag the clock on the preview to place it. Choose its colour, size, opacity, glow and 12/24-hour time. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show clock / Hide clock** turns it on or off for each. |
+| **Desktop clock** | Drag the clock on the preview to place it. Choose its font, colour, size, opacity, glow and 12/24-hour time. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show clock / Hide clock** turns it on or off for each. |
 | **Sound** | Nothing (the default), the video's sound, or your own songs. |
 | **Playback** | Fill / Fit / Stretch, speed, a frame-rate cap, and which displays to use. |
 | **Power saving** | Pause when apps cover the desktop, and what to do on battery. |
@@ -112,6 +112,12 @@ and `tools\make_banner.py`.
   [Mond](https://www.deviantart.com/apexxx-sensei/art/Mond-762455575), a Rainmeter skin by
   **ApexXx-SenSei**. VideoBG redraws that design with its own code and includes none of the skin's
   files.
-- **Fonts:** [Audiowide](https://fonts.google.com/specimen/Audiowide) by Astigmatic and
-  [Quicksand](https://fonts.google.com/specimen/Quicksand) by Andrew Paglinawan, both under the
-  [SIL Open Font License 1.1](res/fonts/OFL.txt).
+- **Fonts:** [Audiowide](https://fonts.google.com/specimen/Audiowide) by Astigmatic,
+  [Michroma](https://fonts.google.com/specimen/Michroma) by Vernon Adams,
+  [Orbitron](https://fonts.google.com/specimen/Orbitron) by Matt McInerney and
+  [Quicksand](https://fonts.google.com/specimen/Quicksand) by Andrew Paglinawan, under the
+  [SIL Open Font License 1.1](res/fonts/OFL.txt); [Syncopate](https://fonts.google.com/specimen/Syncopate)
+  by Astigmatic, under the [Apache License 2.0](res/fonts/Apache-2.0.txt).
+- **Anurati** (the original Mond font) by Emmeran Richard is free for personal use only, so VideoBG
+  doesn't include it. The font list links to it, and VideoBG uses your copy once you've downloaded
+  it.
