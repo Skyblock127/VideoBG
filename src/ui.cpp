@@ -28,7 +28,7 @@ enum Id {
     ID_MONITORS, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_SHUFFLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
-    ID_CLK_ENABLE, ID_CLK_MODE, ID_CLK_OWN, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_EYEDROP, ID_CLK_SIZE, ID_CLK_HOURS,
+    ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_EYEDROP, ID_CLK_SIZE, ID_CLK_HOURS,
     ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR,
     ID_DLG_SCRIM, ID_DLG_SV, ID_DLG_HUE, ID_DLG_PREVIEW, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
@@ -1598,18 +1598,19 @@ void PaintClockPage(float x, float w) {
         bw = bh / (float)ScreenAspectH();
     }
     Card(R(x, y, x + w, y + kCardHead + 44 + bh + below + 14), L"\uE121", L"Desktop clock");
-    // Whether the clock shows at all is part of the look being edited.
-    const wchar_t* showLabel = u.clockEdit == 1           ? L"Show on still wallpaper"
-                               : g_settings.clockVideoOwn ? L"Show with this video"
-                                                          : L"Show on video wallpaper";
-    Text(showLabel, R(x + w - kPad - 52 - 220, y + 16, x + w - kPad - 52, y + 40), u.fBody, t.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
-    Toggle(ID_CLK_ENABLE, x + w - kPad - 40, y + 28, EditedLook()->show);
     const bool on = ClockUsable();
     const std::wstring& video = g_settings.video;
+    // Which look is being edited: the wallpaper (in the header), then for the video wallpaper the
+    // look every video shares or this video's own; Show / Hide is part of the look picked.
+    Seg(ID_CLK_MODE, R(x + w - kPad - 280, y + 12, x + w - kPad, y + 44), {L"Video wallpaper", L"Still wallpaper"}, u.clockEdit);
+    const float ry = y + kCardHead;
+    Seg(ID_CLK_SCOPE, R(lx, ry, lx + 240, ry + 32), {L"All videos", L"This video"}, g_settings.clockVideoOwn ? 1 : 0,
+        u.clockEdit == 0 && !video.empty());
+    Seg(ID_CLK_SHOW, R(x + w - kPad - 160, ry, x + w - kPad, ry + 32), {L"Show", L"Hide"}, EditedLook()->show ? 0 : 1);
 
     // Preview: the wallpaper with the clock on it; drag the clock to place it.
     float bx = x + (w - bw) / 2;
-    D2D1_RECT_F box = R(bx, y + kCardHead, bx + bw, y + kCardHead + bh);
+    D2D1_RECT_F box = R(bx, ry + 44, bx + bw, ry + 44 + bh);
     u.clockBox = box;
     ClockLook* look = EditedLook();
     ClockLook shown = *look;  // an eyedropper previews the colour under it
@@ -1630,19 +1631,7 @@ void PaintClockPage(float x, float w) {
         Badge(Fmt(L"%.1f%% across  \u00B7  %.1f%% down", look->x * 100, look->y * 100), box.left + 8, box.bottom - 28);
     if (!on) Fill(box, D2D1::ColorF(t.card.r, t.card.g, t.card.b, 0.55f), 6);  // greyed out
     AddHit(ID_CLK_AREA, K_AREA, box, on);
-    // Which look is being edited.
     float yy = box.bottom + 10;
-    Seg(ID_CLK_MODE, R(lx, yy, lx + 280, yy + 32), {L"Video wallpaper", L"Still wallpaper"}, u.clockEdit);
-    if (u.clockEdit == 0) {
-        bool can = !video.empty();  // usable with the clock hidden too: hiding can be just for this video
-        Text(L"Just for this video", R(lx + 296, yy, x + w - kPad - 52, yy + 32), u.fBody, can ? t.text : t.text3,
-             DWRITE_TEXT_ALIGNMENT_TRAILING);
-        Toggle(ID_CLK_OWN, x + w - kPad - 40, yy + 16, g_settings.clockVideoOwn, can);
-    } else {
-        Text(L"Used while the video wallpaper is off", R(lx + 296, yy, x + w - kPad, yy + 32), u.fSmall, t.text2,
-             DWRITE_TEXT_ALIGNMENT_TRAILING);
-    }
-    yy += 44;
 
     // Colour: swatches, any colour (the colour dialog), an eyedropper for the wallpaper.
     const float labW = 80, sx = lx + labW;
@@ -1688,13 +1677,16 @@ void PaintClockPage(float x, float w) {
     // Help line.
     std::wstring help;
     switch (u.drag ? u.drag : u.hot) {
-        case ID_CLK_ENABLE:
-            help = u.clockEdit == 1           ? L"Shows the clock while the video wallpaper is off"
-                   : g_settings.clockVideoOwn ? L"Shows the clock with this video and all its versions"
-                                              : L"Shows the clock while the video wallpaper is on";
+        case ID_CLK_SHOW:
+            help = u.clockEdit == 1           ? L"Show or hide the clock while the video wallpaper is off"
+                   : g_settings.clockVideoOwn ? L"Show or hide the clock with this video and all its versions"
+                                              : L"Show or hide the clock on the video wallpaper, for every video using the shared look";
             break;
-        case ID_CLK_MODE: help = L"Which wallpaper's clock look you're setting up"; break;
-        case ID_CLK_OWN: help = L"Gives this video its own look; when off, it uses the shared look and keeps its own"; break;
+        case ID_CLK_MODE: help = L"Video wallpaper: the clock while a video plays. Still wallpaper: while the video wallpaper is off"; break;
+        case ID_CLK_SCOPE:
+            help = u.clockEdit == 1 ? L"Only for the video wallpaper: one clock for every video, or one just for this video"
+                                    : L"One clock look for every video, or this video's own (it keeps its own when you switch back)";
+            break;
         case ID_CLK_CUSTOM: help = L"Any colour, from a colour field, a hex code or your saved colours (Ctrl+V pastes a code)"; break;
         case ID_CLK_EYEDROP:
             help = u.picking ? L"Click here again (or press Esc) to stop picking"
@@ -2725,6 +2717,23 @@ void OnSeg(int id, int i) {
         case ID_CLK_MODE:
             u.clockEdit = i;
             return;
+        case ID_CLK_SCOPE:
+            if ((i == 1) == g_settings.clockVideoOwn) return;
+            g_settings.clockVideoOwn = i == 1;
+            if (g_settings.clockVideoOwn) {
+                // Back to the look it had before, or start from the shared one the first time.
+                if (!g_settings.clockVideoSaved) g_settings.clockVideo = g_settings.clockLive;
+                g_settings.clockVideoSaved = true;
+            }
+            Log(L"ui: clock look for the video wallpaper: %ls", g_settings.clockVideoOwn ? L"this video's own" : L"shared");
+            ClockEdited();
+            return;
+        case ID_CLK_SHOW:
+            EditedLook()->show = i == 0;
+            Log(L"ui: desktop clock %ls with the %ls look", i == 0 ? L"shown" : L"hidden",
+                u.clockEdit == 1 ? L"still" : (g_settings.clockVideoOwn ? L"video's own" : L"shared video"));
+            ClockEdited();
+            return;
         case ID_CLK_HOURS: g_settings.clock24h = i == 1; break;
         default: return;
     }
@@ -2765,22 +2774,6 @@ void OnClick(int id) {
     }
     switch (id) {
         case ID_POWER: Host_SetOn(!Host_IsOn()); break;
-        case ID_CLK_ENABLE:
-            EditedLook()->show = !EditedLook()->show;
-            Log(L"ui: desktop clock %ls with the %ls look", EditedLook()->show ? L"shown" : L"hidden",
-                u.clockEdit == 1 ? L"still" : (g_settings.clockVideoOwn ? L"video's own" : L"video"));
-            ClockEdited();
-            break;
-
-        case ID_CLK_OWN:
-            g_settings.clockVideoOwn = !g_settings.clockVideoOwn;
-            if (g_settings.clockVideoOwn) {
-                // Back to the look it had before, or start from the shared one the first time.
-                if (!g_settings.clockVideoSaved) g_settings.clockVideo = g_settings.clockLive;
-                g_settings.clockVideoSaved = true;
-            }
-            ClockEdited();
-            break;
         case ID_CLK_CUSTOM: OpenColorDialog(0); break;
         case ID_CLK_GLOWCOLOR: OpenColorDialog(1); break;
         case ID_CLK_EYEDROP:
