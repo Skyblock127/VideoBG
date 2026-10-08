@@ -1566,23 +1566,9 @@ void PaintClockPage(float x, float w) {
     const bool on = ClockUsable();
     const std::wstring& video = g_settings.video;
 
-    // Which look is being edited.
-    float yy = y + kCardHead;
-    Seg(ID_CLK_MODE, R(lx, yy, lx + 280, yy + 32), {L"Video wallpaper", L"Still wallpaper"}, u.clockEdit, on);
-    if (u.clockEdit == 0) {
-        bool can = on && !video.empty();
-        Text(L"Just for this video", R(lx + 296, yy, x + w - kPad - 52, yy + 32), u.fBody, can ? t.text : t.text3,
-             DWRITE_TEXT_ALIGNMENT_TRAILING);
-        Toggle(ID_CLK_OWN, x + w - kPad - 40, yy + 16, g_settings.clockVideoOwn, can);
-    } else {
-        Text(L"Used while the video wallpaper is off", R(lx + 296, yy, x + w - kPad, yy + 32), u.fSmall, t.text2,
-             DWRITE_TEXT_ALIGNMENT_TRAILING);
-    }
-    yy += 44;
-
     // Preview: the wallpaper with the clock on it; drag the clock to place it.
     float bx = x + (w - bw) / 2;
-    D2D1_RECT_F box = R(bx, yy, bx + bw, yy + bh);
+    D2D1_RECT_F box = R(bx, y + kCardHead, bx + bw, y + kCardHead + bh);
     u.clockBox = box;
     ClockLook* look = EditedLook();
     ClockLook shown = *look;  // an eyedropper previews the colour under it
@@ -1603,7 +1589,19 @@ void PaintClockPage(float x, float w) {
         Badge(Fmt(L"%.1f%% across  \u00B7  %.1f%% down", look->x * 100, look->y * 100), box.left + 8, box.bottom - 28);
     if (!on) Fill(box, D2D1::ColorF(t.card.r, t.card.g, t.card.b, 0.55f), 6);  // greyed out
     AddHit(ID_CLK_AREA, K_AREA, box, on);
-    yy = box.bottom + 10;
+    // Which look is being edited.
+    float yy = box.bottom + 10;
+    Seg(ID_CLK_MODE, R(lx, yy, lx + 280, yy + 32), {L"Video wallpaper", L"Still wallpaper"}, u.clockEdit, on);
+    if (u.clockEdit == 0) {
+        bool can = on && !video.empty();
+        Text(L"Just for this video", R(lx + 296, yy, x + w - kPad - 52, yy + 32), u.fBody, can ? t.text : t.text3,
+             DWRITE_TEXT_ALIGNMENT_TRAILING);
+        Toggle(ID_CLK_OWN, x + w - kPad - 40, yy + 16, g_settings.clockVideoOwn, can);
+    } else {
+        Text(L"Used while the video wallpaper is off", R(lx + 296, yy, x + w - kPad, yy + 32), u.fSmall, t.text2,
+             DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+    yy += 44;
 
     // Colour: swatches, any colour (the colour dialog), an eyedropper for the wallpaper.
     const float labW = 80, sx = lx + labW;
