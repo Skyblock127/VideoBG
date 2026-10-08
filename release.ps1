@@ -1,7 +1,8 @@
 # Publishes a GitHub release of the current commit: builds dist\VideoBG.zip and uploads it as
 # release v<version>, the version being APP_VERSION in src\common.h (keep res\app.rc in step).
 # The README's download link always points to the newest release's VideoBG.zip.
-# Needs the GitHub CLI (gh), signed in. -Notes takes a Markdown file for the release text.
+# Needs the GitHub CLI (gh), signed in. -Notes takes a Markdown file with what's new; the install /
+# update steps are added below it.
 param([string]$Notes = '')
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -16,7 +17,18 @@ git -C $root push origin HEAD
 if ($LASTEXITCODE) { throw 'push failed' }
 
 $gh = @($tag, "$root\dist\VideoBG.zip", '--title', "VideoBG $version", '--target', (git -C $root rev-parse HEAD))
-if ($Notes) { $gh += @('--notes-file', $Notes) } else { $gh += '--generate-notes' }
+# Every release ends with how to install or update, below the notes.
+$howTo = @'
+
+### Install or update
+Download **VideoBG.zip** below.
+- **New to VideoBG:** extract it somewhere it can stay (for example `C:\Tools\VideoBG`) and run **Install.cmd**.
+- **Updating:** right-click the VideoBG tray icon and choose **Exit**, extract the zip over your VideoBG folder (*Replace the files*), and run **Install.cmd** again. No need to uninstall; your settings are kept.
+'@
+$text = if ($Notes) { (Get-Content -Raw $Notes).TrimEnd() + "`r`n" } else { '' }
+$notesFile = "$root\build\release-notes.md"
+Set-Content -Encoding utf8 $notesFile ($text + $howTo)
+$gh += @('--notes-file', $notesFile)
 gh release create @gh
 if ($LASTEXITCODE) { throw 'release failed' }
 git -C $root fetch --tags --quiet

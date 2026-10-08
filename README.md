@@ -11,6 +11,8 @@
 
 <p align="center">
   <a href="https://github.com/Skyblock127/VideoBG/releases/latest/download/VideoBG.zip"><b>⬇ Download VideoBG.zip (latest)</b></a>
+  ·
+  <a href="#update-to-a-new-version">How to update</a>
 </p>
 
 VideoBG plays a video behind your desktop icons and adds a desktop clock. It's one small exe:
@@ -48,11 +50,22 @@ You'll need 64-bit Windows 10 or 11. VideoBG doesn't need admin rights.
 
 VideoBG then lives in the tray (notification area). Click its icon to open the settings.
 
-**Update:** right-click the tray icon and choose **Exit**. Extract the new zip into the same folder
-(*Replace the files*), then run **Install.cmd** again. VideoBG keeps your settings, so you don't
-need to uninstall first.
+## Update to a new version
 
-**Uninstall:** double-click **Uninstall.cmd** in the VideoBG folder, then delete the folder.
+Already have VideoBG? You don't need to uninstall. Your settings are kept.
+
+1. Download the new **[VideoBG.zip](https://github.com/Skyblock127/VideoBG/releases/latest/download/VideoBG.zip)**.
+2. Right-click the VideoBG icon in the tray and choose **Exit**.
+3. Extract the new zip into the same VideoBG folder and choose **Replace the files**.
+4. Double-click **Install.cmd** again.
+
+The version you have is shown at the bottom left of VideoBG's settings window. What changed in
+each version is on the [releases page](https://github.com/Skyblock127/VideoBG/releases).
+
+## Uninstall
+
+Double-click **Uninstall.cmd** in the VideoBG folder. It puts your own lock screen picture back
+and asks whether to delete your settings too. Then delete the folder.
 
 ## How to use
 
@@ -60,7 +73,7 @@ need to uninstall first.
 |---|---|
 | `Ctrl + Alt + B` | Turn the wallpaper on or off. The tray menu does the same. |
 | **Video** | **Choose video**, **Crop** it, and pick the lock screen frame with the **Preview** slider. **Versions** makes lighter copies. |
-| **Desktop clock** | Drag the clock on the preview to place it. Choose its colour, size, opacity, glow and 12/24-hour time. There's one look for the video wallpaper and one for your normal wallpaper, and you can show or hide the clock on each. |
+| **Desktop clock** | Drag the clock on the preview to place it. Choose its colour, size, opacity, glow and 12/24-hour time. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show / Hide** turns the clock on or off for each. |
 | **Sound** | Nothing (the default), the video's sound, or your own songs. |
 | **Playback** | Fill / Fit / Stretch, speed, a frame-rate cap, and which displays to use. |
 | **Power saving** | Pause when apps cover the desktop, and what to do on battery. |
