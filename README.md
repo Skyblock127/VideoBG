@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Skyblock127/VideoBG/releases/latest/download/VideoBG.zip"><b>⬇ Download VideoBG.zip (latest)</b></a>
+  <a href="https://github.com/Skyblock127/VideoBG/releases/latest"><b>⬇ Download the latest version</b></a>
   ·
   <a href="#update-to-a-new-version">How to update</a>
 </p>
@@ -39,10 +39,11 @@ it off stops the video part completely.
 
 You'll need 64-bit Windows 10 or 11. VideoBG doesn't need admin rights.
 
-1. Download **[VideoBG.zip](https://github.com/Skyblock127/VideoBG/releases/latest/download/VideoBG.zip)**.
-2. Right-click the zip and choose **Extract All**. Put the **VideoBG** folder somewhere it can stay,
-   for example `C:\Tools\VideoBG`. VideoBG runs from that folder.
-3. Double-click **Install.cmd**. It adds VideoBG to the Start menu and your startup apps, then
+1. Download the zip (for example **VideoBG-1.5.1.zip**) from the
+   **[latest release](https://github.com/Skyblock127/VideoBG/releases/latest)**.
+2. Right-click the zip and choose **Extract All**. Extract it somewhere it can stay, for example
+   `C:\Tools`. You get a **VideoBG** folder there (`C:\Tools\VideoBG`), and VideoBG runs from it.
+3. Double-click **Install.cmd** in the VideoBG folder. It adds VideoBG to the Start menu and your startup apps, then
    opens it.
    - If Windows says *"Windows protected your PC"*, click **More info**, then **Run anyway**. The
      warning appears only because the app isn't code-signed.
@@ -54,10 +55,14 @@ VideoBG then lives in the tray (notification area). Click its icon to open the s
 
 Already have VideoBG? You don't need to uninstall. Your settings are kept.
 
-1. Download the new **[VideoBG.zip](https://github.com/Skyblock127/VideoBG/releases/latest/download/VideoBG.zip)**.
+1. Download the new zip from the **[latest release](https://github.com/Skyblock127/VideoBG/releases/latest)**.
 2. Right-click the VideoBG icon in the tray and choose **Exit**.
-3. Extract the new zip into the same VideoBG folder and choose **Replace the files**.
-4. Double-click **Install.cmd** again.
+3. Extract the zip to the same place as before: the folder that holds your VideoBG folder (for
+   example `C:\Tools`). Choose **Replace the files**.
+4. Double-click **Install.cmd** in the VideoBG folder again.
+
+If you extract it somewhere else instead, run **Install.cmd** from there: VideoBG then runs from the
+new folder, and you can delete the old one.
 
 The version you have is shown at the bottom left of VideoBG's settings window. What changed in
 each version is on the [releases page](https://github.com/Skyblock127/VideoBG/releases).

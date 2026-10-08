@@ -1,4 +1,4 @@
-# Builds dist\VideoBG.exe with MinGW-w64 (g++ / windres on PATH). -Zip also packs dist\VideoBG.zip, the
+# Builds dist\VideoBG.exe with MinGW-w64 (g++ / windres on PATH). -Zip also packs dist\VideoBG-<version>.zip, the
 # download for someone else: the exe, How to use.txt, Install.cmd / Uninstall.cmd and the font licenses.
 param([switch]$Debug, [switch]$Zip)
 $ErrorActionPreference = 'Stop'
@@ -39,13 +39,19 @@ $size = [math]::Round((Get-Item "$root\dist\VideoBG.exe").Length / 1KB)
 Write-Host "Built dist\VideoBG.exe ($size KB)"
 
 if ($Zip) {
-    $pkg = Join-Path $build 'package'
-    Remove-Item $pkg -Recurse -Force -ErrorAction SilentlyContinue
+    # Everything goes in one VideoBG folder inside the zip: extracting it where an earlier copy was
+    # extracted (the folder holding VideoBG) updates that copy, whatever the zip is called.
+    $version = (Select-String -Path "$root\src\common.h" -Pattern 'APP_VERSION\s+L"([0-9.]+)"').Matches[0].Groups[1].Value
+    $stage = Join-Path $build 'package'
+    $pkg = Join-Path $stage 'VideoBG'
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory $pkg | Out-Null
     Copy-Item "$root\dist\VideoBG.exe", "$root\install.ps1", "$root\uninstall.ps1", "$root\package\*" $pkg
     Copy-Item "$root\res\fonts\OFL.txt" "$pkg\Font license (OFL).txt"
     Copy-Item "$root\res\fonts\Apache-2.0.txt" "$pkg\Font license (Apache).txt"
-    Compress-Archive "$pkg\*" "$root\dist\VideoBG.zip" -Force
-    $zsize = [math]::Round((Get-Item "$root\dist\VideoBG.zip").Length / 1KB)
-    Write-Host "Packed dist\VideoBG.zip ($zsize KB)"
+    $zipFile = "$root\dist\VideoBG-$version.zip"
+    Remove-Item "$root\dist\VideoBG*.zip" -ErrorAction SilentlyContinue
+    Compress-Archive $pkg $zipFile -Force
+    $zsize = [math]::Round((Get-Item $zipFile).Length / 1KB)
+    Write-Host "Packed dist\VideoBG-$version.zip ($zsize KB)"
 }

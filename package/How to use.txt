@@ -1,5 +1,5 @@
-VideoBG 1.5 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
-==========================================================================
+VideoBG 1.5.1 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+============================================================================
 
 What it does
   - Plays a video behind your desktop icons. Ctrl+Alt+B turns it on and off;
@@ -9,10 +9,10 @@ What it does
     wallpaper. It comes and goes with VideoBG.
 
 Install (no admin rights needed)
-  1. Right-click the zip > Extract All. Put the extracted VideoBG folder
-     where it can stay, for example C:\Tools\VideoBG (not in Downloads if
+  1. Right-click the zip > Extract All, and extract it where it can stay,
+     for example C:\Tools: you get C:\Tools\VideoBG (not in Downloads if
      you clean that out: VideoBG runs from this folder).
-  2. Double-click Install.cmd. It adds VideoBG to the Start menu and to your
+  2. Double-click Install.cmd in the VideoBG folder. It adds VideoBG to the Start menu and to your
      startup apps, and opens VideoBG.
      If Windows says "Windows protected your PC", click "More info" >
      "Run anyway" (the app isn't code-signed, that's all).
@@ -76,8 +76,9 @@ If a video won't play
   HEVC (H.265) needs "HEVC Video Extensions" (small fee).
 
 Update (no need to uninstall first)
-  Tray icon > Exit, extract the new zip into the same folder (choose
-  "Replace the files"), then double-click Install.cmd again. Your settings
+  Tray icon > Exit, then extract the new zip to the same place as before:
+  the folder that holds your VideoBG folder, for example C:\Tools (choose
+  "Replace the files"). Then double-click Install.cmd again. Your settings
   are kept.
 
 Remove
