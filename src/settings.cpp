@@ -340,6 +340,7 @@ static ClockLook ReadLook(const wchar_t* ini, const wchar_t* sec, const std::wst
     l.color = ReadStr(ini, sec, (prefix + L"Color").c_str());
     if (l.color.empty()) l.color = def.color;
     l.glowColor = ReadStr(ini, sec, (prefix + L"GlowColor").c_str());  // "" = the text colour
+    l.show = GetPrivateProfileIntW(sec, (prefix + L"Show").c_str(), 1, ini) != 0;
     return l;
 }
 
@@ -360,6 +361,7 @@ static void WriteLook(const wchar_t* ini, const wchar_t* sec, const std::wstring
     swprintf(buf, 32, L"%.0f", l ? l->glowSize : 0.f);
     WritePrivateProfileStringW(sec, (prefix + L"GlowSize").c_str(), l && l->glowSize != 12 ? buf : nullptr, ini);
     WritePrivateProfileStringW(sec, (prefix + L"GlowColor").c_str(), l && !l->glowColor.empty() ? l->glowColor.c_str() : nullptr, ini);
+    WritePrivateProfileStringW(sec, (prefix + L"Show").c_str(), l && !l->show ? L"0" : nullptr, ini);
 }
 
 // The colour dialog's saved colours: [Clock] MyColors=RRGGBB,,RRGGBB,... (16 boxes, empty ones blank).
@@ -421,13 +423,14 @@ void LoadSettings(Settings& s) {
     s.lastOn = ReadInt(ini, L"LastOn", 1, 0, 1) != 0;
     s.pipeline = ReadInt(ini, L"Pipeline", 0, 0, 2);
     s.lockFollow = ReadInt(ini, L"LockScreenFollows", 1, 0, 1) != 0;
-    s.clockOn = GetPrivateProfileIntW(L"Clock", L"Enabled", 1, ini) != 0;
     s.clockStill.size = s.clockLive.size = ReadFloat(ini, L"Clock", L"Size", 1.06f, 0.5f, 2.5f);  // older: one size for all
     s.clock24h = GetPrivateProfileIntW(L"Clock", L"Hours", 12, ini) == 24;
     s.clockStill = ReadLook(ini, L"Clock", L"Still", s.clockStill);
     s.clockLive = ReadLook(ini, L"Clock", L"Live", s.clockLive);
     LoadMyColors(ini, s);
     LoadVideoProfile(s);
+    // Older versions had one switch for the clock: off there means off with every look.
+    if (!GetPrivateProfileIntW(L"Clock", L"Enabled", 1, ini)) s.clockStill.show = s.clockLive.show = s.clockVideo.show = false;
     // Older versions had one preview frame for every video: it becomes the current video's.
     std::wstring pt = ReadStr(ini, L"General", L"PreviewTime");
     if (s.previewTime < 0 && !pt.empty()) s.previewTime = wcstod(pt.c_str(), nullptr);
@@ -471,9 +474,8 @@ void SaveSettings(const Settings& s) {
     WritePrivateProfileStringW(L"General", L"PreviewTime", nullptr, ini);  // per video now
     wchar_t buf[64];
 
-    WritePrivateProfileStringW(L"Clock", L"Enabled", s.clockOn ? L"1" : L"0", ini);
     WritePrivateProfileStringW(L"Clock", L"Hours", s.clock24h ? L"24" : L"12", ini);
-    for (const wchar_t* old : {L"Skin", L"Variable", L"RainmeterExe", L"Size"})  // from older versions
+    for (const wchar_t* old : {L"Skin", L"Variable", L"RainmeterExe", L"Size", L"Enabled"})  // from older versions
         WritePrivateProfileStringW(L"Clock", old, nullptr, ini);
     WriteLook(ini, L"Clock", L"Still", &s.clockStill);
     WriteLook(ini, L"Clock", L"Live", &s.clockLive);

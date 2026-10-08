@@ -1333,7 +1333,7 @@ ClockLook* EditedLook() {
 
 bool EditingShownLook() { return (u.clockEdit == 0) == Host_ClockLive(); }
 
-bool ClockUsable() { return g_settings.clockOn; }
+bool ClockUsable() { return EditedLook()->show; }
 
 // The colour dialog (More, or Glow colour), drawn over the page. The colour shows live on the page
 // and, when the look is the one on the desktop, on the desktop too; Cancel puts the old one back.
@@ -1598,9 +1598,12 @@ void PaintClockPage(float x, float w) {
         bw = bh / (float)ScreenAspectH();
     }
     Card(R(x, y, x + w, y + kCardHead + 44 + bh + below + 14), L"\uE121", L"Desktop clock");
-    Text(L"Show the clock", R(x + w - kPad - 52 - 180, y + 16, x + w - kPad - 52, y + 40), u.fBody, t.text,
-         DWRITE_TEXT_ALIGNMENT_TRAILING);
-    Toggle(ID_CLK_ENABLE, x + w - kPad - 40, y + 28, g_settings.clockOn);
+    // Whether the clock shows at all is part of the look being edited.
+    const wchar_t* showLabel = u.clockEdit == 1           ? L"Show on still wallpaper"
+                               : g_settings.clockVideoOwn ? L"Show with this video"
+                                                          : L"Show on video wallpaper";
+    Text(showLabel, R(x + w - kPad - 52 - 220, y + 16, x + w - kPad - 52, y + 40), u.fBody, t.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
+    Toggle(ID_CLK_ENABLE, x + w - kPad - 40, y + 28, EditedLook()->show);
     const bool on = ClockUsable();
     const std::wstring& video = g_settings.video;
 
@@ -1629,9 +1632,9 @@ void PaintClockPage(float x, float w) {
     AddHit(ID_CLK_AREA, K_AREA, box, on);
     // Which look is being edited.
     float yy = box.bottom + 10;
-    Seg(ID_CLK_MODE, R(lx, yy, lx + 280, yy + 32), {L"Video wallpaper", L"Still wallpaper"}, u.clockEdit, on);
+    Seg(ID_CLK_MODE, R(lx, yy, lx + 280, yy + 32), {L"Video wallpaper", L"Still wallpaper"}, u.clockEdit);
     if (u.clockEdit == 0) {
-        bool can = on && !video.empty();
+        bool can = !video.empty();  // usable with the clock hidden too: hiding can be just for this video
         Text(L"Just for this video", R(lx + 296, yy, x + w - kPad - 52, yy + 32), u.fBody, can ? t.text : t.text3,
              DWRITE_TEXT_ALIGNMENT_TRAILING);
         Toggle(ID_CLK_OWN, x + w - kPad - 40, yy + 16, g_settings.clockVideoOwn, can);
@@ -1685,7 +1688,11 @@ void PaintClockPage(float x, float w) {
     // Help line.
     std::wstring help;
     switch (u.drag ? u.drag : u.hot) {
-        case ID_CLK_ENABLE: help = L"Shows the clock on your desktop, below the icons; its look follows the wallpaper"; break;
+        case ID_CLK_ENABLE:
+            help = u.clockEdit == 1           ? L"Shows the clock while the video wallpaper is off"
+                   : g_settings.clockVideoOwn ? L"Shows the clock with this video and all its versions"
+                                              : L"Shows the clock while the video wallpaper is on";
+            break;
         case ID_CLK_MODE: help = L"Which wallpaper's clock look you're setting up"; break;
         case ID_CLK_OWN: help = L"Gives this video its own look; when off, it uses the shared look and keeps its own"; break;
         case ID_CLK_CUSTOM: help = L"Any colour, from a colour field, a hex code or your saved colours (Ctrl+V pastes a code)"; break;
@@ -1708,7 +1715,7 @@ void PaintClockPage(float x, float w) {
                                    : L"Click to use " + Hex(u.pickColor) + L" for the clock (Esc cancels)";
     if (!u.clockNote.empty() && GetTickCount() - u.clockNoteAt < 3000) help = u.clockNote;
     if (help.empty())
-        help = !on                             ? L"The clock is off; its looks are kept for when you turn it back on"
+        help = !on                             ? L"The clock is hidden with this look; its settings are kept for when you show it again"
                : u.clockEdit == 1              ? L"Editing the clock for your still wallpaper"
                : g_settings.clockVideoOwn      ? L"Editing the clock just for " + FileName(OriginalOf(video).empty() ? video : OriginalOf(video)) +
                                                      L" and all its versions"
@@ -2759,8 +2766,9 @@ void OnClick(int id) {
     switch (id) {
         case ID_POWER: Host_SetOn(!Host_IsOn()); break;
         case ID_CLK_ENABLE:
-            g_settings.clockOn = !g_settings.clockOn;
-            Log(L"ui: desktop clock %ls", g_settings.clockOn ? L"on" : L"off");
+            EditedLook()->show = !EditedLook()->show;
+            Log(L"ui: desktop clock %ls with the %ls look", EditedLook()->show ? L"shown" : L"hidden",
+                u.clockEdit == 1 ? L"still" : (g_settings.clockVideoOwn ? L"video's own" : L"video"));
             ClockEdited();
             break;
 

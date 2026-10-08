@@ -68,9 +68,10 @@ struct ClockLook {
     float glow = 0;                  // 0 (none) .. 1 (strongest)
     float glowSize = 12;             // how far the glow reaches, in DIPs at size 1
     std::wstring glowColor;          // "r,g,b", "" = the text colour
+    bool show = true;                // the clock shows at all with this look
     bool operator==(const ClockLook& o) const {
         return x == o.x && y == o.y && color == o.color && size == o.size && opacity == o.opacity && glow == o.glow &&
-               glowSize == o.glowSize && glowColor == o.glowColor;
+               glowSize == o.glowSize && glowColor == o.glowColor && show == o.show;
     }
 };
 
@@ -96,8 +97,7 @@ struct Settings {
     Crop crop;                // crop for the current video (stored per video)
 
     // Desktop clock: one look while the video wallpaper shows, one for the still wallpaper. A video
-    // can have its own look instead of clockLive.
-    bool clockOn = true;      // show the desktop clock
+    // can have its own look instead of clockLive. Each look also says whether the clock shows at all.
     bool clock24h = false;
     ClockLook clockStill{0.5f, 0.25f, L"0,0,0"};
     ClockLook clockLive{0.5f, 0.5f, L"255,255,255"};

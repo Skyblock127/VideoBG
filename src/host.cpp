@@ -63,7 +63,7 @@ ClockLook WantedLook() {
 }
 
 void SyncClock(bool force = false) {
-    if (!g_settings.clockOn || g_exiting) {
+    if (!WantedLook().show || g_exiting) {
         if (!g_clockShown.empty()) Log(L"clock: hidden");
         g_clockShown.clear();
         Clock_Hide();
@@ -720,7 +720,7 @@ int Host_CurrentTrack() { return g_track; }
 bool Host_ClockLive() { return WallpaperShowing(); }
 
 void Host_ClockMove(const ClockLook& look) {
-    if (!g_settings.clockOn) return;
+    if (!look.show) return;
     Clock_Show(g_wnd, look, g_settings.clock24h);
     g_clockShown.clear();  // the next sync puts the saved look back in full
 }
