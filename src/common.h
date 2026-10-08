@@ -248,14 +248,19 @@ std::wstring Clock_StyleKey(const ClockLook& look);  // everything that changes 
 // The clock's fonts. Fonts VideoBG can't include (free for personal use only) are used once they're
 // on the PC: installed, or added through VideoBG (kept in %LOCALAPPDATA%\VideoBG\Fonts).
 struct ClockFontInfo {
-    const wchar_t* key;     // its name, as stored in a look
-    const wchar_t* getUrl;  // where to get it, for a font VideoBG doesn't include (else nullptr)
+    std::wstring key;       // its name, as stored in a look
+    const wchar_t* getUrl;  // where to get it, for a font VideoBG can't include (else nullptr)
+    bool removable;         // VideoBG has a copy in its fonts folder, which can be deleted
+    bool ready;             // included, or its file is on this PC
 };
-int Clock_FontCount();
-const ClockFontInfo& Clock_Font(int i);
+std::vector<ClockFontInfo> Clock_Fonts();       // the included ones, Anurati, then the user's own
 bool Clock_FontReady(const std::wstring& key);  // included, or its file is on this PC
 // A font file, or a .zip holding one, checked to be that font and copied into VideoBG's fonts folder.
 HRESULT Clock_AddFontFile(const std::wstring& key, const std::wstring& path);
+// Any font the user picks (a file, or a .zip holding one), copied into VideoBG's fonts folder under
+// its family name, which becomes its key. S_FALSE: it's one VideoBG includes; E_INVALIDARG: no font.
+HRESULT Clock_AddOwnFont(const std::wstring& path, std::wstring* key);
+bool Clock_RemoveFont(const std::wstring& key);  // deletes VideoBG's copy
 bool Clock_FindDownloadedFont(const std::wstring& key);  // adds it from the Downloads folder, if it's there
 bool ParseColor(const std::wstring& s, BYTE* r, BYTE* g, BYTE* b);  // "r,g,b", "#RRGGBB", "RRGGBB", "#RGB", "rgb(r,g,b)"
 // optimize.cpp

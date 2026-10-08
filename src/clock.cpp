@@ -25,24 +25,27 @@ const wchar_t* const kMonths[] = {L"JANUARY", L"FEBRUARY", L"MARCH",     L"APRIL
 // ---- Fonts ----------------------------------------------------------------------------------
 // The whole clock is in one font. Each has scales that make every font about as wide as Audiowide
 // at the same size: one for the day, one for the date and time. Fonts VideoBG can't include come
-// from the user: installed on the PC, or added through the font picker into its fonts folder.
+// from the user: installed on the PC, or added through the font picker into its fonts folder, as do
+// any other fonts the user adds (their scales are measured).
 struct FontDef {
-    ClockFontInfo info;
-    int res;           // RCDATA id; 0 = not included
-    float day, small;  // scales of the day, and of the date and time
+    const wchar_t* key;
+    const wchar_t* getUrl;  // where to get it, for a font VideoBG can't include
+    int res;                // RCDATA id; 0 = not included
+    float day, small;       // scales of the day, and of the date and time
 };
 const FontDef kFonts[] = {
-    {{L"Audiowide", nullptr}, IDR_FONT_AUDIOWIDE, 1.00f, 0.90f},
-    {{L"Michroma", nullptr}, IDR_FONT_MICHROMA, 0.83f, 0.75f},
-    {{L"Orbitron", nullptr}, IDR_FONT_ORBITRON, 0.98f, 0.88f},
-    {{L"Syncopate", nullptr}, IDR_FONT_SYNCOPATE, 0.96f, 0.86f},
-    {{L"Anurati", L"https://befonts.com/downfile/3ee31d3025c55bd25cff640e2675cbf5.30052"}, 0, 0.97f, 0.87f},  // its free version
+    {L"Audiowide", nullptr, IDR_FONT_AUDIOWIDE, 1.00f, 0.90f},
+    {L"Michroma", nullptr, IDR_FONT_MICHROMA, 0.83f, 0.75f},
+    {L"Orbitron", nullptr, IDR_FONT_ORBITRON, 0.98f, 0.88f},
+    {L"Syncopate", nullptr, IDR_FONT_SYNCOPATE, 0.96f, 0.86f},
+    {L"Anurati", L"https://befonts.com/downfile/3ee31d3025c55bd25cff640e2675cbf5.30052", 0, 0.97f, 0.87f},  // its free version
 };
+const float kDayWidth = 635;  // Audiowide's WEDNESDAY at size 1, in DIPs: what a user's font is scaled to
 
-const FontDef& FindFont(const std::wstring& key) {
+const FontDef* FindFont(const std::wstring& key) {
     for (const FontDef& f : kFonts)
-        if (!_wcsicmp(f.info.key, key.c_str())) return f;
-    return kFonts[0];
+        if (!_wcsicmp(f.key, key.c_str())) return &f;
+    return nullptr;
 }
 
 std::wstring FontsDir() { return LocalDataDir() + L"\\Fonts"; }
@@ -65,16 +68,16 @@ std::wstring FindFontFile(const std::wstring& dir, const std::wstring& pattern) 
     return found;
 }
 
-// The file of a font VideoBG doesn't include: the copy added through VideoBG, else one installed on
-// the PC (for this user or for everyone), found by its file name.
-std::wstring FontFile(const FontDef& f) {
-    if (f.res) return L"";
-    const std::wstring key = f.info.key;
+// The file of a font that isn't in the exe: VideoBG's copy, else (for one VideoBG knows, like
+// Anurati) one installed on the PC, for this user or for everyone, found by its file name.
+std::wstring FontFile(const std::wstring& key) {
+    const FontDef* f = FindFont(key);
+    if (f && f->res) return L"";
     std::wstring file = FindFontFile(FontsDir(), key + L".*");
     wchar_t buf[MAX_PATH];
-    if (file.empty() && ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\Windows\\Fonts", buf, MAX_PATH))
+    if (f && file.empty() && ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\Windows\\Fonts", buf, MAX_PATH))
         file = FindFontFile(buf, L"*" + key + L"*");
-    if (file.empty() && GetWindowsDirectoryW(buf, MAX_PATH)) file = FindFontFile(std::wstring(buf) + L"\\Fonts", L"*" + key + L"*");
+    if (f && file.empty() && GetWindowsDirectoryW(buf, MAX_PATH)) file = FindFontFile(std::wstring(buf) + L"\\Fonts", L"*" + key + L"*");
     return file;
 }
 
@@ -172,11 +175,11 @@ bool FamilyInfo(IDWriteFontCollection1* c, UINT32 index, std::wstring* name, flo
     return ok;
 }
 
-bool BuildCollection(const FontDef& f, const std::wstring& file, bool withQuicksand) {
+bool BuildCollection(int res, const std::wstring& file, bool withQuicksand) {
     IDWriteFontSetBuilder1* b = nullptr;
     IDWriteFontSet* set = nullptr;
     HRESULT hr = P.f->CreateFontSetBuilder(&b);
-    if (SUCCEEDED(hr) && !(f.res ? AddResFont(b, f.res) : AddFileFont(b, file))) hr = E_FAIL;
+    if (SUCCEEDED(hr) && !(res ? AddResFont(b, res) : AddFileFont(b, file))) hr = E_FAIL;
     if (SUCCEEDED(hr) && withQuicksand && !AddResFont(b, IDR_FONT_QUICKSAND)) hr = E_FAIL;
     if (SUCCEEDED(hr)) hr = b->CreateFontSet(&set);
     if (SUCCEEDED(hr)) hr = P.f->CreateFontCollectionFromFontSet(set, &P.fonts);
@@ -185,28 +188,52 @@ bool BuildCollection(const FontDef& f, const std::wstring& file, bool withQuicks
     return SUCCEEDED(hr);
 }
 
+// A font the user added: the scale that makes its day as wide as Audiowide's.
+float MeasuredScale() {
+    const float px = 40 * 4 / 3.f, gap = 10 * 4 / 3.f;
+    IDWriteTextFormat* fmt = nullptr;
+    IDWriteTextLayout* layout = nullptr;
+    float scale = 1;
+    if (SUCCEEDED(P.f->CreateTextFormat(P.family.c_str(), P.fonts, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                        DWRITE_FONT_STRETCH_NORMAL, px, L"en-us", &fmt)) &&
+        SUCCEEDED(P.f->CreateTextLayout(L"WEDNESDAY", 9, fmt, 8192, 8192, &layout))) {
+        IDWriteTextLayout1* l1 = nullptr;
+        if (SUCCEEDED(layout->QueryInterface(__uuidof(IDWriteTextLayout1), (void**)&l1))) {
+            l1->SetCharacterSpacing(gap, gap, 0, DWRITE_TEXT_RANGE{0, 9});
+            l1->Release();
+        }
+        DWRITE_TEXT_METRICS m{};
+        if (SUCCEEDED(layout->GetMetrics(&m)) && m.widthIncludingTrailingWhitespace > 1)
+            scale = std::clamp(kDayWidth / m.widthIncludingTrailingWhitespace, 0.4f, 2.5f);
+    }
+    Rel(layout);
+    Rel(fmt);
+    return scale;
+}
+
 // Loads the font to draw with, letting go of the one before.
 bool UseFont(const std::wstring& key) {
     if (P.fonts && P.fontKey == key) return true;
     Rel(P.fonts);
     P.fontKey.clear();
-    const FontDef& f = FindFont(key);
-    const std::wstring file = FontFile(f);
-    if (!f.res && file.empty()) return false;
+    const FontDef* f = FindFont(key);
+    const int res = f ? f->res : 0;
+    const std::wstring file = res ? L"" : FontFile(key);
+    if (!res && file.empty()) return false;
     bool digits = false, unused = false;
-    if (!BuildCollection(f, file, false) || !FamilyInfo(P.fonts, 0, &P.family, &P.dayCap, &digits)) {
+    if (!BuildCollection(res, file, false) || !FamilyInfo(P.fonts, 0, &P.family, &P.dayCap, &digits)) {
         Rel(P.fonts);
         return false;
     }
-    P.dayScale = f.day;
-    P.smallScale = f.small;
+    P.dayScale = f ? f->day : MeasuredScale();
+    P.smallScale = f ? f->small : P.dayScale * 0.9f;
     P.smallFamily = P.family;
     P.smallCap = P.dayCap;
-    if (!digits) {  // Anurati's free version: the date and time in Quicksand instead, as in Mond
+    if (!digits) {  // like Anurati's free version: the date and time in Quicksand instead, as in Mond
         Rel(P.fonts);
         UINT32 qi = 0;
         BOOL found = FALSE;
-        if (!BuildCollection(f, file, true) || FAILED(P.fonts->FindFamilyName(L"Quicksand", &qi, &found)) || !found ||
+        if (!BuildCollection(res, file, true) || FAILED(P.fonts->FindFamilyName(L"Quicksand", &qi, &found)) || !found ||
             !FamilyInfo(P.fonts, qi, &P.smallFamily, &P.smallCap, &unused)) {
             Rel(P.fonts);
             return false;
@@ -453,7 +480,7 @@ void Clock_ReleasePainter() {
 bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out) {
     const float size = look.size;
     if (!OpenPainter()) return false;
-    if (!UseFont(look.font) && !UseFont(kFonts[0].info.key)) return false;  // a font that's gone: the default
+    if (!UseFont(look.font) && !UseFont(kFonts[0].key)) return false;  // a font that's gone: the default
     wchar_t date[64], time[32];
     swprintf(date, 64, L"%02d  %ls,  %d.", t.wDay, kMonths[(t.wMonth + 11) % 12], t.wYear);
     if (look.h24) swprintf(time, 32, L"- %02d:%02d -", t.wHour, t.wMinute);
@@ -586,13 +613,40 @@ void Clock_Refresh() {
 // ---------------------------------------------------------------------------------------
 // Clock fonts
 
-int Clock_FontCount() { return (int)std::size(kFonts); }
-
-const ClockFontInfo& Clock_Font(int i) { return kFonts[std::clamp(i, 0, Clock_FontCount() - 1)].info; }
+std::vector<ClockFontInfo> Clock_Fonts() {
+    std::vector<ClockFontInfo> list;
+    const std::wstring dir = FontsDir();
+    for (const FontDef& f : kFonts) {
+        ClockFontInfo i{f.key, f.getUrl, false, true};
+        if (!f.res) {
+            i.removable = !FindFontFile(dir, i.key + L".*").empty();
+            i.ready = i.removable || !FontFile(i.key).empty();
+        }
+        list.push_back(i);
+    }
+    // Then the user's own, by name: font files in VideoBG's fonts folder that aren't one of the above.
+    std::vector<ClockFontInfo> own;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring n = fd.cFileName;
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !IsFontName(n)) continue;
+            std::wstring key = n.substr(0, n.find_last_of(L'.'));
+            bool dup = FindFont(key) != nullptr;
+            for (const ClockFontInfo& o : own) dup = dup || !_wcsicmp(o.key.c_str(), key.c_str());
+            if (!dup) own.push_back({key, nullptr, true, true});
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    std::sort(own.begin(), own.end(), [](const ClockFontInfo& a, const ClockFontInfo& b) { return _wcsicmp(a.key.c_str(), b.key.c_str()) < 0; });
+    list.insert(list.end(), own.begin(), own.end());
+    return list;
+}
 
 bool Clock_FontReady(const std::wstring& key) {
-    const FontDef& f = FindFont(key);
-    return f.res || !FontFile(f).empty();
+    const FontDef* f = FindFont(key);
+    return (f && f->res) || !FontFile(key).empty();
 }
 
 namespace {
@@ -675,58 +729,107 @@ bool ReadFontSource(const std::wstring& path, const std::wstring& key, std::stri
     return ok;
 }
 
-}  // namespace
-
-HRESULT Clock_AddFontFile(const std::wstring& key, const std::wstring& path) {
-    const FontDef& f = FindFont(key);
-    if (f.res || _wcsicmp(f.info.key, key.c_str())) return E_INVALIDARG;
-    std::string data;
+// Reads a font file (or a .zip's, preferring one named like `prefer`) and checks that DirectWrite
+// can use it. *ext: its extension; *family: its family name.
+HRESULT LoadFontSource(const std::wstring& path, const std::wstring& prefer, std::string* data, std::wstring* ext,
+                       std::wstring* family) {
     std::wstring name;
-    if (!ReadFontSource(path, key, &data, &name)) return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    if (!ReadFontSource(path, prefer, data, &name)) return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    *ext = name.substr(name.find_last_of(L'.'));
     if (!OpenPainter()) return E_FAIL;
-    // It has to be that font: a font file whose family is named after it.
     IDWriteFontFile* file = nullptr;
     IDWriteFontSetBuilder1* b = nullptr;
     IDWriteFontSet* set = nullptr;
     IDWriteFontCollection1* c = nullptr;
-    std::wstring family;
     float cap = 0;
     bool digits = false;
-    HRESULT hr = P.loader->CreateInMemoryFontFileReference(P.f, data.data(), (UINT32)data.size(), nullptr, &file);
+    HRESULT hr = P.loader->CreateInMemoryFontFileReference(P.f, data->data(), (UINT32)data->size(), nullptr, &file);
     if (SUCCEEDED(hr)) hr = P.f->CreateFontSetBuilder(&b);
     if (SUCCEEDED(hr)) hr = b->AddFontFile(file);
     if (SUCCEEDED(hr)) hr = b->CreateFontSet(&set);
     if (SUCCEEDED(hr)) hr = P.f->CreateFontCollectionFromFontSet(set, &c);
-    if (SUCCEEDED(hr) && !FamilyInfo(c, 0, &family, &cap, &digits)) hr = E_FAIL;
+    if (SUCCEEDED(hr) && (!FamilyInfo(c, 0, family, &cap, &digits) || family->empty())) hr = E_INVALIDARG;
     Rel(c);
     Rel(set);
     Rel(b);
     Rel(file);
-    std::wstring lower = family, k = key;
-    for (auto& ch : lower) ch = (wchar_t)towlower(ch);
-    for (auto& ch : k) ch = (wchar_t)towlower(ch);
-    if (FAILED(hr) || lower.find(k) == std::wstring::npos) {
-        Log(L"clock: %ls isn't the %ls font (%ls)", path.c_str(), key.c_str(), family.c_str());
-        return E_INVALIDARG;
-    }
-    // Into VideoBG's fonts folder, in place of any copy before.
+    return FAILED(hr) ? E_INVALIDARG : S_OK;
+}
+
+// Into VideoBG's fonts folder as key + ext, in place of any copy before.
+bool SaveFont(const std::wstring& key, const std::string& data, const std::wstring& ext) {
+    Clock_ReleasePainter();  // DirectWrite may still have the old copy open
     const std::wstring dir = FontsDir();
     CreateDirectoryW(dir.c_str(), nullptr);
     for (std::wstring old; !(old = FindFontFile(dir, key + L".*")).empty();)
         if (!DeleteFileW(old.c_str())) break;
-    const std::wstring dst = dir + L"\\" + key + name.substr(name.find_last_of(L'.')), tmp = dst + L".tmp";
+    const std::wstring dst = dir + L"\\" + key + ext, tmp = dst + L".tmp";
     HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     DWORD put = 0;
     bool ok = h != INVALID_HANDLE_VALUE && WriteFile(h, data.data(), (DWORD)data.size(), &put, nullptr) && put == data.size();
     if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
     ok = ok && MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING);
     if (!ok) DeleteFileW(tmp.c_str());
-    if (P.fontKey == key) {  // drawn with the old file: load the new one next time
-        Rel(P.fonts);
-        P.fontKey.clear();
+    return ok;
+}
+
+bool Contains(std::wstring s, std::wstring part) {
+    for (auto& c : s) c = (wchar_t)towlower(c);
+    for (auto& c : part) c = (wchar_t)towlower(c);
+    return s.find(part) != std::wstring::npos;
+}
+
+}  // namespace
+
+HRESULT Clock_AddFontFile(const std::wstring& key, const std::wstring& path) {
+    const FontDef* f = FindFont(key);
+    if (!f || f->res) return E_INVALIDARG;
+    std::string data;
+    std::wstring ext, family;
+    HRESULT hr = LoadFontSource(path, key, &data, &ext, &family);
+    if (SUCCEEDED(hr) && !Contains(family, key)) hr = E_INVALIDARG;  // it has to be that font
+    if (FAILED(hr)) {
+        Log(L"clock: %ls isn't the %ls font (%ls)", path.c_str(), key.c_str(), family.c_str());
+        return hr;
     }
+    bool ok = SaveFont(f->key, data, ext);
     Log(L"clock: added the %ls font from %ls -> %ls", key.c_str(), path.c_str(), ok ? L"ok" : L"failed");
     return ok ? S_OK : E_FAIL;
+}
+
+HRESULT Clock_AddOwnFont(const std::wstring& path, std::wstring* key) {
+    std::string data;
+    std::wstring ext, family;
+    HRESULT hr = LoadFontSource(path, L"regular", &data, &ext, &family);
+    if (FAILED(hr)) {
+        Log(L"clock: no font VideoBG can use in %ls", path.c_str());
+        return hr;
+    }
+    // Named after its family, as far as a file name allows; a font VideoBG knows keeps its name.
+    std::wstring name;
+    for (wchar_t c : family) name += (c < 32 || wcschr(L"\\/:*?\"<>|", c)) ? L'_' : c;
+    while (!name.empty() && (name.back() == L' ' || name.back() == L'.')) name.pop_back();
+    while (!name.empty() && name[0] == L' ') name.erase(0, 1);
+    if (name.empty()) return E_INVALIDARG;
+    for (const FontDef& f : kFonts)
+        if (!_wcsicmp(f.key, name.c_str()) || (!f.res && Contains(family, f.key))) name = f.key;
+    *key = name;
+    const FontDef* known = FindFont(name);
+    if (known && known->res) return S_FALSE;  // already in VideoBG
+    bool ok = SaveFont(name, data, ext);
+    Log(L"clock: added your font %ls from %ls -> %ls", name.c_str(), path.c_str(), ok ? L"ok" : L"failed");
+    return ok ? S_OK : E_FAIL;
+}
+
+bool Clock_RemoveFont(const std::wstring& key) {
+    const FontDef* f = FindFont(key);
+    if (f && f->res) return false;
+    Clock_ReleasePainter();  // DirectWrite may have it open
+    const std::wstring dir = FontsDir();
+    bool ok = true;
+    for (std::wstring file; ok && !(file = FindFontFile(dir, key + L".*")).empty();) ok = DeleteFileW(file.c_str()) != 0;
+    Log(L"clock: removed the %ls font -> %ls", key.c_str(), ok ? L"ok" : L"failed");
+    return ok;
 }
 
 bool Clock_FindDownloadedFont(const std::wstring& key) {

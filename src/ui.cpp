@@ -31,16 +31,17 @@ enum Id {
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_SHUFFLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_EYEDROP, ID_CLK_SIZE, ID_CLK_HOURS,
-    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR, ID_CLK_FONT, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR,
+    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR, ID_CLK_FONT, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN,
     ID_DLG_SCRIM, ID_DLG_SV, ID_DLG_HUE, ID_DLG_PREVIEW, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
     ID_VER_ROW0 = 400,   // video versions dialog: a version's row, and its delete button
     ID_VER_DEL0 = 450,
-    ID_FNT_ROW0 = 500,   // font picker: a font's row, its "Get it" link and its "Add font file" button
-    ID_FNT_GET0 = 520,
-    ID_FNT_ADD0 = 540,
+    ID_FNT_ROW0 = 500,   // font picker: a font's row, its "Get it" link, "Add font file" and "Remove" buttons
+    ID_FNT_GET0 = 600,
+    ID_FNT_ADD0 = 700,
+    ID_FNT_DEL0 = 800,
 };
 enum NavPage { NAV_VIDEO, NAV_CLOCK, NAV_SOUND, NAV_PLAYBACK, NAV_POWER, NAV_GENERAL, NAV_COUNT };  // sidebar order
 enum Kind { K_BUTTON, K_TOGGLE, K_SEG, K_SLIDER, K_AREA };
@@ -1584,6 +1585,9 @@ void ColorButton(int id, const D2D1_RECT_F& r, const std::wstring& color, const 
     AddHit(id, K_BUTTON, r, enabled);
 }
 
+// The font a look shows: its own, or Audiowide when that font isn't on this PC any more.
+std::wstring ShownFont(const ClockLook& l) { return Clock_FontReady(l.font) ? l.font : std::wstring(L"Audiowide"); }
+
 // A button that shows the clock's font and opens the font picker.
 void FontButton(int id, const D2D1_RECT_F& r, const std::wstring& font, bool enabled) {
     const Theme& t = u.th;
@@ -1659,7 +1663,7 @@ void PaintClockPage(float x, float w) {
     ColorButton(ID_CLK_CUSTOM, R(lx + labW, yy + 3, lx + colW - 42, yy + rowH - 3), look->color, Hex(look->color), on);
     Button(ID_CLK_EYEDROP, R(lx + colW - 36, yy + 3, lx + colW, yy + rowH - 3), L"", L"\uEF3C", u.picking, on);
     Row(rx, yy, labW, L"Font", rowH, on);
-    FontButton(ID_CLK_FONT, R(rx + labW, yy + 3, rx + colW, yy + rowH - 3), look->font, on);
+    FontButton(ID_CLK_FONT, R(rx + labW, yy + 3, rx + colW, yy + rowH - 3), ShownFont(*look), on);
     yy += rowH;
 
     const bool glowOn = on && look->glow > 0;
@@ -2066,17 +2070,23 @@ void PaintVersionsDialog() {
 }
 
 // ---------------------------------------------------------------------------------------
-// Font picker: every font, each drawn as the clock (in the page's text colour); a font VideoBG can't
-// include has a link to get it and a button to add its file instead. Clicking a font uses it at once
-// for the look being edited. Each font is loaded only while its sample is drawn.
+// Font picker: every font, each drawn as the clock in it (just the letters, in the page's text
+// colour); a font VideoBG can't include has a link to get it and a button to add its file instead.
+// At the end, the user can add any font of their own; VideoBG keeps a copy in its fonts folder.
+// Clicking a font uses it at once for the look being edited. Each font is loaded only while its
+// sample is drawn.
 
 void ClockEdited();
 
+const float kFontRowH = 132, kFontAddH = 76;  // a font's row; the "Add your own font" row at the end
+
 struct FontDialog {
     bool open = false;
+    std::vector<ClockFontInfo> list;
     std::vector<ID2D1Bitmap*> samples;
     std::vector<D2D1_SIZE_F> sizes;  // in DIPs
     std::vector<bool> tried;
+    float boxW = 0;                  // the room the samples were drawn for
     std::wstring note;
     float scroll = 0, target = 0, maxScroll = 0;  // the list, in DIPs: where it is, and where it's gliding to
     float trackTop = 0, trackH = 0, thumbH = 0, grab = 0;  // the scroll bar, for dragging it
@@ -2099,27 +2109,38 @@ void FontBarDrag(float y, bool start) {
 
 void ReleaseFontSamples() {
     for (ID2D1Bitmap*& b : fnt.samples) SafeRelease(b);
-    const int n = Clock_FontCount();
+    const size_t n = fnt.list.size();
     fnt.samples.assign(n, nullptr);
     fnt.sizes.assign(n, D2D1::SizeF(0, 0));
     fnt.tried.assign(n, false);
 }
 
+void RefreshFontList() {
+    fnt.list = Clock_Fonts();
+    ReleaseFontSamples();
+}
+
+int FontIndex(const std::wstring& key) {
+    for (size_t i = 0; i < fnt.list.size(); i++)
+        if (!_wcsicmp(fnt.list[i].key.c_str(), key.c_str())) return (int)i;
+    return -1;
+}
+
 // Fonts VideoBG can't include that were just downloaded: added from the Downloads folder.
 void FindDownloadedFonts() {
-    for (int i = 0; i < Clock_FontCount(); i++) {
-        const ClockFontInfo& f = Clock_Font(i);
-        if (f.getUrl && !Clock_FontReady(f.key) && Clock_FindDownloadedFont(f.key)) {
-            fnt.note = std::wstring(L"Found ") + f.key + L" in your Downloads and added it";
-            fnt.tried[i] = false;
+    bool added = false;
+    for (const ClockFontInfo& f : fnt.list)
+        if (f.getUrl && !f.ready && Clock_FindDownloadedFont(f.key)) {
+            fnt.note = L"Found " + f.key + L" in your Downloads and added it";
+            added = true;
         }
-    }
+    if (added) RefreshFontList();
 }
 
 void OpenFontDialog() {
     fnt = FontDialog{};
-    ReleaseFontSamples();
     fnt.open = true;
+    RefreshFontList();
     FindDownloadedFonts();
 }
 
@@ -2130,59 +2151,110 @@ void CloseFontDialog() {
     Clock_ReleasePainter();  // the samples' fonts
 }
 
-void FontPick(int i) {
-    const ClockFontInfo& f = Clock_Font(i);
-    if (!Clock_FontReady(f.key)) return;
-    EditedLook()->font = f.key;
-    Log(L"ui: clock font %ls", f.key);
+void UseFontInLook(const std::wstring& key) {
+    EditedLook()->font = key;
+    Log(L"ui: clock font %ls", key.c_str());
     ClockEdited();
 }
 
-void FontGet(int i) {
-    const ClockFontInfo& f = Clock_Font(i);
-    if (!f.getUrl) return;
-    ShellExecuteW(u.hwnd, L"open", f.getUrl, nullptr, nullptr, SW_SHOWNORMAL);
-    fnt.note = std::wstring(L"Download ") + f.key + L", then come back: VideoBG looks for it in your Downloads";
+void FontPick(int i) {
+    if (i < (int)fnt.list.size() && fnt.list[i].ready) UseFontInLook(fnt.list[i].key);
 }
 
-void FontAddFile(int i) {
-    const ClockFontInfo& f = Clock_Font(i);
+void FontGet(int i) {
+    if (i >= (int)fnt.list.size() || !fnt.list[i].getUrl) return;
+    ShellExecuteW(u.hwnd, L"open", fnt.list[i].getUrl, nullptr, nullptr, SW_SHOWNORMAL);
+    fnt.note = L"Download " + fnt.list[i].key + L", then come back: VideoBG looks for it in your Downloads";
+}
+
+// A font file (or a .zip with one) from the file dialog; "" if cancelled.
+std::wstring PickFontFile(const std::wstring& title) {
     IFileOpenDialog* d = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) return;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) return L"";
     const COMDLG_FILTERSPEC types[] = {{L"Fonts, or a .zip with one", L"*.otf;*.ttf;*.zip"}};
     d->SetFileTypes(1, types);
-    d->SetTitle((std::wstring(L"Choose the ") + f.key + L" font file").c_str());
+    d->SetTitle(title.c_str());
     d->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
     IShellItem* item = nullptr;
     wchar_t* path = nullptr;
+    std::wstring file;
     if (SUCCEEDED(d->Show(u.hwnd)) && SUCCEEDED(d->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-        HRESULT hr = Clock_AddFontFile(f.key, path);
-        fnt.note = SUCCEEDED(hr)          ? std::wstring(L"Added ") + f.key + L": click it to use it"
-                   : hr == E_INVALIDARG   ? std::wstring(L"That file isn't the ") + f.key + L" font"
-                                          : std::wstring(L"Couldn't read a font from that file");
-        fnt.tried[i] = false;
+        file = path;
         CoTaskMemFree(path);
     }
     if (item) item->Release();
     d->Release();
+    return file;
 }
 
-// Draws font i as the clock, small, the first time its row shows.
-void EnsureFontSample(int i) {
+void FontAddFile(int i) {
+    if (i >= (int)fnt.list.size()) return;
+    const std::wstring key = fnt.list[i].key;
+    const std::wstring file = PickFontFile(L"Choose the " + key + L" font file");
+    if (file.empty()) return;
+    HRESULT hr = Clock_AddFontFile(key, file);
+    fnt.note = SUCCEEDED(hr)        ? L"Added " + key + L": click it to use it"
+               : hr == E_INVALIDARG ? L"That file isn't the " + key + L" font"
+                                    : std::wstring(L"Couldn't read a font from that file");
+    RefreshFontList();
+}
+
+// Any font of the user's: kept in VideoBG's fonts folder, and used for this look right away.
+void FontAddOwn() {
+    const std::wstring file = PickFontFile(L"Choose a font for the clock");
+    if (file.empty()) return;
+    std::wstring key;
+    HRESULT hr = Clock_AddOwnFont(file, &key);
+    if (FAILED(hr)) {
+        fnt.note = hr == E_INVALIDARG ? L"That file isn't a font VideoBG can use" : L"Couldn't read that file";
+        return;
+    }
+    RefreshFontList();
+    UseFontInLook(key);
+    fnt.note = hr == S_FALSE ? key + L" is already in the list" : L"Added " + key + L", and the clock uses it now";
+    int at = FontIndex(key);
+    if (at >= 0) {  // glide to it (the list just got longer: the next paint clamps)
+        fnt.target = at * kFontRowH;
+        SetTimer(u.hwnd, TIMER_SCROLL, 15, nullptr);
+    }
+}
+
+// Deletes VideoBG's copy; looks that used it go back to Audiowide (other videos' do when drawn).
+void FontRemove(int i) {
+    if (i >= (int)fnt.list.size() || !fnt.list[i].removable) return;
+    const std::wstring key = fnt.list[i].key;
+    if (!Clock_RemoveFont(key)) {
+        fnt.note = L"Couldn't remove " + key;
+        return;
+    }
+    for (ClockLook* l : {&g_settings.clockStill, &g_settings.clockLive, &g_settings.clockVideo})
+        if (!_wcsicmp(l->font.c_str(), key.c_str())) l->font = ClockLook{}.font;
+    ClockEdited();
+    RefreshFontList();
+    fnt.note = L"Removed " + key;
+}
+
+// Draws font i as the clock, just the letters, at exactly the size it's shown (so it stays sharp),
+// as big as fits in maxW x maxH DIPs.
+void EnsureFontSample(int i, float maxW, float maxH) {
     if (fnt.samples[i] || fnt.tried[i] || !u.rt) return;
     fnt.tried[i] = true;
-    const ClockFontInfo& f = Clock_Font(i);
-    if (!Clock_FontReady(f.key)) return;
+    if (!fnt.list[i].ready) return;
     ClockLook l;
-    l.font = f.key;
-    l.size = 0.8f;
+    l.font = fnt.list[i].key;
     l.h24 = EditedLook()->h24;
     l.color = Fmt(L"%d,%d,%d", (int)lroundf(u.th.text.r * 255), (int)lroundf(u.th.text.g * 255), (int)lroundf(u.th.text.b * 255));
     SYSTEMTIME t;
     GetLocalTime(&t);
     const float k = u.dpi / 96;
     ClockImage img;
-    if (!Clock_Paint(l, k, t, &img) || img.w <= 0) return;
+    for (float size = 0.8f, pass = 0; pass < 2; pass++) {
+        l.size = size;
+        if (!Clock_Paint(l, k, t, &img) || img.w <= 0) return;
+        float fit = std::min(maxW / (img.w / k), maxH / (img.h / k));
+        if (fit >= 1) break;
+        size *= fit * 0.99f;  // once more, at the size that fits
+    }
     D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
     u.rt->CreateBitmap(D2D1::SizeU((UINT32)img.w, (UINT32)img.h), img.px.data(), (UINT32)img.w * 4, &bp, &fnt.samples[i]);
     fnt.sizes[i] = D2D1::SizeF(img.w / k, img.h / k);
@@ -2192,9 +2264,10 @@ void PaintFontDialog() {
     const Theme& t = u.th;
     Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
     AddHit(ID_FNT_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
-    const int n = Clock_FontCount();
-    const float rowH = 132, W = kDialogW, listH = std::min(n * rowH, 3.4f * rowH), H = 84 + listH + 8 + 64;
-    const float L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
+    const int n = (int)fnt.list.size();
+    const float rowH = kFontRowH, W = kDialogW, content = n * rowH + kFontAddH;
+    const float listH = std::min(content, 3.4f * rowH), H = 84 + listH + 8 + 64;
+    const float L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2), k = u.dpi / 96;
     const D2D1_RECT_F panel = R(L, T, L + W, T + H);
     const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
     Fill(R(L - 2, T, L + W + 2, T + H + 4), D2D1::ColorF(0, 0, 0, 0.2f), 10);  // shadow
@@ -2209,48 +2282,61 @@ void PaintFontDialog() {
     Text(L"Click one to use it; your desktop shows it right away.", R(L + 24, T + 50, L + W - 24, T + 72), u.fBody, t.text2);
 
     const D2D1_RECT_F view = R(L + 1, T + 84, L + W - 1, T + 84 + listH);
-    fnt.maxScroll = std::max(0.f, n * rowH - listH);
+    fnt.maxScroll = std::max(0.f, content - listH);
     fnt.scroll = std::clamp(fnt.scroll, 0.f, fnt.maxScroll);
     fnt.target = std::clamp(fnt.target, 0.f, fnt.maxScroll);
     const float barW = fnt.maxScroll > 0 ? 14 : 0;
+    const float boxW = W - 32 - barW - 150 - 16, boxH = rowH - 20;  // room for a sample, right of the name
+    if (boxW != fnt.boxW) {
+        ReleaseFontSamples();
+        fnt.boxW = boxW;
+    }
+    const std::wstring shown = ShownFont(*EditedLook());
     const size_t firstHit = u.hits.size();
     u.rt->PushAxisAlignedClip(view, D2D1_ANTIALIAS_MODE_ALIASED);
     float y = view.top - fnt.scroll;
     for (int i = 0; i < n; i++, y += rowH) {
         if (y + rowH <= view.top || y >= view.bottom) continue;
-        const ClockFontInfo& f = Clock_Font(i);
-        const bool ready = Clock_FontReady(f.key), sel = !_wcsicmp(EditedLook()->font.c_str(), f.key);
+        const ClockFontInfo& f = fnt.list[i];
+        const bool sel = !_wcsicmp(shown.c_str(), f.key.c_str());
         const D2D1_RECT_F r = R(L + 16, y + 3, L + W - 16 - barW, y + rowH - 3);
-        const bool hot = ready && IsHot(ID_FNT_ROW0 + i);
+        const bool hot = f.ready && IsHot(ID_FNT_ROW0 + i);
         if (sel) {
             Fill(r, Mix(face, t.accent, 0.14f), 6);
             Stroke(r, t.accent, 6);
         } else if (hot) {
             Fill(r, Mix(face, t.text, 0.05f), 6);
         }
-        if (ready) AddHit(ID_FNT_ROW0 + i, K_BUTTON, r);
+        if (f.ready) AddHit(ID_FNT_ROW0 + i, K_BUTTON, r);
         const float cy = (r.top + r.bottom) / 2;
-        Circle(r.left + 22, cy, 8, sel ? t.accent : ready ? t.text2 : t.text3);
+        Circle(r.left + 22, cy, 8, sel ? t.accent : f.ready ? t.text2 : t.text3);
         Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
-        Text(f.key, R(r.left + 42, cy - 22, r.left + 150, cy + 2), u.fStrong, ready ? t.text : t.text2);
-        const wchar_t* about = !f.getUrl ? L"Included"
-                               : ready   ? L"Your copy"
-                                         : L"Free for personal use only, so not included";
-        Text(about, R(r.left + 42, cy + 2, r.left + (ready ? 150 : 290), cy + 40), ready ? u.fSmall : u.fWrap, t.text2);
-        if (ready) {
-            EnsureFontSample(i);
-            if (fnt.samples[i]) {
-                D2D1_SIZE_F sz = fnt.sizes[i];
-                float sc = std::min({1.f, (rowH - 20) / sz.height, (r.right - r.left - 150) / sz.width});
-                float dw = sz.width * sc, dh = sz.height * sc;
-                D2D1_RECT_F dst = R(r.right - 16 - dw, cy - dh / 2, r.right - 16, cy + dh / 2);
-                if (u.dc) u.dc->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
-                else u.rt->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
+        const float ny = f.removable ? cy - 36 : cy - 22;  // name and what it is; then Remove, for the user's copies
+        Text(f.key, R(r.left + 42, ny, r.left + 150, ny + 24), u.fStrong, f.ready ? t.text : t.text2);
+        const wchar_t* about = !f.getUrl && !f.removable ? L"Included"
+                               : !f.getUrl               ? L"Added by you"
+                               : f.ready                 ? L"Your copy"
+                                                         : L"Free for personal use only, so not included";
+        Text(about, R(r.left + 42, ny + 24, r.left + (f.ready ? 150 : 290), ny + 62), f.ready ? u.fSmall : u.fWrap, t.text2);
+        if (f.removable) Button(ID_FNT_DEL0 + i, R(r.left + 38, cy + 18, r.left + 134, cy + 46), L"Remove", L"\uE74D");
+        if (f.ready) {
+            EnsureFontSample(i, boxW, boxH);
+            if (fnt.samples[i]) {  // drawn 1:1 on whole pixels
+                const D2D1_SIZE_F sz = fnt.sizes[i];
+                const float x0 = roundf((r.right - 16 - sz.width) * k) / k, y0 = roundf((cy - sz.height / 2) * k) / k;
+                D2D1_RECT_F dst = R(x0, y0, x0 + sz.width, y0 + sz.height);
+                u.rt->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr);
             }
         } else {
             Button(ID_FNT_ADD0 + i, R(r.right - 12 - 150, cy - 16, r.right - 12, cy + 16), L"Add font file\u2026");
             Button(ID_FNT_GET0 + i, R(r.right - 12 - 150 - 8 - 96, cy - 16, r.right - 12 - 158, cy + 16), L"Get it", L"\uE8A7");
         }
+    }
+    if (y < view.bottom) {  // the last row: any font of the user's own
+        const float cy = y + kFontAddH / 2;
+        Button(ID_FNT_OWN, R(L + 24, cy - 18, L + 24 + 200, cy + 18), L"Add your own font\u2026", L"\uE710");
+        Text(L"A .ttf or .otf file, or a .zip with one. VideoBG keeps its own copy.", R(L + 24 + 216, cy - 20, L + W - 24 - barW, cy + 20),
+             u.fWrap, t.text2);
     }
     u.rt->PopAxisAlignedClip();
     for (size_t h = firstHit; h < u.hits.size(); h++) {  // what's scrolled out of the list can't be clicked
@@ -2261,7 +2347,7 @@ void PaintFontDialog() {
     if (fnt.maxScroll > 0) {  // the scroll bar: drag its thumb, or press the track to jump there
         fnt.trackTop = view.top + 4;
         fnt.trackH = listH - 8;
-        fnt.thumbH = std::max(36.f, fnt.trackH * listH / (n * rowH));
+        fnt.thumbH = std::max(36.f, fnt.trackH * listH / content);
         const float thumbY = fnt.trackTop + (fnt.trackH - fnt.thumbH) * fnt.scroll / fnt.maxScroll;
         const bool active = IsHot(ID_FNT_BAR) || u.drag == ID_FNT_BAR;
         const float bx = L + W - 13, bw = active ? 8.f : 5.f;
@@ -3034,11 +3120,12 @@ void OnClick(int id) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
-    if (id >= ID_FNT_ROW0 && id < ID_FNT_ADD0 + 20) {
-        int i = (id - ID_FNT_ROW0) % 20;
+    if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) {
+        int i = (id - ID_FNT_ROW0) % 100;
         if (id < ID_FNT_GET0) FontPick(i);
         else if (id < ID_FNT_ADD0) FontGet(i);
-        else FontAddFile(i);
+        else if (id < ID_FNT_DEL0) FontAddFile(i);
+        else FontRemove(i);
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
@@ -3099,6 +3186,7 @@ void OnClick(int id) {
         case ID_VER_CANCEL: CloseVersions(); break;
         case ID_CLK_FONT: OpenFontDialog(); break;
         case ID_FNT_DONE: CloseFontDialog(); break;
+        case ID_FNT_OWN: FontAddOwn(); break;
         case ID_VER_USE: VerApply(); break;
         case ID_LOCK: Host_SetLockFollow(!g_settings.lockFollow); break;
         case ID_HOTKEY:

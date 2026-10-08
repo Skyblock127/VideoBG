@@ -30,7 +30,7 @@ it off stops the video part completely.
   it to use less memory.
 - **Crop:** choose which part of the video fills the screen.
 - **Desktop clock:** day, date and time, which you can drag anywhere, with your own font, colour,
-  size, opacity and glow.
+  size, opacity and glow. Four fonts are included, and you can add any font of your own.
 - **Lock screen:** while the wallpaper is on, the lock screen shows a frame of the video.
 - **Sound:** silent, the video's own sound, or your own music.
 - **Clear errors:** if a video won't play, VideoBG says why and gives you the fix.

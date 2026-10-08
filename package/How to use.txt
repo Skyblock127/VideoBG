@@ -1,4 +1,4 @@
-VideoBG 1.4 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+VideoBG 1.5 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
 ==========================================================================
 
 What it does
@@ -59,6 +59,9 @@ Using it
         download; VideoBG then finds it in your Downloads and keeps its own
         copy, so you can delete the download (or use "Add font file", a .zip
         works too).
+      * "Add your own font" (at the end of the font list) takes any .ttf or
+        .otf font, or a .zip with one. VideoBG keeps its own copy and sizes
+        it like the others; "Remove" deletes the copy.
       * Size, opacity, glow (strength, size and colour) and 12/24-hour time.
   - Sound, Playback and Power saving pages: sound source, speed, frame rate,
     and pausing while apps cover the desktop or on battery.
