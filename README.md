@@ -73,7 +73,7 @@ and asks whether to delete your settings too. Then delete the folder.
 |---|---|
 | `Ctrl + Alt + B` | Turn the wallpaper on or off. The tray menu does the same. |
 | **Video** | **Choose video**, **Crop** it, and pick the lock screen frame with the **Preview** slider. **Versions** makes lighter copies. |
-| **Desktop clock** | Drag the clock on the preview to place it. Choose its colour, size, opacity, glow and 12/24-hour time. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show / Hide** turns the clock on or off for each. |
+| **Desktop clock** | Drag the clock on the preview to place it. Choose its colour, size, opacity, glow and 12/24-hour time. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show clock / Hide clock** turns it on or off for each. |
 | **Sound** | Nothing (the default), the video's sound, or your own songs. |
 | **Playback** | Fill / Fit / Stretch, speed, a frame-rate cap, and which displays to use. |
 | **Power saving** | Pause when apps cover the desktop, and what to do on battery. |

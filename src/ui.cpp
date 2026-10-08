@@ -1602,11 +1602,12 @@ void PaintClockPage(float x, float w) {
     const std::wstring& video = g_settings.video;
     // Which look is being edited: the wallpaper (in the header), then for the video wallpaper the
     // look every video shares or this video's own; Show / Hide is part of the look picked.
-    Seg(ID_CLK_MODE, R(x + w - kPad - 280, y + 12, x + w - kPad, y + 44), {L"Video wallpaper", L"Still wallpaper"}, u.clockEdit);
-    const float ry = y + kCardHead;
-    Seg(ID_CLK_SCOPE, R(lx, ry, lx + 240, ry + 32), {L"All videos", L"This video"}, g_settings.clockVideoOwn ? 1 : 0,
+    // Two equal columns: the wallpaper choice sits right above Show / Hide.
+    const float segW = (iw - 16) / 2, ry = y + kCardHead;
+    Seg(ID_CLK_MODE, R(x + w - kPad - segW, y + 12, x + w - kPad, y + 44), {L"Video wallpaper", L"Still wallpaper"}, u.clockEdit);
+    Seg(ID_CLK_SCOPE, R(lx, ry, lx + segW, ry + 32), {L"All videos", L"This video"}, g_settings.clockVideoOwn ? 1 : 0,
         u.clockEdit == 0 && !video.empty());
-    Seg(ID_CLK_SHOW, R(x + w - kPad - 160, ry, x + w - kPad, ry + 32), {L"Show", L"Hide"}, EditedLook()->show ? 0 : 1);
+    Seg(ID_CLK_SHOW, R(x + w - kPad - segW, ry, x + w - kPad, ry + 32), {L"Show clock", L"Hide clock"}, EditedLook()->show ? 0 : 1);
 
     // Preview: the wallpaper with the clock on it; drag the clock to place it.
     float bx = x + (w - bw) / 2;

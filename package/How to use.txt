@@ -44,8 +44,8 @@ Using it
       * Video wallpaper / Still wallpaper (top right) picks which clock
         you're editing. For the video wallpaper, All videos / This video
         picks the clock every video shares or one just for this video.
-      * Show / Hide shows or hides the clock you're editing, e.g. on the
-        video wallpaper but not on the still one.
+      * Show clock / Hide clock shows or hides the clock you're editing,
+        e.g. on the video wallpaper but not on the still one.
       * Drag the clock on the preview to place it (it snaps to the middle;
         hold Alt to place it freely, arrow keys nudge it).
       * Colour: swatches; Pick takes a colour from the wallpaper; More opens
