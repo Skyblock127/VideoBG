@@ -52,6 +52,7 @@ const int kFpsValues[] = {0, 60, 30, 24};
 const float kTop = 80, kSideX = 16, kSideW = 176, kContentX = 208;
 const float kPad = 20;       // inside a card, left and right
 const float kCardHead = 52;  // card top to its first row
+const float kDialogW = 600;  // every dialog over the page (colour, video versions, clock font) is this wide
 const float kRowH = 40, kLabelW = 176;
 
 struct Hit {
@@ -1740,7 +1741,7 @@ void PaintColorDialog() {
     const Theme& t = u.th;
     Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
     AddHit(ID_DLG_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
-    const float W = 520, H = 480, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
+    const float W = kDialogW, H = 480, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
     const D2D1_RECT_F panel = R(L, T, L + W, T + H);
     const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
     Fill(R(L - 2, T, L + W + 2, T + H + 4), D2D1::ColorF(0, 0, 0, 0.2f), 10);  // shadow
@@ -2005,7 +2006,7 @@ void PaintVersionsDialog() {
     Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
     AddHit(ID_VER_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
     const int n = (int)ver.list.size();
-    const float rowH = 52, W = 580, H = 112 + n * rowH + 72, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
+    const float rowH = 52, W = kDialogW, H = 112 + n * rowH + 72, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
     const D2D1_RECT_F panel = R(L, T, L + W, T + H);
     const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
     Fill(R(L - 2, T, L + W + 2, T + H + 4), D2D1::ColorF(0, 0, 0, 0.2f), 10);  // shadow
@@ -2076,6 +2077,7 @@ struct FontDialog {
     std::vector<D2D1_SIZE_F> sizes;  // in DIPs
     std::vector<bool> tried;
     std::wstring note;
+    float scroll = 0, maxScroll = 0;  // the list, in DIPs
 } fnt;
 
 void ReleaseFontSamples() {
@@ -2156,7 +2158,7 @@ void EnsureFontSample(int i) {
     if (!Clock_FontReady(f.key)) return;
     ClockLook l;
     l.font = f.key;
-    l.size = 0.42f;
+    l.size = 0.55f;
     l.h24 = EditedLook()->h24;
     l.color = Fmt(L"%d,%d,%d", (int)lroundf(u.th.text.r * 255), (int)lroundf(u.th.text.g * 255), (int)lroundf(u.th.text.b * 255));
     SYSTEMTIME t;
@@ -2174,7 +2176,8 @@ void PaintFontDialog() {
     Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
     AddHit(ID_FNT_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
     const int n = Clock_FontCount();
-    const float rowH = 82, W = 620, H = 100 + n * rowH + 72, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
+    const float rowH = 104, W = kDialogW, listH = std::min(n * rowH, 3.6f * rowH), H = 84 + listH + 8 + 64;
+    const float L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
     const D2D1_RECT_F panel = R(L, T, L + W, T + H);
     const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
     Fill(R(L - 2, T, L + W + 2, T + H + 4), D2D1::ColorF(0, 0, 0, 0.2f), 10);  // shadow
@@ -2186,14 +2189,20 @@ void PaintFontDialog() {
     Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
 
     Text(L"Clock font", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
-    Text(L"For the whole clock, in the look you're editing. Click one to use it; your desktop shows it right away.",
-         R(L + 24, T + 52, L + W - 24, T + 92), u.fWrap, t.text2);
+    Text(L"Click one to use it; your desktop shows it right away.", R(L + 24, T + 50, L + W - 24, T + 72), u.fBody, t.text2);
 
-    float y = T + 96;
+    const D2D1_RECT_F view = R(L + 1, T + 84, L + W - 1, T + 84 + listH);
+    fnt.maxScroll = std::max(0.f, n * rowH - listH);
+    fnt.scroll = std::clamp(fnt.scroll, 0.f, fnt.maxScroll);
+    const float barW = fnt.maxScroll > 0 ? 12 : 0;
+    const size_t firstHit = u.hits.size();
+    u.rt->PushAxisAlignedClip(view, D2D1_ANTIALIAS_MODE_ALIASED);
+    float y = view.top - fnt.scroll;
     for (int i = 0; i < n; i++, y += rowH) {
+        if (y + rowH <= view.top || y >= view.bottom) continue;
         const ClockFontInfo& f = Clock_Font(i);
         const bool ready = Clock_FontReady(f.key), sel = !_wcsicmp(EditedLook()->font.c_str(), f.key);
-        const D2D1_RECT_F r = R(L + 16, y, L + W - 16, y + rowH - 6);
+        const D2D1_RECT_F r = R(L + 16, y + 3, L + W - 16 - barW, y + rowH - 3);
         const bool hot = ready && IsHot(ID_FNT_ROW0 + i);
         if (sel) {
             Fill(r, Mix(face, t.accent, 0.14f), 6);
@@ -2205,16 +2214,16 @@ void PaintFontDialog() {
         const float cy = (r.top + r.bottom) / 2;
         Circle(r.left + 22, cy, 8, sel ? t.accent : ready ? t.text2 : t.text3);
         Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
-        Text(f.key, R(r.left + 42, r.top + 10, r.left + 230, cy + 2), u.fStrong, ready ? t.text : t.text2);
+        Text(f.key, R(r.left + 42, cy - 22, r.left + 220, cy + 2), u.fStrong, ready ? t.text : t.text2);
         const wchar_t* about = !f.getUrl ? L"Included"
                                : ready   ? L"Your copy"
                                          : L"Free for personal use only, so not included";
-        Text(about, R(r.left + 42, cy + 2, r.left + (ready ? 230 : 300), r.bottom - 8), u.fSmall, t.text2);
+        Text(about, R(r.left + 42, cy + 2, r.left + (ready ? 220 : 300), cy + 24), u.fSmall, t.text2);
         if (ready) {
             EnsureFontSample(i);
             if (fnt.samples[i]) {
                 D2D1_SIZE_F sz = fnt.sizes[i];
-                float sc = std::min({1.f, (rowH - 18) / sz.height, (W - 300) / sz.width});
+                float sc = std::min({1.f, (rowH - 22) / sz.height, (r.right - r.left - 230) / sz.width});
                 float dw = sz.width * sc, dh = sz.height * sc;
                 D2D1_RECT_F dst = R(r.right - 16 - dw, cy - dh / 2, r.right - 16, cy + dh / 2);
                 if (u.dc) u.dc->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
@@ -2224,6 +2233,17 @@ void PaintFontDialog() {
             Button(ID_FNT_ADD0 + i, R(r.right - 12 - 150, cy - 16, r.right - 12, cy + 16), L"Add font file\u2026");
             Button(ID_FNT_GET0 + i, R(r.right - 12 - 150 - 8 - 96, cy - 16, r.right - 12 - 158, cy + 16), L"Get it", L"\uE8A7");
         }
+    }
+    u.rt->PopAxisAlignedClip();
+    for (size_t h = firstHit; h < u.hits.size(); h++) {  // what's scrolled out of the list can't be clicked
+        D2D1_RECT_F& hr = u.hits[h].r;
+        hr = R(std::max(hr.left, view.left), std::max(hr.top, view.top), std::min(hr.right, view.right), std::min(hr.bottom, view.bottom));
+        if (hr.bottom <= hr.top) hr = R(0, 0, 0, 0);
+    }
+    if (fnt.maxScroll > 0) {  // where the list is (the mouse wheel scrolls it)
+        const float thumbH = std::max(32.f, listH * listH / (n * rowH)), thumbY = view.top + (listH - thumbH) * fnt.scroll / fnt.maxScroll;
+        Fill(R(L + W - 14, view.top + 4, L + W - 10, view.bottom - 4), Mix(face, t.text, 0.06f), 2);
+        Fill(R(L + W - 14, thumbY + 4, L + W - 10, thumbY + thumbH - 4), t.text3, 2);
     }
 
     const float by = T + H - 48;
@@ -3116,6 +3136,7 @@ bool OnKey(UINT vk) {
     }
     if (fnt.open) {
         if (vk == VK_ESCAPE || vk == VK_RETURN) CloseFontDialog();
+        if (vk == VK_UP || vk == VK_DOWN) fnt.scroll = std::clamp(fnt.scroll + (vk == VK_DOWN ? 52.f : -52.f), 0.f, fnt.maxScroll);
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
@@ -3366,7 +3387,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             break;
         case WM_MOUSEWHEEL:
-            if (u.page == 1) ZoomCrop(GET_WHEEL_DELTA_WPARAM(w) > 0 ? 0.92f : 1 / 0.92f);
+            if (fnt.open) {
+                fnt.scroll = std::clamp(fnt.scroll - GET_WHEEL_DELTA_WPARAM(w) / 120.f * 52, 0.f, fnt.maxScroll);
+                InvalidateRect(h, nullptr, FALSE);
+            } else if (u.page == 1) {
+                ZoomCrop(GET_WHEEL_DELTA_WPARAM(w) > 0 ? 0.92f : 1 / 0.92f);
+            }
             return 0;
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
