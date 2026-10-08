@@ -1575,7 +1575,8 @@ void PaintClockPage(float x, float w) {
              DWRITE_TEXT_ALIGNMENT_TRAILING);
         Toggle(ID_CLK_OWN, x + w - kPad - 40, yy + 16, g_settings.clockVideoOwn, can);
     } else {
-        Text(L"Used while the video wallpaper is off", R(lx + 296, yy, x + w - kPad, yy + 32), u.fSmall, t.text2);
+        Text(L"Used while the video wallpaper is off", R(lx + 296, yy, x + w - kPad, yy + 32), u.fSmall, t.text2,
+             DWRITE_TEXT_ALIGNMENT_TRAILING);
     }
     yy += 44;
 
