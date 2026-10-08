@@ -27,7 +27,7 @@ Download **VideoBG.zip** below.
 '@
 $text = if ($Notes) { (Get-Content -Raw $Notes).TrimEnd() + "`r`n" } else { '' }
 $notesFile = "$root\build\release-notes.md"
-Set-Content -Encoding utf8 $notesFile ($text + $howTo)
+[IO.File]::WriteAllText($notesFile, $text + $howTo)  # UTF-8 without a BOM
 $gh += @('--notes-file', $notesFile)
 gh release create @gh
 if ($LASTEXITCODE) { throw 'release failed' }
