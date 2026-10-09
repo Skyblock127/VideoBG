@@ -1,5 +1,5 @@
-VideoBG 1.8 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
-==========================================================================
+VideoBG 1.8.1 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+============================================================================
 
 What it does
   - Plays a video behind your desktop icons. Ctrl+Alt+B turns it on and off;
@@ -30,6 +30,9 @@ Using it
     (your screen's size, 900p, 720p...) with the memory each takes: click
     one to see it on your desktop first, then "Make it" (a few seconds) or
     "Use it" to switch to one you made before. The original isn't touched.
+    With several displays, the sizes follow the largest one the video plays
+    on (Playback page, Displays): every display shows the same video, so
+    more displays hardly add memory.
   - While the wallpaper is paused for a while (PC locked, screen off, or
     covered by apps if you chose that on the Power saving page), VideoBG
     lets go of the video's memory and picks up at the same frame later.
@@ -55,20 +58,20 @@ Using it
         it), and an eyedropper that takes a colour from anywhere on the
         wallpaper. Ctrl+V pastes a colour code like #72ABDE.
       * Date: how the date reads (09 OCTOBER, 2026. / OCTOBER 9, 2026 /
-        09 / 10 / 26 ...), or no date at all. Language (top of that list)
-        writes the day, month and AM/PM in any language Windows knows, with
-        its own digits if it has them. A font only changes the letters'
-        shapes, so pick one that has that language's letters (otherwise
-        Windows fills them in).
+        09 / 10 / 26 ...), or no date at all.
+      * Language (top of the font list) writes the day, month and AM/PM in
+        any language Windows knows, with its own digits if it has them. A
+        font only changes the letters' shapes, so pick one that has that
+        language's letters (otherwise Windows fills them in).
       * Font: Audiowide, Michroma, Orbitron or Syncopate, for the whole
         clock. Anurati (the original Mond font) is free for personal use
         only, so it isn't included: in the font list, "Get it" opens its
         download; VideoBG then finds it in your Downloads and keeps its own
         copy, so you can delete the download (or use "Add font file", a .zip
         works too).
-      * "Add your own font" (at the end of the font list) takes any .ttf or
-        .otf font, or a .zip with one. VideoBG keeps its own copy and sizes
-        it like the others; "Remove" deletes the copy.
+      * "Add your own font" (at the bottom of the font list) takes any .ttf
+        or .otf font, or a .zip with one. VideoBG keeps its own copy and
+        sizes it like the others; "Remove" deletes the copy (it asks first).
       * Size, opacity, glow (strength, size and colour) and 12/24-hour time.
       * Presets (top right) keeps up to 5 clock looks to use again on any
         clock: make one on the still wallpaper and use it on a video, say.
@@ -76,7 +79,8 @@ Using it
         the clock you have): the row at the top waits and your desktop
         shows the preset until you Save or Cancel. Use puts a preset on the
         clock the top row picks (it asks first; Show / Hide stays as it
-        is). Rename and Delete are next to it.
+        is). Rename and Delete are next to it. Tip: save your clock as a
+        preset before changing it, so you can get it back later.
   - Sound, Playback and Power saving pages: sound source, speed, frame rate,
     and pausing while apps cover the desktop or on battery.
   - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.

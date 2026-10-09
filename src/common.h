@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"1.8.0"
+#define APP_VERSION  L"1.8.1"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
 #define RCTL_CLASS   L"VideoBG.RendererCtl"
@@ -281,9 +281,10 @@ struct ClockLanguage {
 std::vector<ClockLanguage> Clock_Languages();
 std::wstring Clock_LanguageName(const std::wstring& code);  // in English
 std::wstring Clock_NativeDigits(const std::wstring& code);  // its own digits, or "" when it writes 0-9
-// One line of text in one of the clock's fonts, at pt points (the date styles' samples).
+// One line of text in one of the clock's fonts, at pt points (the date styles' samples); with `glow`,
+// that look's glow behind it (the presets' samples).
 bool Clock_PaintLine(const std::wstring& text, const std::wstring& font, float pt, const std::wstring& color, float pixelScale,
-                     ClockImage* out);
+                     ClockImage* out, const ClockLook* glow = nullptr);
 std::vector<ClockFontInfo> Clock_Fonts();       // the included ones, Anurati, then the user's own
 bool Clock_FontReady(const std::wstring& key);  // included, or its file is on this PC
 // A font file, or a .zip holding one, checked to be that font and copied into VideoBG's fonts folder.

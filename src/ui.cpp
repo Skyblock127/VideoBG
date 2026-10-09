@@ -34,6 +34,7 @@ enum Id {
     ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO,
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
+    ID_FNT_YES, ID_FNT_NO, ID_VER_YES, ID_VER_NO,
     ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
@@ -297,6 +298,7 @@ struct UI {
     bool infoOk = false;
     std::wstring gpu;
     int screenW = 1920, screenH = 1080;
+    int playW = 1920, playH = 1080, playCount = 1;  // the largest display the video plays on, and how many it plays on
 
     bool recording = false;
     std::wstring hotkeyMsg;
@@ -453,9 +455,11 @@ bool InitFactories() {
 }
 
 void ReleaseFontSamples();
+void ReleasePresetSamples();
 
 void ReleaseTarget() {
     ReleaseFontSamples();  // the font picker's, if it's open
+    ReleasePresetSamples();
     SafeRelease(u.frame);
     SafeRelease(u.clockBmp);
     SafeRelease(u.still);
@@ -1066,8 +1070,8 @@ const std::wstring& OriginalOf(const std::wstring& video) {
 // "720p": a version's height in lines of this screen, for the part of the video shown (the crop).
 std::wstring VersionLabel(UINT h, UINT vw, UINT vh) {
     const Crop& c = g_settings.crop;
-    double need = std::max(u.screenW / ((c.r - c.l) * vw), u.screenH / ((c.b - c.t) * vh));
-    return Fmt(L"%up", (UINT)lround(u.screenH * h / (vh * need)));
+    double need = std::max(u.playW / ((c.r - c.l) * vw), u.playH / ((c.b - c.t) * vh));
+    return Fmt(L"%up", (UINT)lround(u.playH * h / (vh * need)));
 }
 
 // A button drawn on a picture (dark, see-through).
@@ -1165,7 +1169,7 @@ void PaintVideoPage(float x, float w) {
         } else if (IsLightCopy(video)) {
             note = Fmt(L"Current version: %ls (%u\u00D7%u)", hasOrig ? VersionLabel(u.info.h, vi.w, vi.h).c_str() : L"smaller copy",
                        u.info.w, u.info.h);
-        } else if (LightCopySize(u.info.w, u.info.h, g_settings.crop, u.screenW, u.screenH, &ow, &oh)) {
+        } else if (LightCopySize(u.info.w, u.info.h, g_settings.crop, u.playW, u.playH, &ow, &oh)) {
             note = Fmt(L"A lighter version saves ~%.0f MB",
                        std::round((FrameMemoryMb(u.info.w, u.info.h) - FrameMemoryMb(ow, oh)) / 10) * 10);
             noteColor = t.warn;
@@ -1271,9 +1275,12 @@ void PaintSoundPage(float x, float w) {
          mode != 0 ? t.text2 : t.text3);
 }
 
+void QueryScreen();
+
 void PaintPlaybackPage(float x, float w) {
+    const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
-    Card(R(x, y, x + w, y + kCardHead + 4 * kRowH + 10), L"\uE768", L"Playback");
+    Card(R(x, y, x + w, y + kCardHead + 4 * kRowH + 48), L"\uE768", L"Playback");
     float yy = y + kCardHead;
     Row(lx, yy, kLabelW, L"Scaling");
     Seg(ID_SCALE, SegRect(cx, yy, cw), {L"Fill", L"Fit", L"Stretch"}, g_settings.scale);
@@ -1290,6 +1297,10 @@ void PaintPlaybackPage(float x, float w) {
     yy += kRowH;
     Row(lx, yy, kLabelW, L"Displays");
     Seg(ID_MONITORS, SegRect(cx, yy, cw), {L"All", L"Main only"}, g_settings.monitors);
+    yy += kRowH;
+    Text(L"The video is decoded once and every display shows it at its own size, so more displays hardly add memory. "
+         L"Versions are sized for the largest display it plays on.",
+         R(lx, yy, x + w - kPad, yy + 38), u.fWrap, t.text2);
 }
 
 void PaintPowerPage(float x, float w) {
@@ -1367,7 +1378,8 @@ void PaintGeneralPage(float x, float w) {
 // wait meanwhile, and the desktop shows the preset).
 struct PresetUI {
     bool open = false;       // the list
-    int confirm = -1;        // Use was clicked: asking before it replaces the clock
+    int confirm = -1;        // Use or Delete was clicked: asking first
+    bool confirmDel = false; // ...about deleting it
     int rename = -1;         // the preset whose name is being typed
     std::wstring name;
     bool nameFresh = false;  // the next key replaces the whole name
@@ -1698,7 +1710,10 @@ void PaintClockPage(float x, float w) {
         Button(ID_PRS_CANCEL, R(br - 188, bt, br - 98, bb), L"Cancel");
         Button(ID_PRS_SAVE, R(br - 90, bt, br, bb), L"Save", nullptr, true);
     } else {
-        Button(ID_PRS, R(x + w - kPad - 120, y + 12, x + w - kPad, y + 44), L"Presets", L"\uE728");
+        Button(ID_PRS, R(x + w - kPad - 120, y + 12, x + w - kPad, y + 44), L"Presets", L"\uE728", true);
+        if (IsHot(ID_PRS) || u.focus == ID_PRS)  // the tip, while pointing at it
+            Text(L"Tip: save your clock as a preset before changing it, so you can get it back later",
+                 R(x + kPad + 190, y + 13, x + w - kPad - 132, y + 47), u.fWrap, t.text2, DWRITE_TEXT_ALIGNMENT_TRAILING);
     }
     const bool on = ClockUsable();
     const std::wstring& video = g_settings.video;
@@ -1776,7 +1791,7 @@ void PaintClockPage(float x, float w) {
                                     : L"This video's own clock, or the one every video shares (this video keeps its own)";
             break;
         case ID_CLK_CUSTOM: help = L"The text's and the glow's colours: any colour, a code, your saved ones or the wallpaper's"; break;
-        case ID_CLK_FONT: help = L"The font of the whole clock in this look"; break;
+        case ID_CLK_FONT: help = L"The clock's font, and the language of its words, in this look"; break;
         case ID_CLK_SIZE: help = L"The clock's size in this look"; break;
         case ID_CLK_OPACITY: help = L"How solid the clock is; lower lets the wallpaper show through (glow included)"; break;
         case ID_CLK_HOURS: help = L"12-hour (1:30 PM) or 24-hour (13:30) time"; break;
@@ -1786,7 +1801,7 @@ void PaintClockPage(float x, float w) {
             help = u.focus == ID_CLK_AREA ? L"Arrow keys move the clock (Shift: one pixel); Enter centres it across, and again puts it back"
                                           : L"Drag the clock to place it (Alt: no snapping); arrow keys move it (Shift: one pixel)";
             break;
-        case ID_CLK_DATE: help = L"How the date reads, and the clock's language, in this look"; break;
+        case ID_CLK_DATE: help = L"How the date reads in this look"; break;
         case ID_PRS: help = L"Saved clock looks: keep this one, or put one on this clock"; break;
         case ID_PRS_SAVE: help = L"Keep these settings in " + PresetName(prs.edit); break;
         case ID_PRS_CANCEL: help = L"Leave " + PresetName(prs.edit) + L" as it was"; break;
@@ -1956,6 +1971,7 @@ struct VersionsDialog {
     std::wstring original;  // "" = no longer there
     std::vector<Version> list;
     int sel = -1;
+    int confirm = -1;  // a version's delete button was clicked: asking first
     std::wstring note;
 } ver;
 
@@ -1973,9 +1989,10 @@ void OpenVersions() {
         VideoInfo vi;
         if (ProbeVideo(ver.original, vi)) { vw = vi.w; vh = vi.h; }
     }
-    // Sizes that cover the screen for the part shown (the crop), and steps below that.
+    // Sizes that cover the screen for the part shown (the crop), and steps below that. With several
+    // displays, the largest one the video plays on: they all show the same decoded video.
     const Crop& c = g_settings.crop;
-    double need = vw && vh ? std::max(u.screenW / ((c.r - c.l) * vw), u.screenH / ((c.b - c.t) * vh)) : 1;
+    double need = vw && vh ? std::max(u.playW / ((c.r - c.l) * vw), u.playH / ((c.b - c.t) * vh)) : 1;
     if (vw && vh) {
         Version o;
         o.label = L"Original";
@@ -1992,8 +2009,8 @@ void OpenVersions() {
             v.w = ((UINT)lround(vw * sc) + 1) & ~1u;
             v.h = ((UINT)lround(vh * sc) + 1) & ~1u;
             if (v.h < 200) continue;
-            UINT lines = (UINT)lround(u.screenH * f);
-            v.label = f == 1.0 ? Fmt(L"%up (your screen)", lines) : Fmt(L"%up", lines);
+            UINT lines = (UINT)lround(u.playH * f);
+            v.label = f != 1.0 ? Fmt(L"%up", lines) : Fmt(u.playCount > 1 ? L"%up (your largest screen)" : L"%up (your screen)", lines);
             ver.list.push_back(v);
         }
     }
@@ -2138,8 +2155,15 @@ void PaintVersionsDialog() {
         else if (!v.original) Button(ID_VER_DEL0 + i, R(r.right - 40, cy - 14, r.right - 12, cy + 14), L"", L"\uE74D");
     }
 
-    // Bottom bar: what the desktop shows, and the choice.
+    // Bottom bar: what the desktop shows, and the choice (or the question before deleting a version).
     const float by = T + H - 48;
+    if (ver.confirm >= 0 && ver.confirm < n) {
+        Text(L"Delete the " + ver.list[ver.confirm].label + L" version? You can make it again later.",
+             R(L + 24, by - 4, L + W - 24 - 236, by + 36), u.fWrap, t.text);
+        Button(ID_VER_NO, R(L + W - 24 - 228, by, L + W - 24 - 126, by + 32), L"Cancel");
+        Button(ID_VER_YES, R(L + W - 24 - 118, by, L + W - 24, by + 32), L"Delete", nullptr, true);
+        return;
+    }
     const Version* sv = ver.sel >= 0 && ver.sel < n ? &ver.list[ver.sel] : nullptr;
     bool current = sv && SamePath(sv->path, g_settings.video);
     bool toMake = sv && sv->path.empty();
@@ -2160,13 +2184,15 @@ void PaintVersionsDialog() {
 
 void ClockEdited();
 
-const float kFontRowH = 132, kFontAddH = 76;  // a font's row; the "Add your own font" row at the end
+const float kFontRowH = 132;                    // a font's row
 const float kDateRowH = 48;                     // a date style's row
 const float kLangRowH = 40;                     // a language's row
 
 struct FontDialog {
     bool open = false;
     bool dates = false;  // the date styles instead of the fonts
+    int confirm = -1;      // a font's Remove was clicked: asking first
+    float scrollBack = 0;  // where the font list was, for coming back from the languages
     bool langs = false;  // within the date styles: the list of languages
     std::vector<ClockLanguage> langList;
     std::vector<ClockFontInfo> list;
@@ -2243,8 +2269,9 @@ void OpenDateDialog() {
     ReleaseFontSamples();
 }
 
-// The languages, in place of the date styles (Back, Esc or picking one goes back to them).
+// The languages, in place of the fonts (Back, Esc or picking one goes back to them).
 void OpenLanguageList() {
+    fnt.scrollBack = fnt.target;
     fnt.langs = true;
     fnt.langList = Clock_Languages();
     ReleaseFontSamples();
@@ -2259,7 +2286,7 @@ void CloseLanguageList() {
     fnt.langs = false;
     fnt.langList.clear();
     ReleaseFontSamples();
-    fnt.scroll = fnt.target = std::max(0.f, (EditedLook()->date - 3) * kDateRowH);
+    fnt.scroll = fnt.target = fnt.scrollBack;
 }
 
 // A letter typed in the language list: the next language starting with it.
@@ -2432,8 +2459,8 @@ void PaintFontDialog() {
     Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
     AddHit(ID_FNT_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
     const int n = PickerRows();
-    const float rowH = PickerRowH(), W = kDialogW, content = n * rowH + (fnt.dates ? 0 : kFontAddH);
-    const float listH = std::min(content, fnt.dates ? 9.4f * rowH : 3.4f * rowH), H = 84 + listH + 8 + 64;
+    const float rowH = PickerRowH(), W = kDialogW, content = n * rowH;
+    const float listH = std::min(content, fnt.dates || fnt.langs ? 9.4f * rowH : 3.4f * rowH), H = 84 + listH + 8 + 64;
     const float L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2), k = u.dpi / 96;
     const D2D1_RECT_F panel = R(L, T, L + W, T + H);
     const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
@@ -2450,7 +2477,7 @@ void PaintFontDialog() {
     Text(fnt.langs ? L"The day, month and AM/PM words come from Windows. Type a letter to jump."
                    : L"Click one to use it; your desktop shows it right away.",
          R(L + 24, T + 50, L + W - 24, T + 72), u.fBody, t.text2);
-    if (fnt.dates && !fnt.langs) {  // the clock's language, and its own digits when it has them
+    if (!fnt.dates && !fnt.langs) {  // the clock's language, and its own digits when it has them
         const ClockLook* look = EditedLook();
         const float bl = L + W - 24 - 190;
         FontButton(ID_FNT_LANG, R(bl, T + 14, L + W - 24, T + 46), Clock_LanguageName(look->lang), true, L"\uE774");
@@ -2558,12 +2585,6 @@ void PaintFontDialog() {
             Button(ID_FNT_GET0 + i, R(r.right - 12 - 150 - 8 - 96, cy - 16, r.right - 12 - 158, cy + 16), L"Get it", L"\uE8A7");
         }
     }
-    if (!fnt.dates) {  // the last row: any font of the user's own
-        const float cy = y + kFontAddH / 2;
-        Button(ID_FNT_OWN, R(L + 24, cy - 18, L + 24 + 200, cy + 18), L"Add your own font\u2026", L"\uE710");
-        Text(L"A .ttf or .otf file, or a .zip with one. VideoBG keeps its own copy.", R(L + 24 + 216, cy - 20, L + W - 24 - barW, cy + 20),
-             u.fWrap, t.text2);
-    }
     u.rt->PopAxisAlignedClip();
     for (size_t h = firstHit; h < u.hits.size(); h++) {  // what's scrolled out of the list can't be clicked
         D2D1_RECT_F& hr = u.hits[h].r;
@@ -2583,7 +2604,21 @@ void PaintFontDialog() {
     }
 
     const float by = T + H - 48;
-    Text(fnt.note, R(L + 24, by - 2, L + W - 24 - 130, by + 34), u.fWrap, t.text3);
+    if (fnt.confirm >= 0 && fnt.confirm < (int)fnt.list.size()) {  // before removing a font
+        Text(L"Remove " + fnt.list[fnt.confirm].key + L"? Clocks using it go back to Audiowide.", R(L + 24, by - 4, L + W - 24 - 236, by + 36),
+             u.fWrap, t.text);
+        Button(ID_FNT_NO, R(L + W - 24 - 228, by, L + W - 24 - 126, by + 32), L"Cancel");
+        Button(ID_FNT_YES, R(L + W - 24 - 118, by, L + W - 24, by + 32), L"Remove", nullptr, true);
+        return;
+    }
+    float noteL = L + 24;
+    if (!fnt.dates && !fnt.langs) {  // any font of the user's own, always at hand
+        Button(ID_FNT_OWN, R(L + 24, by, L + 24 + 196, by + 32), L"Add your own font\u2026", L"\uE710");
+        noteL += 212;
+    }
+    const bool hint = fnt.note.empty() && !fnt.dates && !fnt.langs;
+    Text(hint ? std::wstring(L"A .ttf or .otf file, or a .zip with one") : fnt.note, R(noteL, by - 2, L + W - 24 - 126, by + 34), u.fWrap,
+         t.text3);
     Button(ID_FNT_DONE, R(L + W - 24 - 110, by, L + W - 24, by + 32), fnt.langs ? L"Back" : L"Done", nullptr, true);
 }
 
@@ -2593,6 +2628,44 @@ void PaintFontDialog() {
 
 std::wstring PresetDetails(const ClockLook& l) {
     return ShownFont(l) + L" \u00B7 " + Fmt(L"%.0f%%", l.size * 100) + L" \u00B7 " + Clock_LanguageName(l.lang);
+}
+
+// Each preset's time, in its own font, colours and glow (redrawn when the minute or the preset changes).
+struct PresetSample {
+    ID2D1Bitmap* bmp = nullptr;
+    D2D1_SIZE_F size{};
+    std::wstring key;
+} prsSample[kClockPresets];
+
+void ReleasePresetSamples() {
+    for (PresetSample& ps : prsSample) {
+        SafeRelease(ps.bmp);
+        ps.key.clear();
+    }
+}
+
+void EnsurePresetSample(int i, float maxW, float maxH) {
+    PresetSample& ps = prsSample[i];
+    const ClockLook& l = g_settings.presets[i].look;
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    const std::wstring text = l.h24 ? Fmt(L"%02d:%02d", t.wHour, t.wMinute) : Fmt(L"%d:%02d", (t.wHour + 11) % 12 + 1, t.wMinute);
+    const std::wstring key = text + L"|" + Clock_StyleKey(l);
+    if (ps.key == key || !u.rt) return;
+    SafeRelease(ps.bmp);
+    ps.key = key;
+    const float k = u.dpi / 96;
+    ClockImage img;
+    float pt = 14;
+    for (int pass = 0; pass < 2; pass++) {  // smaller when it doesn't fit
+        if (!Clock_PaintLine(text, ShownFont(l), pt, l.color, k, &img, &l) || img.w <= 0) return;
+        const float fit = std::min(maxW / (img.w / k), maxH / (img.h / k));
+        if (fit >= 1) break;
+        pt *= fit;
+    }
+    D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    u.rt->CreateBitmap(D2D1::SizeU((UINT32)img.w, (UINT32)img.h), img.px.data(), (UINT32)img.w * 4, &bp, &ps.bmp);
+    ps.size = D2D1::SizeF(img.w / k, img.h / k);
 }
 
 void PaintPresetsDialog() {
@@ -2618,23 +2691,34 @@ void PaintPresetsDialog() {
     for (int i = 0; i < kClockPresets; i++, y += rowH) {
         const ClockPreset& p = g_settings.presets[i];
         const D2D1_RECT_F r = R(L + 16, y, L + W - 16, y + rowH - 6);
-        const float cy = (r.top + r.bottom) / 2, nx = r.left + 60, bx = r.right - 8, bt = cy - 15, bb = cy + 15;
+        const float cy = (r.top + r.bottom) / 2, nx = r.left + 106, bx = r.right - 8, bt = cy - 15, bb = cy + 15;
         if (prs.confirm == i) {
             Fill(r, Mix(face, t.accent, 0.14f), 6);
             Stroke(r, t.accent, 6);
         }
-        if (p.used) {  // its text and glow colours
-            for (int k = 0; k < 2; k++) {
-                const D2D1_COLOR_F c = LookColor(k && !p.look.glowColor.empty() ? p.look.glowColor : p.look.color);
-                Circle(r.left + 20 + k * 19, cy, 9, t.ctrlStroke);
-                Circle(r.left + 20 + k * 19, cy, 8, c);
+        // Its time as a little clock, on a tile dark or light enough for its colour.
+        const D2D1_RECT_F tile = R(r.left + 8, r.top + 6, r.left + 94, r.bottom - 6);
+        if (p.used) {
+            BYTE cr = 255, cg = 255, cb = 255;
+            ParseColor(p.look.color, &cr, &cg, &cb);
+            const bool lightText = 0.299f * cr + 0.587f * cg + 0.114f * cb > 140;
+            Fill(tile, lightText ? Rgb(0x1C1C1C) : Rgb(0xE8E8E8), 6);
+            Stroke(tile, t.ctrlStroke, 6);
+            EnsurePresetSample(i, tile.right - tile.left - 8, tile.bottom - tile.top - 4);
+            if (prsSample[i].bmp) {  // 1:1 on whole pixels
+                const D2D1_SIZE_F sz = prsSample[i].size;
+                const float k = u.dpi / 96, x0 = roundf((tile.left + tile.right - sz.width) / 2 * k) / k,
+                            y0 = roundf((tile.top + tile.bottom - sz.height) / 2 * k) / k;
+                D2D1_RECT_F dst = R(x0, y0, x0 + sz.width, y0 + sz.height);
+                u.rt->DrawBitmap(prsSample[i].bmp, &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr);
             }
         } else {
-            Circle(r.left + 29, cy, 9, t.text3);
-            Circle(r.left + 29, cy, 8, face);
+            Fill(tile, Mix(face, t.text, 0.04f), 6);
+            Stroke(tile, t.ctrlStroke, 6);
+            Text(L"\uE710", tile, u.fIconSmall, t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
         }
         if (prs.rename == i) {  // typing its name
-            const D2D1_RECT_F nb = R(nx - 6, cy - 16, bx - 264, cy + 16);
+            const D2D1_RECT_F nb = R(nx - 6, cy - 16, bx - 248, cy + 16);
             Fill(nb, face, 4);
             Stroke(nb, t.accent, 4, 2);
             const float tw = TextWidth(prs.name, u.fBody);
@@ -2643,24 +2727,25 @@ void PaintPresetsDialog() {
             if (!prs.nameFresh) Line(nb.left + 8 + tw, cy - 8, nb.left + 8 + tw, cy + 8, t.text);
             AddHit(ID_PRS_NAME, K_AREA, nb);
         } else {
-            Text(PresetName(i), R(nx, r.top + 5, bx - 264, cy + 1), u.fStrong, p.used ? t.text : t.text2);
-            Text(p.used ? PresetDetails(p.look) : std::wstring(L"Empty: Edit makes one from your clock"), R(nx, cy, bx - 264, r.bottom - 4),
+            Text(PresetName(i), R(nx, r.top + 5, bx - 248, cy + 1), u.fStrong, p.used ? t.text : t.text2);
+            Text(p.used ? PresetDetails(p.look) : std::wstring(L"Empty: Edit makes one from your clock"), R(nx, cy, bx - 248, r.bottom - 4),
                  u.fSmall, t.text2);
         }
         // Use, Edit, Rename and Delete; an empty one can only be edited.
-        Button(ID_PRS_USE0 + i, R(bx - 256, bt, bx - 176, bb), L"Use", L"\uE73E", false, p.used);
-        Button(ID_PRS_EDIT0 + i, R(bx - 168, bt, bx - 88, bb), L"Edit", L"\uE70F");
+        Button(ID_PRS_USE0 + i, R(bx - 240, bt, bx - 168, bb), L"Use", L"\uE73E", false, p.used);
+        Button(ID_PRS_EDIT0 + i, R(bx - 160, bt, bx - 88, bb), L"Edit", L"\uE70F");
         Button(ID_PRS_REN0 + i, R(bx - 80, bt, bx - 44, bb), L"", L"\uE8AC", false, p.used);
         Button(ID_PRS_DEL0 + i, R(bx - 36, bt, bx, bb), L"", L"\uE74D", false, p.used);
     }
 
-    // Bottom bar: Close, or the question before Use replaces a clock.
+    // Bottom bar: Close, or the question before Use replaces a clock or Delete deletes a preset.
     const float by = T + H - 48;
     if (prs.confirm >= 0) {
-        Text(L"Use " + PresetName(prs.confirm) + L" for " + PickedLookName() + L"? It replaces that clock's look.",
+        Text(prs.confirmDel ? L"Delete " + PresetName(prs.confirm) + L"? It can't be undone."
+                            : L"Use " + PresetName(prs.confirm) + L" for " + PickedLookName() + L"? It replaces that clock's look.",
              R(L + 24, by - 4, L + W - 24 - 236, by + 36), u.fWrap, t.text);
         Button(ID_PRS_NO, R(L + W - 24 - 228, by, L + W - 24 - 126, by + 32), L"Cancel");
-        Button(ID_PRS_YES, R(L + W - 24 - 118, by, L + W - 24, by + 32), L"Replace", nullptr, true);
+        Button(ID_PRS_YES, R(L + W - 24 - 118, by, L + W - 24, by + 32), prs.confirmDel ? L"Delete" : L"Replace", nullptr, true);
     } else {
         Text(prs.note, R(L + 24, by - 2, L + W - 24 - 130, by + 34), u.fWrap, t.text3);
         Button(ID_PRS_CLOSE, R(L + W - 24 - 110, by, L + W - 24, by + 32), L"Close");
@@ -3043,6 +3128,7 @@ void ClosePresets() {
     PresetRenameDone(true);
     prs.open = false;
     prs.confirm = -1;
+    ReleasePresetSamples();
 }
 
 // Puts a preset on the look the page's choices pick; that look keeps its Show / Hide.
@@ -3102,6 +3188,15 @@ void PresetDelete(int i) {
     SavePresets(g_settings);
     if (prs.confirm == i) prs.confirm = -1;
     Log(L"ui: clock preset %d deleted", i + 1);
+}
+
+// Replace or Delete, after asking.
+void PresetConfirmed() {
+    const int i = prs.confirm;
+    if (i < 0) return;
+    if (prs.confirmDel) PresetDelete(i);
+    else PresetUse(i);
+    prs.confirm = -1;
 }
 
 void PresetRenameStart(int i) {
@@ -3484,7 +3579,10 @@ void OnSeg(int id, int i) {
     switch (id) {
         case ID_SCALE: g_settings.scale = i; break;
         case ID_FPS: g_settings.fpsCap = kFpsValues[i]; break;
-        case ID_MONITORS: g_settings.monitors = i; break;
+        case ID_MONITORS:
+            g_settings.monitors = i;
+            QueryScreen();  // the displays the versions are sized for
+            break;
         case ID_COVER: g_settings.pauseCover = i; break;
         case ID_SOUND:
             if (i == g_settings.sound) return;
@@ -3543,26 +3641,27 @@ void OnClick(int id) {
     }
     if (id >= ID_PRS_USE0 && id < ID_PRS_DEL0 + kClockPresets) {
         const int i = (id - ID_PRS_USE0) % 10;
-        if (id < ID_PRS_EDIT0) {
+        if (id < ID_PRS_EDIT0 || id >= ID_PRS_DEL0) {  // Use or Delete: asks first
             prs.confirm = i;
-            if (u.focus) u.focus = u.hot = ID_PRS_YES;  // from the keyboard: Enter replaces
+            prs.confirmDel = id >= ID_PRS_DEL0;
+            if (u.focus) u.focus = u.hot = ID_PRS_YES;  // from the keyboard: Enter goes ahead
         } else if (id < ID_PRS_REN0) {
             PresetEdit(i);
-        } else if (id < ID_PRS_DEL0) {
-            PresetRenameStart(i);
         } else {
-            PresetDelete(i);
+            PresetRenameStart(i);
         }
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
     if (id >= ID_VER_ROW0 && id < ID_VER_DEL0) {
+        ver.confirm = -1;
         if (id - ID_VER_ROW0 < (int)ver.list.size()) VerSelect(id - ID_VER_ROW0);
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
     if (id >= ID_VER_DEL0 && id < ID_VER_DEL0 + 50) {
-        VerDelete(id - ID_VER_DEL0);
+        ver.confirm = id - ID_VER_DEL0;
+        if (u.focus) u.focus = u.hot = ID_VER_YES;  // from the keyboard: Enter deletes
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
@@ -3581,7 +3680,10 @@ void OnClick(int id) {
         if (id < ID_FNT_GET0) FontPick(i);
         else if (id < ID_FNT_ADD0) FontGet(i);
         else if (id < ID_FNT_DEL0) FontAddFile(i);
-        else FontRemove(i);
+        else {
+            fnt.confirm = i;
+            if (u.focus) u.focus = u.hot = ID_FNT_YES;  // from the keyboard: Enter removes
+        }
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
@@ -3637,13 +3739,16 @@ void OnClick(int id) {
             break;
         case ID_VERSIONS: OpenVersions(); break;
         case ID_VER_CANCEL: CloseVersions(); break;
+        case ID_VER_NO: ver.confirm = -1; break;
+        case ID_VER_YES:
+            VerDelete(ver.confirm);
+            ver.confirm = -1;
+            break;
         case ID_CLK_FONT: OpenFontDialog(); break;
         case ID_PRS: OpenPresets(); break;
         case ID_PRS_CLOSE: ClosePresets(); break;
         case ID_PRS_NO: prs.confirm = -1; break;
-        case ID_PRS_YES:
-            if (prs.confirm >= 0) PresetUse(prs.confirm);
-            break;
+        case ID_PRS_YES: PresetConfirmed(); break;
         case ID_PRS_SAVE: PresetEditEnd(true); break;
         case ID_PRS_CANCEL: PresetEditEnd(false); break;
         case ID_PRS_CURRENT: PresetFromCurrent(); break;
@@ -3653,6 +3758,11 @@ void OnClick(int id) {
             else CloseFontDialog();
             break;
         case ID_FNT_OWN: FontAddOwn(); break;
+        case ID_FNT_NO: fnt.confirm = -1; break;
+        case ID_FNT_YES:
+            FontRemove(fnt.confirm);
+            fnt.confirm = -1;
+            break;
         case ID_FNT_LANG: OpenLanguageList(); break;
         case ID_FNT_DIGITS:
             EditedLook()->nativeDigits = !EditedLook()->nativeDigits;
@@ -3724,9 +3834,8 @@ void FontScrollToFocus() {
     float top;
     if (id >= ID_LANG_ROW0 && id < ID_LANG_ROW0 + 1000) top = (id - ID_LANG_ROW0) * kLangRowH;
     else if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) top = ((id - ID_FNT_ROW0) % 100) * PickerRowH();
-    else if (id == ID_FNT_OWN) top = fnt.list.size() * kFontRowH;
     else return;
-    const float bottom = top + (id == ID_FNT_OWN ? kFontAddH : PickerRowH());
+    const float bottom = top + PickerRowH();
     if (top < fnt.target) FontScrollTo(top, true);
     else if (bottom > fnt.target + fnt.viewH) FontScrollTo(bottom - fnt.viewH, true);
 }
@@ -3840,7 +3949,7 @@ void PaintFocus() {
         const D2D1_RECT_F c = ClockRectIn(u.clockBox, *EditedLook());
         r = R(c.left - 4, c.top - 4, c.right + 4, c.bottom + 4);
     }
-    const bool inList = fnt.open && ((h->id >= ID_FNT_ROW0 && h->id < ID_FNT_DEL0 + 100) || h->id == ID_FNT_OWN ||
+    const bool inList = fnt.open && ((h->id >= ID_FNT_ROW0 && h->id < ID_FNT_DEL0 + 100) ||
                                      (h->id >= ID_LANG_ROW0 && h->id < ID_LANG_ROW0 + 1000));
     if (inList) u.rt->PushAxisAlignedClip(fnt.view, D2D1_ANTIALIAS_MODE_ALIASED);
     Stroke(r, u.th.accent, h->kind == K_AREA ? 8.f : 7.f, 2);
@@ -3924,8 +4033,16 @@ bool OnKeyInner(UINT vk) {
     if (dlg.open) return DlgKey(vk);
     if (ver.open) {
         int n = (int)ver.list.size();
-        if (vk == VK_ESCAPE) CloseVersions();
-        else if (vk == VK_RETURN) VerApply();
+        if (vk == VK_ESCAPE && ver.confirm >= 0) {
+            ver.confirm = -1;
+        } else if (vk == VK_RETURN && ver.confirm >= 0) {
+            VerDelete(ver.confirm);
+            ver.confirm = -1;
+        } else if (vk == VK_ESCAPE) {
+            CloseVersions();
+        } else if (vk == VK_RETURN) {
+            VerApply();
+        }
         else if ((vk == VK_UP || vk == VK_DOWN) && n) VerSelect(std::clamp(ver.sel + (vk == VK_DOWN ? 1 : -1), 0, n - 1));
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
@@ -3933,7 +4050,13 @@ bool OnKeyInner(UINT vk) {
     if (prs.open) {
         if (vk == VK_ESCAPE && prs.confirm >= 0) prs.confirm = -1;
         else if (vk == VK_ESCAPE) ClosePresets();
-        else if (vk == VK_RETURN && prs.confirm >= 0) PresetUse(prs.confirm);
+        else if (vk == VK_RETURN && prs.confirm >= 0) PresetConfirmed();
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (fnt.open && fnt.confirm >= 0 && (vk == VK_ESCAPE || vk == VK_RETURN)) {
+        if (vk == VK_RETURN) FontRemove(fnt.confirm);
+        fnt.confirm = -1;
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
@@ -4310,9 +4433,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             } else if (FAILED(hr)) {
                 u.optMsg = Fmt(L"Couldn't make the %ls version (0x%08lX)", u.optLabel.c_str(), (unsigned long)hr);
             }
+            if (ver.open && SUCCEEDED(hr) && !u.optGif) OpenVersions();  // the list again, with the new version in it
             UI_Refresh();
             return 0;
         }
+        case WM_DISPLAYCHANGE:  // a display added, removed or resized
+            QueryScreen();
+            InvalidateRect(h, nullptr, FALSE);
+            return 0;
         case WM_CLOSE:
             DestroyWindow(h);
             return 0;
@@ -4354,6 +4482,30 @@ void QueryScreen() {
     GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
     u.screenW = mi.rcMonitor.right - mi.rcMonitor.left;
     u.screenH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    // The displays the video plays on (Playback > Displays); versions are sized for the largest.
+    struct Acc {
+        int w, h, n;
+        bool all;
+    } acc{0, 0, 0, g_settings.monitors == 0};
+    EnumDisplayMonitors(
+        nullptr, nullptr,
+        [](HMONITOR m, HDC, LPRECT, LPARAM p) -> BOOL {
+            Acc* a = (Acc*)p;
+            MONITORINFO mi{sizeof mi};
+            GetMonitorInfoW(m, &mi);
+            if (!a->all && !(mi.dwFlags & MONITORINFOF_PRIMARY)) return TRUE;
+            const int w = mi.rcMonitor.right - mi.rcMonitor.left, h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+            if ((INT64)w * h > (INT64)a->w * a->h) {
+                a->w = w;
+                a->h = h;
+            }
+            a->n++;
+            return TRUE;
+        },
+        (LPARAM)&acc);
+    u.playW = acc.w > 0 ? acc.w : u.screenW;
+    u.playH = acc.h > 0 ? acc.h : u.screenH;
+    u.playCount = std::max(1, acc.n);
 }
 
 void QueryGpu() {

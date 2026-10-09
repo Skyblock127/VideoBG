@@ -803,7 +803,7 @@ std::wstring Clock_NativeDigits(const std::wstring& code) {
 }
 
 bool Clock_PaintLine(const std::wstring& text, const std::wstring& font, float pt, const std::wstring& color, float k,
-                     ClockImage* out) {
+                     ClockImage* out, const ClockLook* glow) {
     if (!OpenPainter() || (!UseFont(font) && !UseFont(kFonts[0].key))) return false;
     IDWriteTextFormat* fmt = nullptr;
     IDWriteTextLayout* layout = nullptr;
@@ -817,7 +817,11 @@ bool Clock_PaintLine(const std::wstring& text, const std::wstring& font, float p
     if (SUCCEEDED(hr)) hr = layout->GetMetrics(&m);
     if (SUCCEEDED(hr)) hr = layout->SetMaxWidth(m.widthIncludingTrailingWhitespace);
     if (SUCCEEDED(hr)) hr = layout->GetMetrics(&m);
-    const int w = SUCCEEDED(hr) ? (int)ceilf(m.widthIncludingTrailingWhitespace) + 2 : 0, h = SUCCEEDED(hr) ? (int)ceilf(m.height) : 0;
+    // Room around the text for the glow (spread in proportion to the text's size).
+    const float glowR = glow && glow->glow > 0 ? glow->glowSize * pt / 24 * k : 0;
+    const int pad = (int)ceilf(glowR);
+    const int w = SUCCEEDED(hr) ? (int)ceilf(m.widthIncludingTrailingWhitespace) + 2 + 2 * pad : 0,
+              h = SUCCEEDED(hr) ? (int)ceilf(m.height) + 2 * pad : 0;
     bool ok = false;
     if (w > 2 && h > 0 && w < 16384 && h < 16384) {
         BITMAPINFO bi{};
@@ -844,11 +848,16 @@ bool Clock_PaintLine(const std::wstring& text, const std::wstring& font, float p
                 rt->BeginDraw();
                 rt->Clear(D2D1::ColorF(0, 0, 0, 0));
                 rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-                rt->DrawTextLayout(D2D1::Point2F(1, 0), layout, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                rt->DrawTextLayout(D2D1::Point2F(1.f + pad, (float)pad), layout, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
                 ok = SUCCEEDED(rt->EndDraw());
             }
             if (ok) {
                 GdiFlush();
+                if (glowR > 0) {
+                    BYTE gr = r, gg = g, gb = b;
+                    if (!glow->glowColor.empty()) ParseColor(glow->glowColor, &gr, &gg, &gb);
+                    AddGlow((uint32_t*)bits, w, h, glowR, glow->glow, D2D1::ColorF(gr / 255.f, gg / 255.f, gb / 255.f), 1);
+                }
                 out->px.assign((uint32_t*)bits, (uint32_t*)bits + (size_t)w * h);
                 out->w = w;
                 out->h = h;
