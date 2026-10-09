@@ -84,6 +84,9 @@ and asks whether to delete your settings too. Then delete the folder.
 | **Power saving** | Pause when apps cover the desktop, and what to do on battery. |
 | **General** | Change the hotkey, choose whether the wallpaper starts on, and find your data folders. |
 
+No mouse needed: **Tab** moves between controls, **Enter** or **Space** uses one, the **arrow keys**
+move sliders, the clock and the crop box, and **Esc** lets go (press it again to close).
+
 To turn off starting with Windows, go to **Windows Settings > Apps > Startup**.
 
 ## If a video won't play

@@ -31,7 +31,7 @@ enum Id {
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_SHUFFLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_EYEDROP, ID_CLK_SIZE, ID_CLK_HOURS,
-    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR, ID_CLK_FONT, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN,
+    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR, ID_CLK_FONT, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_REPO,
     ID_DLG_SCRIM, ID_DLG_SV, ID_DLG_HUE, ID_DLG_PREVIEW, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
@@ -63,6 +63,7 @@ struct Hit {
     D2D1_RECT_F r;
     bool enabled;
     std::vector<float> segs;  // segment boundaries (x) for K_SEG
+    int sel = -1;             // K_SEG: the segment chosen
 };
 
 struct Theme {
@@ -269,6 +270,10 @@ struct UI {
 
     std::vector<Hit> hits;
     int hot = 0, hotSeg = -1, press = 0, drag = 0;
+    int focus = 0;          // the control with the keyboard focus (Tab), outlined; 0 = none
+    int tabFrom = 0;        // the control clicked last: Tab goes on from there
+    int focusReturn = 0;    // what opened a dialog (or the crop page) by keyboard: the focus goes back to it
+    bool focusFirst = false;  // a dialog just opened by keyboard: focus its first control once it's drawn
     int keySlider = 0;      // the slider clicked last: arrow keys move it a step at a time
     bool keyStepped = false;  // it moved by key and isn't saved yet (saved when the key goes up)
     bool tracking = false;
@@ -633,6 +638,7 @@ void Seg(int id, const D2D1_RECT_F& r, const std::vector<std::wstring>& items, i
         bounds.push_back(x);
     }
     AddHit(id, K_SEG, r, enabled, bounds);
+    u.hits.back().sel = sel;
 }
 
 void Slider(int id, const D2D1_RECT_F& r, float frac, bool enabled = true) {
@@ -1018,7 +1024,14 @@ void PaintSidebar() {
     stat(yy + 42, L"Total RAM", mb(wall + tray), u.fSmall);
     stat(yy + 66, L"Graphics memory", running && !gfx ? std::wstring(L"\u2026") : mb(gfx), u.fSmall);
     Text(u.gpu, R(x, yy + 84, right, yy + 100), u.fSmall, t.text3);
-    Text(L"VideoBG " APP_VERSION, R(x, sc.bottom - 28, right, sc.bottom - 10), u.fSmall, t.text3);
+    // The version, underlined: a link to VideoBG's page on GitHub.
+    const std::wstring version = L"VideoBG " APP_VERSION;
+    const float vw = TextWidth(version, u.fSmall);
+    const D2D1_RECT_F vr = R(x, sc.bottom - 28, x + vw, sc.bottom - 10);
+    const bool vhot = IsHot(ID_REPO);
+    Text(version, vr, u.fSmall, vhot ? t.accentHover : t.text2);
+    Line(x, vr.bottom - 1, x + vw, vr.bottom - 1, vhot ? t.accentHover : t.text3);
+    AddHit(ID_REPO, K_BUTTON, vr);
 }
 
 // Info rows under a preview: icon + message + optional link on the right.
@@ -2090,6 +2103,8 @@ struct FontDialog {
     std::wstring note;
     float scroll = 0, target = 0, maxScroll = 0;  // the list, in DIPs: where it is, and where it's gliding to
     float trackTop = 0, trackH = 0, thumbH = 0, grab = 0;  // the scroll bar, for dragging it
+    float viewH = 0;                                       // the list's visible height
+    D2D1_RECT_F view{};                                    // and where it is
 } fnt;
 
 // The wheel and the arrow keys glide the list to `to`; dragging the bar moves it at once.
@@ -2295,8 +2310,9 @@ void PaintFontDialog() {
     const size_t firstHit = u.hits.size();
     u.rt->PushAxisAlignedClip(view, D2D1_ANTIALIAS_MODE_ALIASED);
     float y = view.top - fnt.scroll;
-    for (int i = 0; i < n; i++, y += rowH) {
-        if (y + rowH <= view.top || y >= view.bottom) continue;
+    fnt.viewH = listH;
+    fnt.view = view;
+    for (int i = 0; i < n; i++, y += rowH) {  // all rows, also the ones out of view: Tab goes through them
         const ClockFontInfo& f = fnt.list[i];
         const bool sel = !_wcsicmp(shown.c_str(), f.key.c_str());
         const D2D1_RECT_F r = R(L + 16, y + 3, L + W - 16 - barW, y + rowH - 3);
@@ -2332,7 +2348,7 @@ void PaintFontDialog() {
             Button(ID_FNT_GET0 + i, R(r.right - 12 - 150 - 8 - 96, cy - 16, r.right - 12 - 158, cy + 16), L"Get it", L"\uE8A7");
         }
     }
-    if (y < view.bottom) {  // the last row: any font of the user's own
+    {  // the last row: any font of the user's own
         const float cy = y + kFontAddH / 2;
         Button(ID_FNT_OWN, R(L + 24, cy - 18, L + 24 + 200, cy + 18), L"Add your own font\u2026", L"\uE710");
         Text(L"A .ttf or .otf file, or a .zip with one. VideoBG keeps its own copy.", R(L + 24 + 216, cy - 20, L + W - 24 - barW, cy + 20),
@@ -2938,6 +2954,9 @@ bool DlgMouseDown(const Hit* ht, float x, float y) {
 
 // ---------------------------------------------------------------------------------------
 
+void PaintFocus();
+void FocusMove(int dir);
+
 void Paint() {
     if (!EnsureTarget()) return;
     u.hits.clear();
@@ -2947,6 +2966,11 @@ void Paint() {
     u.rt->Clear(&bg);
     if (u.page == 1) PaintCrop();
     else PaintMain();
+    if (u.focusFirst) {
+        u.focusFirst = false;
+        FocusMove(1);
+    }
+    PaintFocus();
     if (u.rt->EndDraw() == D2DERR_RECREATE_TARGET) ReleaseTarget();
 }
 
@@ -3152,6 +3176,7 @@ void OnClick(int id) {
             break;
         case ID_DLG_SAVE: DlgSaveSlot(); break;
         case ID_DLG_USE: DlgUseSlot(dlg.slot); break;
+        case ID_REPO: ShellExecuteW(u.hwnd, L"open", APP_REPO, nullptr, nullptr, SW_SHOWNORMAL); break;
         case ID_OPEN_DATA: ShellExecuteW(u.hwnd, L"open", AppDataDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;
         case ID_OPEN_LOCAL: ShellExecuteW(u.hwnd, L"open", LocalDataDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;
         case ID_CHOOSE:
@@ -3218,7 +3243,161 @@ void StopRecording() {
     Host_SuspendHotkey(false);
 }
 
+// ---- Keyboard ------------------------------------------------------------------------------
+// Tab / Shift+Tab move a focus through the controls in the order they're drawn: the header, the
+// sidebar, then the page from the top (only a dialog's own while one is open). Enter or Space uses
+// the focused control (a choice of several goes on to the next one, round and round); the arrow keys
+// step a slider, nudge the clock or the crop box, move through a choice or a colour field, and
+// otherwise move the focus. Esc lets go of the focus; Esc again closes the dialog or the window.
+
+bool Focusable(const Hit& h) {
+    if (!h.enabled) return false;
+    if (h.kind == K_BUTTON || h.kind == K_TOGGLE || h.kind == K_SEG || h.kind == K_SLIDER) return true;
+    return h.id == ID_CLK_AREA || h.id == ID_C_AREA || h.id == ID_DLG_SV || h.id == ID_DLG_HUE;
+}
+
+// Where Tab starts: after the last dialog backdrop, so an open dialog keeps the focus to itself.
+size_t FocusStart() {
+    size_t start = 0;
+    for (size_t i = 0; i < u.hits.size(); i++)
+        if (u.hits[i].id == ID_DLG_SCRIM || u.hits[i].id == ID_VER_SCRIM || u.hits[i].id == ID_FNT_SCRIM) start = i + 1;
+    return start;
+}
+
+const Hit* FocusHit() {
+    for (size_t i = u.hits.size(); i-- > FocusStart();)
+        if (u.hits[i].id == u.focus) return &u.hits[i];
+    return nullptr;
+}
+
+// In the font list, the focused row scrolls into view.
+void FontScrollToFocus() {
+    const int id = u.focus;
+    float top;
+    if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) top = ((id - ID_FNT_ROW0) % 100) * kFontRowH;
+    else if (id == ID_FNT_OWN) top = fnt.list.size() * kFontRowH;
+    else return;
+    const float bottom = top + (id == ID_FNT_OWN ? kFontAddH : kFontRowH);
+    if (top < fnt.target) FontScrollTo(top, true);
+    else if (bottom > fnt.target + fnt.viewH) FontScrollTo(bottom - fnt.viewH, true);
+}
+
+void SetFocusTo(int id) {
+    FinishStep();
+    u.focus = id;
+    u.hot = id;  // the help line says what it does, as on hover
+    u.hotSeg = -1;
+    const Hit* h = FocusHit();
+    u.keySlider = h && h->kind == K_SLIDER ? id : 0;
+    if (fnt.open) FontScrollToFocus();
+}
+
+void FocusMove(int dir) {
+    std::vector<int> ids;  // the controls Tab goes through, in order
+    for (size_t i = FocusStart(); i < u.hits.size(); i++)
+        if (Focusable(u.hits[i]) && std::find(ids.begin(), ids.end(), u.hits[i].id) == ids.end()) ids.push_back(u.hits[i].id);
+    if (ids.empty()) return;
+    auto it = std::find(ids.begin(), ids.end(), u.focus ? u.focus : u.tabFrom);
+    const int n = (int)ids.size();
+    int i = it == ids.end() ? (dir > 0 ? -1 : 0) : (int)(it - ids.begin());  // nothing yet: the first (backwards: the last)
+    SetFocusTo(ids[(i + dir + n) % n]);
+    InvalidateRect(u.hwnd, nullptr, FALSE);
+}
+
+void FocusActivate() {
+    const Hit* h = FocusHit();
+    if (!h || !h->enabled) return;
+    const int id = h->id, n = (int)h->segs.size() - 1, sel = h->sel;
+    if (h->kind == K_SEG) {
+        if (n > 0) OnSeg(id, (sel + 1) % n);
+    } else if (h->kind == K_BUTTON || h->kind == K_TOGGLE) {
+        OnClick(id);
+    }
+}
+
+// The crop box, moved a step (Shift: five) without changing its size.
+void CropNudge(UINT vk) {
+    const float step = GetKeyState(VK_SHIFT) < 0 ? 0.05f : 0.01f;
+    Crop& c = u.edit;
+    float dx = vk == VK_LEFT ? -step : vk == VK_RIGHT ? step : 0, dy = vk == VK_UP ? -step : vk == VK_DOWN ? step : 0;
+    dx = std::clamp(dx, -c.l, 1 - c.r);
+    dy = std::clamp(dy, -c.t, 1 - c.b);
+    c.l += dx;
+    c.r += dx;
+    c.t += dy;
+    c.b += dy;
+    SendPreview(true);
+}
+
+// The colour dialog's field (saturation across, brightness up) and hue bar, a step at a time.
+void DlgNudge(int id, UINT vk) {
+    const float step = GetKeyState(VK_SHIFT) < 0 ? 0.1f : 0.01f;
+    const float dx = vk == VK_LEFT ? -step : vk == VK_RIGHT ? step : 0, dy = vk == VK_UP ? step : vk == VK_DOWN ? -step : 0;
+    if (id == ID_DLG_SV) {
+        dlg.s = std::clamp(dlg.s + dx, 0.f, 1.f);
+        dlg.v = std::clamp(dlg.v + dy, 0.f, 1.f);
+    } else {
+        dlg.h = std::clamp(dlg.h + (dx + dy) * 360, 0.f, 359.9f);
+    }
+    dlg.exact.clear();
+    dlg.sameAsText = dlg.hexEdit = false;
+    DlgApply(false);
+}
+
+void FocusArrow(UINT vk) {
+    const Hit* h = FocusHit();
+    if (!h) return;
+    const int id = h->id, dir = vk == VK_RIGHT || vk == VK_DOWN ? 1 : -1;
+    if (h->kind == K_SLIDER) {
+        u.keySlider = id;
+        StepSlider(vk == VK_RIGHT || vk == VK_UP ? 1 : -1);
+    } else if (h->kind == K_SEG && (vk == VK_LEFT || vk == VK_RIGHT)) {
+        const int n = (int)h->segs.size() - 1, to = std::clamp(h->sel + dir, 0, std::max(0, n - 1));
+        if (to != h->sel) OnSeg(id, to);
+    } else if (id == ID_CLK_AREA) {
+        if (ClockUsable()) ClockNudge(vk);
+    } else if (id == ID_C_AREA) {
+        CropNudge(vk);
+    } else if (id == ID_DLG_SV || id == ID_DLG_HUE) {
+        DlgNudge(id, vk);
+    } else {
+        FocusMove(dir);
+    }
+}
+
+// The outline around the focused control (a slider shows a ring around its knob instead).
+void PaintFocus() {
+    const Hit* h = u.focus ? FocusHit() : nullptr;
+    if (!h || h->kind == K_SLIDER || h->r.right <= h->r.left) return;
+    const D2D1_RECT_F r = R(h->r.left - 3, h->r.top - 3, h->r.right + 3, h->r.bottom + 3);
+    const bool inList = fnt.open && ((h->id >= ID_FNT_ROW0 && h->id < ID_FNT_DEL0 + 100) || h->id == ID_FNT_OWN);
+    if (inList) u.rt->PushAxisAlignedClip(fnt.view, D2D1_ANTIALIAS_MODE_ALIASED);
+    Stroke(r, u.th.accent, h->kind == K_AREA ? 8.f : 7.f, 2);
+    if (inList) u.rt->PopAxisAlignedClip();
+}
+
+bool DialogOpen() { return dlg.open || ver.open || fnt.open || u.page == 1; }  // the crop page counts too
+
+bool OnKeyInner(UINT vk);
+
+// Keys go to OnKeyInner; a dialog opened from the keyboard gets the focus, and gives it back to
+// what opened it when it closes.
 bool OnKey(UINT vk) {
+    const bool was = DialogOpen();
+    const int opener = FocusHit() ? u.focus : 0;
+    const bool used = OnKeyInner(vk);
+    if (!was && DialogOpen() && opener) {
+        u.focusReturn = opener;
+        u.focus = 0;
+        u.focusFirst = true;
+    } else if (was && !DialogOpen()) {
+        if (u.focusReturn) u.focus = u.hot = u.focusReturn;
+        u.focusReturn = 0;
+    }
+    return used;
+}
+
+bool OnKeyInner(UINT vk) {
     if (u.recording) {
         if (vk == VK_ESCAPE) { StopRecording(); InvalidateRect(u.hwnd, nullptr, FALSE); return true; }
         if (vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT || vk == VK_LWIN || vk == VK_RWIN || vk == VK_LCONTROL ||
@@ -3236,6 +3415,30 @@ bool OnKey(UINT vk) {
         }
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
+    }
+    if (vk == VK_TAB) {
+        if (dlg.open) dlg.hexEdit = false;
+        FocusMove(GetKeyState(VK_SHIFT) < 0 ? -1 : 1);
+        return true;
+    }
+    const bool typing = dlg.open && (dlg.hexEdit || dlg.picking);  // the colour dialog's own keys first
+    if (vk == VK_ESCAPE && (FocusHit() || u.keySlider) && !typing && !u.picking) {  // Esc: no focus; Esc again closes
+        FinishStep();
+        u.focus = u.keySlider = 0;
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (u.focus && !typing && FocusHit()) {
+        if (vk == VK_RETURN || vk == VK_SPACE) {
+            FocusActivate();
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return true;
+        }
+        if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN) {
+            FocusArrow(vk);
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return true;
+        }
     }
     if (dlg.open) return DlgKey(vk);
     if (ver.open) {
@@ -3408,6 +3611,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (u.recording && (!ht || ht->id != ID_HOTKEY)) StopRecording();
             FinishStep();
             u.keySlider = ht && ht->kind == K_SLIDER && ht->enabled ? ht->id : 0;
+            u.focus = 0;
+            u.tabFrom = ht ? ht->id : 0;
             if (dlg.open && DlgMouseDown(ht, x, y)) {
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
