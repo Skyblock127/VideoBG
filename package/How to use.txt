@@ -1,4 +1,4 @@
-VideoBG 1.8.1 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+VideoBG 1.8.2 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
 ============================================================================
 
 What it does
@@ -33,6 +33,10 @@ Using it
     With several displays, the sizes follow the largest one the video plays
     on (Playback page, Displays): every display shows the same video, so
     more displays hardly add memory.
+  - Laptops with two graphics chips: Playback page, "Graphics chip". Power
+    saving uses the built-in one; High performance uses the dedicated one
+    (NVIDIA/AMD), which keeps the video in its own memory instead of your
+    RAM but uses more power, so mind your battery.
   - While the wallpaper is paused for a while (PC locked, screen off, or
     covered by apps if you chose that on the Power saving page), VideoBG
     lets go of the video's memory and picks up at the same frame later.

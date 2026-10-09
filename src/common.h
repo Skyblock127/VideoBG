@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"1.8.1"
+#define APP_VERSION  L"1.8.2"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
 #define RCTL_CLASS   L"VideoBG.RendererCtl"
@@ -96,6 +96,7 @@ struct Settings {
     UINT hkVk = 'B';
     int scale = 0;        // 0 fill, 1 fit, 2 stretch
     int monitors = 0;     // 0 all, 1 primary only
+    int gpu = 0;          // graphics chip: 0 the one driving the main display, 1 power saving, 2 high performance
     int speed = 100;      // playback speed in percent
     int volume = 60;      // 0..100, for whichever sound source is chosen
     int sound = 0;        // 0 off (audio never decoded), 1 the video's own audio, 2 my music

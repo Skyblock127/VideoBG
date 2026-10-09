@@ -81,7 +81,9 @@ private:
 void ShrinkPixels(std::vector<uint32_t>& px, int& w, int& h, int maxDim);
 
 // The adapter that drives the primary monitor; on hybrid laptops this keeps the discrete GPU asleep.
-IDXGIAdapter1* PickDisplayAdapter(IDXGIFactory1* f, std::wstring* name);
+// The graphics chip to use: pref -1 the one driving the main display, 0 the power-saving one
+// (integrated), 1 the high-performance one (dedicated).
+IDXGIAdapter1* PickDisplayAdapter(IDXGIFactory1* f, std::wstring* name, int pref = -1);
 
 template <class T> inline void SafeRelease(T*& p) {
     if (p) { p->Release(); p = nullptr; }

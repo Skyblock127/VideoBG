@@ -1060,7 +1060,7 @@ bool CreateDevice() {
     IDXGIFactory1* f1 = nullptr;
     if (FAILED(D3D.CreateFactory1(__uuidof(IDXGIFactory1), (void**)&f1))) return false;
     std::wstring gpu;
-    IDXGIAdapter1* ad = PickDisplayAdapter(f1, &gpu);
+    IDXGIAdapter1* ad = PickDisplayAdapter(f1, &gpu, g.s.gpu - 1);
     const D3D_FEATURE_LEVEL fl[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
                                     D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_9_3};
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
@@ -1192,7 +1192,7 @@ void Reload() {
     LoadSettings(ns);
     Settings old = g.s;
     g.s = ns;
-    if (ns.monitors != old.monitors) { Exit(EXIT_RENDER_RESTART); return; }  // new set of windows
+    if (ns.monitors != old.monitors || ns.gpu != old.gpu) { Exit(EXIT_RENDER_RESTART); return; }  // new windows, or another chip
     // A new video, or the video's own sound switching on/off, needs the other pipeline. It is
     // swapped in place: the windows and the current frame stay, playback resumes at the same spot.
     bool videoChanged = _wcsicmp(ns.video.c_str(), old.video.c_str()) != 0;

@@ -447,6 +447,7 @@ void LoadSettings(Settings& s) {
     if (s.hkVk == 0 || s.hkMods == 0) { s.hkMods = MOD_CONTROL | MOD_ALT; s.hkVk = 'B'; }
     s.scale = ReadInt(ini, L"Scale", 0, 0, 2);
     s.monitors = ReadInt(ini, L"Monitors", 0, 0, 1);
+    s.gpu = ReadInt(ini, L"Gpu", 0, 0, 2);
     s.speed = ReadInt(ini, L"Speed", 100, 25, 200);
     s.volume = ReadInt(ini, L"Volume", 60, 0, 100);
     // Older settings had no sound mode: any volume above 0 meant "the video's audio".
@@ -500,6 +501,7 @@ void SaveSettings(const Settings& s) {
     WriteInt(ini, L"HotkeyKey", (int)s.hkVk);
     WriteInt(ini, L"Scale", s.scale);
     WriteInt(ini, L"Monitors", s.monitors);
+    WriteInt(ini, L"Gpu", s.gpu);
     WriteInt(ini, L"Speed", s.speed);
     WriteInt(ini, L"Volume", s.volume);
     WriteInt(ini, L"Sound", s.sound);

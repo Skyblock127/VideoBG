@@ -81,7 +81,7 @@ and asks whether to delete your settings too. Then delete the folder.
 | **Video** | **Choose video**, **Crop** it, and pick the lock screen frame with the **Preview** slider. **Versions** makes lighter copies. |
 | **Desktop clock** | Drag the clock on the preview to place it. Choose its font, text and glow colours, size, opacity, glow, date style, language (any language Windows knows) and 12/24-hour time. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show / Hide** turns it on or off for each. **Presets** keeps up to 5 clock looks you can edit, rename and use on any of these. |
 | **Sound** | Nothing (the default), the video's sound, or your own songs. |
-| **Playback** | Fill / Fit / Stretch, speed, a frame-rate cap, and which displays to use. Every display shows the same video, so more displays hardly add memory; versions are sized for the largest one. |
+| **Playback** | Fill / Fit / Stretch, speed, a frame-rate cap, and which displays to use. Every display shows the same video, so more displays hardly add memory; versions are sized for the largest one. On laptops with two graphics chips, **Graphics chip** picks power saving or high performance. |
 | **Power saving** | Pause when apps cover the desktop, and what to do on battery. |
 | **General** | Change the hotkey, choose whether the wallpaper starts on, and find your data folders. |
 

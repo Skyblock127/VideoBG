@@ -1,4 +1,5 @@
 #include "mfhelp.h"
+#include <dxgi1_6.h>
 #include <propvarutil.h>
 #include <mferror.h>
 #include <cmath>
@@ -307,11 +308,24 @@ void ShrinkPixels(std::vector<uint32_t>& px, int& w, int& h, int maxDim) {
     }
 }
 
-IDXGIAdapter1* PickDisplayAdapter(IDXGIFactory1* f, std::wstring* name) {
+IDXGIAdapter1* PickDisplayAdapter(IDXGIFactory1* f, std::wstring* name, int pref) {
     HMONITOR primary = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
     IDXGIAdapter1* pick = nullptr;
     IDXGIAdapter1* first = nullptr;
-    for (UINT i = 0;; i++) {
+    IDXGIFactory6* f6 = nullptr;
+    if (pref >= 0 && SUCCEEDED(f->QueryInterface(__uuidof(IDXGIFactory6), (void**)&f6))) {  // Windows 10 1803 and newer
+        const DXGI_GPU_PREFERENCE gp = pref ? DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE : DXGI_GPU_PREFERENCE_MINIMUM_POWER;
+        for (UINT i = 0; !pick; i++) {
+            IDXGIAdapter1* a = nullptr;
+            if (FAILED(f6->EnumAdapterByGpuPreference(i, gp, __uuidof(IDXGIAdapter1), (void**)&a))) break;
+            DXGI_ADAPTER_DESC1 d{};
+            a->GetDesc1(&d);
+            if (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) a->Release();
+            else pick = a;
+        }
+        f6->Release();
+    }
+    for (UINT i = 0; !pick; i++) {
         IDXGIAdapter1* a = nullptr;
         if (f->EnumAdapters1(i, &a) == DXGI_ERROR_NOT_FOUND) break;
         DXGI_ADAPTER_DESC1 d{};

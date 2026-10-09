@@ -27,7 +27,7 @@ constexpr UINT_PTR TIMER_SCROLL = 2;  // the font list gliding to where the whee
 
 enum Id {
     ID_NONE, ID_POWER, ID_CHOOSE, ID_CROP, ID_LOCK, ID_TIMELINE, ID_SCALE, ID_SPEED, ID_VOLUME, ID_FPS,
-    ID_MONITORS, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
+    ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_SHUFFLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
@@ -296,7 +296,9 @@ struct UI {
     VideoInfo info;
     std::wstring infoPath;
     bool infoOk = false;
-    std::wstring gpu;
+    std::wstring gpu;                 // the graphics chip the wallpaper uses
+    std::wstring gpuLow, gpuHigh;     // the power-saving and the high-performance one (the same on most PCs)
+    bool gpuAutoHigh = false;         // the one driving the main display is the high-performance one
     int screenW = 1920, screenH = 1080;
     int playW = 1920, playH = 1080, playCount = 1;  // the largest display the video plays on, and how many it plays on
 
@@ -1277,10 +1279,13 @@ void PaintSoundPage(float x, float w) {
 
 void QueryScreen();
 
+void QueryGpu();
+
 void PaintPlaybackPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
-    Card(R(x, y, x + w, y + kCardHead + 4 * kRowH + 48), L"\uE768", L"Playback");
+    const bool twoGpus = !u.gpuLow.empty() && !u.gpuHigh.empty() && u.gpuLow != u.gpuHigh;  // laptops with a dedicated chip
+    Card(R(x, y, x + w, y + kCardHead + 4 * kRowH + 48 + (twoGpus ? kRowH + 44 : 0)), L"\uE768", L"Playback");
     float yy = y + kCardHead;
     Row(lx, yy, kLabelW, L"Scaling");
     Seg(ID_SCALE, SegRect(cx, yy, cw), {L"Fill", L"Fit", L"Stretch"}, g_settings.scale);
@@ -1301,6 +1306,16 @@ void PaintPlaybackPage(float x, float w) {
     Text(L"The video is decoded once and every display shows it at its own size, so more displays hardly add memory. "
          L"Versions are sized for the largest display it plays on.",
          R(lx, yy, x + w - kPad, yy + 38), u.fWrap, t.text2);
+    if (twoGpus) {  // which chip decodes and draws the video
+        yy += 44;
+        Row(lx, yy, kLabelW, L"Graphics chip");
+        Seg(ID_GPU, SegRect(cx, yy, cw), {L"Power saving", L"High performance"},
+            g_settings.gpu ? g_settings.gpu - 1 : (u.gpuAutoHigh ? 1 : 0));
+        yy += kRowH;
+        Text(L"Uses " + u.gpu + L". High performance keeps the video in the dedicated chip's own memory instead of your RAM, "
+             L"but uses more power, which matters on battery.",
+             R(lx, yy, x + w - kPad, yy + 38), u.fWrap, t.text2);
+    }
 }
 
 void PaintPowerPage(float x, float w) {
@@ -3579,6 +3594,12 @@ void OnSeg(int id, int i) {
     switch (id) {
         case ID_SCALE: g_settings.scale = i; break;
         case ID_FPS: g_settings.fpsCap = kFpsValues[i]; break;
+        case ID_GPU:
+            g_settings.gpu = i + 1;
+            Log(L"ui: graphics chip set to %ls", i ? L"high performance" : L"power saving");
+            Host_SettingsChanged();  // the wallpaper restarts on that chip
+            QueryGpu();
+            return;
         case ID_MONITORS:
             g_settings.monitors = i;
             QueryScreen();  // the displays the versions are sized for
@@ -4509,17 +4530,23 @@ void QueryScreen() {
 }
 
 void QueryGpu() {
+    const bool loaded = D3D.CreateFactory1 != nullptr;  // in use elsewhere (a version being made): leave it loaded
     if (!D3D.Load()) return;
     IDXGIFactory1* f = nullptr;
     if (SUCCEEDED(D3D.CreateFactory1(__uuidof(IDXGIFactory1), (void**)&f))) {
-        IDXGIAdapter1* a = PickDisplayAdapter(f, &u.gpu);
-        SafeRelease(a);
+        std::wstring autoName;
+        for (auto [name, pref] : {std::pair{&u.gpu, g_settings.gpu - 1}, {&u.gpuLow, 0}, {&u.gpuHigh, 1}, {&autoName, -1}}) {
+            IDXGIAdapter1* a = PickDisplayAdapter(f, name, pref);
+            SafeRelease(a);
+        }
+        u.gpuAutoHigh = autoName == u.gpuHigh;
         f->Release();
     }
-    D3D.Unload();
+    if (!loaded) D3D.Unload();
     // "Intel(R) Iris(R) Xe Graphics" -> "Intel Iris Xe Graphics"
-    for (const wchar_t* mark : {L"(R)", L"(TM)", L"(tm)"})
-        for (size_t at; (at = u.gpu.find(mark)) != std::wstring::npos;) u.gpu.erase(at, wcslen(mark));
+    for (std::wstring* s : {&u.gpu, &u.gpuLow, &u.gpuHigh})
+        for (const wchar_t* mark : {L"(R)", L"(TM)", L"(tm)"})
+            for (size_t at; (at = s->find(mark)) != std::wstring::npos;) s->erase(at, wcslen(mark));
 }
 
 }  // namespace
