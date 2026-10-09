@@ -1,4 +1,4 @@
-VideoBG 1.7 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+VideoBG 1.8 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
 ==========================================================================
 
 What it does
