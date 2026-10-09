@@ -26,7 +26,7 @@ constexpr UINT_PTR TIMER_STATUS = 1;
 constexpr UINT_PTR TIMER_SCROLL = 2;  // the font list gliding to where the wheel sent it
 
 enum Id {
-    ID_NONE, ID_POWER, ID_CHOOSE, ID_CROP, ID_LOCK, ID_TIMELINE, ID_SCALE, ID_SPEED, ID_VOLUME, ID_FPS,
+    ID_NONE, ID_POWER, ID_CHOOSE, ID_CROP, ID_LOCK, ID_TIMELINE, ID_SPEED, ID_VOLUME, ID_FPS,
     ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_SHUFFLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
@@ -1108,7 +1108,7 @@ void PaintVideoPage(float x, float w) {
     Button(ID_CHOOSE, R(x + w - kPad - 148, y + 12, x + w - kPad, y + 44), L"Choose video", L"\uE8E5", true);
     const std::wstring& video = g_settings.video;
     const bool infoCurrent = u.infoOk && _wcsicmp(u.infoPath.c_str(), video.c_str()) == 0;
-    DrawComposed(box, g_settings.crop, g_settings.scale);
+    DrawComposed(box, g_settings.crop, CropMode(g_settings.crop));
     if (!video.empty() && !fault) {
         float cw = 32 + TextWidth(L"Crop", u.fBody) + 16;
         OverlayButton(ID_CROP, R(box.right - 8 - cw, box.top + 8, box.right - 8, box.top + 38), L"Crop", L"\uE7A8");
@@ -1288,12 +1288,9 @@ void PaintPlaybackPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const bool twoGpus = !u.gpuLow.empty() && !u.gpuHigh.empty() && u.gpuLow != u.gpuHigh;  // laptops with a dedicated chip
-    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 4 * kRowH + 48 + (twoGpus ? kRowH + 44 : 0));
+    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 3 * kRowH + 48 + (twoGpus ? kRowH + 44 : 0));
     Card(card, L"\uE768", L"Playback");
     float yy = y + kCardHead;
-    Row(lx, yy, kLabelW, L"Scaling");
-    Seg(ID_SCALE, SegRect(cx, yy, cw), {L"Fill", L"Fit", L"Stretch"}, g_settings.scale);
-    yy += kRowH;
     Row(lx, yy, kLabelW, L"Speed");
     Slider(ID_SPEED, SliderRect(cx, yy, cw), (g_settings.speed - 25) / 175.f);
     SliderValue(Fmt(L"%.2f\u00D7", g_settings.speed / 100.0), cx, yy, cw, true);
@@ -1564,7 +1561,7 @@ void DrawStill(const D2D1_RECT_F& box) {
 
 // The wallpaper the edited look belongs to, drawn into `box` (the whole screen).
 void DrawWallpaper(const D2D1_RECT_F& box) {
-    if (u.clockEdit == 0) DrawComposed(box, g_settings.crop, g_settings.scale);
+    if (u.clockEdit == 0) DrawComposed(box, g_settings.crop, CropMode(g_settings.crop));
     else DrawStill(box);
 }
 
@@ -1595,7 +1592,7 @@ bool SampleWallpaper(const D2D1_RECT_F& screen, float mx, float my, std::wstring
         src = u.framePx.data();
         sw = u.fw;
         sh = u.fh;
-        f = ComputeFit(VideoAspect(), g_settings.crop, g_settings.scale, bw, bh);
+        f = ComputeFit(VideoAspect(), g_settings.crop, CropMode(g_settings.crop), bw, bh);
     } else {
         if (u.stillPx.empty()) return false;
         src = u.stillPx.data();
@@ -3007,7 +3004,9 @@ void PaintCrop() {
     // Bottom bar
     float by = kH - 72;
     Toggle(ID_C_LOCK, 28, by + 20, u.lockAspect);
-    Text(L"Match screen shape", R(76, by, 300, by + 40), u.fBody, t.text);
+    Text(L"Match screen shape", R(76, by, 240, by + 40), u.fBody, t.text);
+    Text(u.lockAspect ? L"Your desktop shows exactly this part" : L"Any shape, stretched to fill your screen",
+         R(240, by, kW - 24 - 296 - 16, by + 40), u.fSmall, t.text2);
     float bx = kW - 24;
     Button(ID_C_APPLY, R(bx - 96, by + 4, bx, by + 36), L"Apply", nullptr, true);
     Button(ID_C_CANCEL, R(bx - 96 - 8 - 88, by + 4, bx - 104, by + 36), L"Cancel");
@@ -3017,7 +3016,8 @@ void PaintCrop() {
 void EnterCrop() {
     u.page = 1;
     u.edit = g_settings.crop;
-    u.lockAspect = IsScreenShaped(u.edit) || u.edit.IsFull();
+    // A crop that isn't stretched shows as the screen-shaped middle of it: that's what it starts as.
+    u.lockAspect = !u.edit.stretch;
     if (u.lockAspect && !IsScreenShaped(u.edit)) u.edit = FitAspect(u.edit);
     SendPreview(true);
     InvalidateRect(u.hwnd, nullptr, FALSE);
@@ -3596,7 +3596,6 @@ void FinishStep() {
 
 void OnSeg(int id, int i) {
     switch (id) {
-        case ID_SCALE: g_settings.scale = i; break;
         case ID_FPS: g_settings.fpsCap = kFpsValues[i]; break;
         case ID_GPU:
             g_settings.gpu = i + 1;
@@ -3806,10 +3805,13 @@ void OnClick(int id) {
         case ID_STARTUP_REG: Host_RegisterStartup(); break;
         case ID_C_LOCK:
             u.lockAspect = !u.lockAspect;
-            if (u.lockAspect) { u.edit = FitAspect(u.edit); SendPreview(true); }
+            u.edit.stretch = !u.lockAspect;
+            if (u.lockAspect) u.edit = FitAspect(u.edit);
+            SendPreview(true);
             break;
         case ID_C_RESET:
             u.edit = Crop{};
+            u.edit.stretch = !u.lockAspect;
             if (u.lockAspect) u.edit = FitAspect(u.edit);
             SendPreview(true);
             break;

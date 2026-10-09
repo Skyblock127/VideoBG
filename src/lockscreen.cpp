@@ -161,7 +161,7 @@ HRESULT SetFromFile(Api& api, const wchar_t* path) {
 
 std::wstring FrameKey(const LockScreenWant& w) {
     wchar_t b[96];
-    swprintf(b, 96, L"|%.3f|%.4f,%.4f,%.4f,%.4f|%dx%d", w.time, w.crop.l, w.crop.t, w.crop.r, w.crop.b, w.sw, w.sh);
+    swprintf(b, 96, L"|%.3f|%.4f,%.4f,%.4f,%.4f,%d|%dx%d", w.time, w.crop.l, w.crop.t, w.crop.r, w.crop.b, w.crop.stretch, w.sw, w.sh);
     return w.video + b;
 }
 
@@ -188,7 +188,7 @@ HRESULT MakeFrameJpeg(const LockScreenWant& w, const std::wstring& out) {
     }
     MF.Stop();
     if (va <= 0) va = (double)fw / fh;
-    FitRect f = ComputeFit(va, w.crop, 0, w.sw, w.sh);
+    FitRect f = ComputeFit(va, w.crop, CropMode(w.crop), w.sw, w.sh);
     WICRect rc;
     rc.X = std::clamp((int)lround(f.sl * fw), 0, fw - 1);
     rc.Y = std::clamp((int)lround(f.st * fh), 0, fh - 1);

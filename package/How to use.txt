@@ -1,4 +1,4 @@
-VideoBG 1.8.3 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+VideoBG 1.8.4 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
 ============================================================================
 
 What it does
@@ -26,6 +26,9 @@ Using it
   - VideoBG starts the way you left it (on or off); change that on the
     General page ("When app starts").
   - Video page: "Crop" (on the preview) picks the part of the video shown.
+    With "Match screen shape" on, the desktop shows exactly that part; off,
+    you can pick any shape (say, the whole of a wide video) and it's
+    stretched to fill the screen.
     "Versions" (next to the video's details) lists smaller copies of it
     (your screen's size, 900p, 720p...) with the memory each takes: click
     one to see it on your desktop first, then "Make it" (a few seconds) or

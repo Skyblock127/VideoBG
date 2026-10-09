@@ -293,9 +293,10 @@ bool IsLightCopyOf(const std::wstring& copy, const std::wstring& original) {
 
 static bool ParseCrop(const std::wstring& v, Crop* c) {
     float l, t, r, b;
-    if (swscanf(v.c_str(), L"%f,%f,%f,%f", &l, &t, &r, &b) == 4 && l >= 0 && t >= 0 && r <= 1.0001f && b <= 1.0001f &&
+    int stretch = 0;  // a fifth value: stretched to fill the screen
+    if (swscanf(v.c_str(), L"%f,%f,%f,%f,%d", &l, &t, &r, &b, &stretch) >= 4 && l >= 0 && t >= 0 && r <= 1.0001f && b <= 1.0001f &&
         r - l > 0.01f && b - t > 0.01f) {
-        *c = {l, t, r, b};
+        *c = {l, t, r, b, stretch != 0};
         return true;
     }
     return false;
@@ -445,7 +446,6 @@ void LoadSettings(Settings& s) {
     s.hkMods = (UINT)ReadInt(ini, L"HotkeyMods", MOD_CONTROL | MOD_ALT, 0, 0xF);
     s.hkVk = (UINT)ReadInt(ini, L"HotkeyKey", 'B', 0, 0xFE);
     if (s.hkVk == 0 || s.hkMods == 0) { s.hkMods = MOD_CONTROL | MOD_ALT; s.hkVk = 'B'; }
-    s.scale = ReadInt(ini, L"Scale", 0, 0, 2);
     s.monitors = ReadInt(ini, L"Monitors", 0, 0, 1);
     s.gpu = ReadInt(ini, L"Gpu", 0, 0, 2);
     s.speed = ReadInt(ini, L"Speed", 100, 25, 200);
@@ -499,7 +499,7 @@ void SaveSettings(const Settings& s) {
     WritePrivateProfileStringW(L"General", L"Video", s.video.c_str(), ini);
     WriteInt(ini, L"HotkeyMods", (int)s.hkMods);
     WriteInt(ini, L"HotkeyKey", (int)s.hkVk);
-    WriteInt(ini, L"Scale", s.scale);
+    WritePrivateProfileStringW(L"General", L"Scale", nullptr, ini);  // Fill / Fit / Stretch: the crop decides now
     WriteInt(ini, L"Monitors", s.monitors);
     WriteInt(ini, L"Gpu", s.gpu);
     WriteInt(ini, L"Speed", s.speed);
@@ -526,8 +526,8 @@ void SaveSettings(const Settings& s) {
     if (!id.empty() && !pid.empty()) {
         std::wstring vini = VideosIni();
         WritePrivateProfileStringW(id.c_str(), L"Path", s.video.c_str(), vini.c_str());
-        swprintf(buf, 64, L"%.5f,%.5f,%.5f,%.5f", s.crop.l, s.crop.t, s.crop.r, s.crop.b);
-        WritePrivateProfileStringW(pid.c_str(), L"Crop", s.crop.IsFull() ? nullptr : buf, vini.c_str());
+        swprintf(buf, 64, s.crop.stretch ? L"%.5f,%.5f,%.5f,%.5f,1" : L"%.5f,%.5f,%.5f,%.5f", s.crop.l, s.crop.t, s.crop.r, s.crop.b);
+        WritePrivateProfileStringW(pid.c_str(), L"Crop", s.crop.IsFull() && !s.crop.stretch ? nullptr : buf, vini.c_str());
         swprintf(buf, 64, L"%.3f", s.previewTime);
         WritePrivateProfileStringW(pid.c_str(), L"PreviewTime", s.previewTime >= 0 ? buf : nullptr, vini.c_str());
         WritePrivateProfileStringW(pid.c_str(), L"ClockOwn", s.clockVideoOwn ? L"1" : nullptr, vini.c_str());

@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"1.8.3"
+#define APP_VERSION  L"1.8.4"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
 #define RCTL_CLASS   L"VideoBG.RendererCtl"
@@ -57,7 +57,10 @@ constexpr DWORD EXIT_RENDER_ERROR = 4;    // renderer could not play the video
 
 struct Crop {
     float l = 0, t = 0, r = 1, b = 1;  // normalized to the video frame
+    bool stretch = false;  // a free shape, stretched to fill the screen (else it's trimmed to the screen's shape)
     bool IsFull() const { return l <= 0.0005f && t <= 0.0005f && r >= 0.9995f && b >= 0.9995f; }
+    bool operator==(const Crop& o) const { return l == o.l && t == o.t && r == o.r && b == o.b && stretch == o.stretch; }
+    bool operator!=(const Crop& o) const { return !(*this == o); }
 };
 
 // Where and how the desktop clock shows for one kind of wallpaper.
@@ -94,7 +97,6 @@ struct Settings {
     std::wstring video;
     UINT hkMods = MOD_CONTROL | MOD_ALT;
     UINT hkVk = 'B';
-    int scale = 0;        // 0 fill, 1 fit, 2 stretch
     int monitors = 0;     // 0 all, 1 primary only
     int gpu = 0;          // graphics chip: 0 the one driving the main display, 1 power saving, 2 high performance
     int speed = 100;      // playback speed in percent
@@ -160,6 +162,8 @@ struct FitRect {
     float dl, dt, dr, db;  // destination rect inside the target, in target units
 };
 FitRect ComputeFit(double videoAspect, const Crop& c, int scaleMode, double tw, double th);
+// How a video's crop fills the screen: trimmed to the screen's shape (0), or stretched (2).
+inline int CropMode(const Crop& c) { return c.stretch ? 2 : 0; }
 
 // Entry points
 int HostMain(HINSTANCE inst, bool openSettings);

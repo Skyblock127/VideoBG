@@ -170,7 +170,7 @@ void UpdateRects() {
     const Crop& c = g.previewing ? g.previewCrop : g.s.crop;
     AcquireSRWLockExclusive(&g.lock);
     for (auto& t : g.targets) {
-        FitRect f = ComputeFit(g.aspect, c, g.s.scale, t.w, t.h);
+        FitRect f = ComputeFit(g.aspect, c, CropMode(c), t.w, t.h);
         t.src = {f.sl, f.st, f.sr, f.sb};
         t.dst = {lroundf(f.dl), lroundf(f.dt), lroundf(f.dr), lroundf(f.db)};
         t.letterbox = t.dst.left > 0 || t.dst.top > 0 || t.dst.right < t.w || t.dst.bottom < t.h;
@@ -1204,7 +1204,7 @@ void Reload() {
         if (!StartPlayback(pos)) return;
     }
     // A parked pipeline has no frame to show a new crop or fit with.
-    if (g.parked && (memcmp(&ns.crop, &old.crop, sizeof(Crop)) != 0 || ns.scale != old.scale)) Unpark();
+    if (g.parked && ns.crop != old.crop) Unpark();
     g.fpsCap = g.s.fpsCap;
     double r = std::clamp(g.s.speed, 25, 200) / 100.0;
     g.rate = r;
@@ -1254,7 +1254,10 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_VBG_PREVIEW_CROP:
             g.previewing = w != 0;
-            if (w) g.previewCrop = UnpackCrop(l);
+            if (w) {
+                g.previewCrop = UnpackCrop(l);
+                g.previewCrop.stretch = w == 2;
+            }
             if (g.parked) { Unpark(); ApplyPauseState(); }  // a frame to show the new crop with
             UpdateRects();
             RequestRedraw();

@@ -104,7 +104,8 @@ void SyncLockScreen(bool force = false) {
         w.sw = mi.rcMonitor.right - mi.rcMonitor.left;
         w.sh = mi.rcMonitor.bottom - mi.rcMonitor.top;
         wchar_t b[128];
-        swprintf(b, 128, L"|%.3f|%.4f,%.4f,%.4f,%.4f|%dx%d", w.time, w.crop.l, w.crop.t, w.crop.r, w.crop.b, w.sw, w.sh);
+        swprintf(b, 128, L"|%.3f|%.4f,%.4f,%.4f,%.4f,%d|%dx%d", w.time, w.crop.l, w.crop.t, w.crop.r, w.crop.b, w.crop.stretch, w.sw,
+                 w.sh);
         key = w.video + b;
     }
     if (!force && key == g_lockWanted) return;
@@ -629,7 +630,7 @@ void Host_PreviewSize(UINT w, UINT h) {
 }
 
 void Host_PreviewCrop(const Crop* c) {
-    if (g_ctl) PostMessageW(g_ctl, WM_VBG_PREVIEW_CROP, c ? 1 : 0, c ? PackCrop(*c) : 0);
+    if (g_ctl) PostMessageW(g_ctl, WM_VBG_PREVIEW_CROP, c ? (c->stretch ? 2 : 1) : 0, c ? PackCrop(*c) : 0);
 }
 
 RendererState Host_RendererState(LPARAM* mask) {
