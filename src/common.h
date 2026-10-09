@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"1.7.1"
+#define APP_VERSION  L"1.8.0"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
 #define RCTL_CLASS   L"VideoBG.RendererCtl"
@@ -82,6 +82,14 @@ struct ClockLook {
     }
 };
 
+// A saved clock look, for putting on any of the looks above (all wallpapers and videos share them).
+struct ClockPreset {
+    bool used = false;   // an empty one has nothing to use yet
+    std::wstring name;   // "" = "Preset N"
+    ClockLook look;      // its show is always on: Show / Hide stays with the look it's used for
+};
+constexpr int kClockPresets = 5;
+
 struct Settings {
     std::wstring video;
     UINT hkMods = MOD_CONTROL | MOD_ALT;
@@ -111,6 +119,7 @@ struct Settings {
     bool clockVideoSaved = false; // it has one stored (kept while switched off)
     ClockLook clockVideo;
     std::wstring myColors[16];    // the colour picker's saved colours, "r,g,b" or "" (all looks share them)
+    ClockPreset presets[kClockPresets];  // the clock presets ([Presets] in settings.ini)
 };
 
 // settings.cpp
@@ -124,6 +133,7 @@ inline bool WantVideoAudio(const Settings& s) { return s.sound == 1 && s.volume 
 void LoadSettings(Settings& s);
 void SaveSettings(const Settings& s);
 void SaveMyColors(const Settings& s);  // just the colour dialog's saved colours
+void SavePresets(const Settings& s);   // just the clock presets
 void LoadVideoProfile(Settings& s);  // crop, frame and clock look of s.video
 Crop LoadCropFor(const std::wstring& video);
 // Per-video data (videos.ini: crop, clock look) is keyed by the file's content, so renaming or
@@ -176,6 +186,7 @@ int Host_CurrentTrack();                     // playlist index playing, -1 none,
 void Host_SuspendHotkey(bool suspend);       // while the settings UI records a new shortcut
 bool Host_ClockLive();                       // true while the clock should use the video wallpaper look
 void Host_ClockMove(const ClockLook& look);  // move the clock right now without saving (while dragging)
+void Host_ClockPreview(const ClockLook* look);  // show this look instead of the saved ones (a preset being edited); nullptr ends it
 void Host_SetLockFollow(bool on);            // the lock screen follows the wallpaper (off: the user's picture, left alone)
 void Host_FrameChanged();                    // the video's frame (preview time) changed: save it, update the lock screen
 bool Host_LockScreen(HRESULT* lastResult, int* lsf);  // true while it's being updated; lsf: what shows the frame

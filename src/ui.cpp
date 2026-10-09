@@ -34,6 +34,7 @@ enum Id {
     ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO,
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
+    ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
     ID_VER_ROW0 = 400,   // video versions dialog: a version's row, and its delete button
@@ -43,6 +44,10 @@ enum Id {
     ID_FNT_ADD0 = 700,
     ID_FNT_DEL0 = 800,
     ID_LANG_ROW0 = 1000,  // the clock language list: a language's row (as many as Windows has)
+    ID_PRS_USE0 = 2100,   // clock presets: a preset's Use, Edit, Rename and Delete buttons
+    ID_PRS_EDIT0 = 2110,
+    ID_PRS_REN0 = 2120,
+    ID_PRS_DEL0 = 2130,
 };
 enum NavPage { NAV_VIDEO, NAV_CLOCK, NAV_SOUND, NAV_PLAYBACK, NAV_POWER, NAV_GENERAL, NAV_COUNT };  // sidebar order
 enum Kind { K_BUTTON, K_TOGGLE, K_SEG, K_SLIDER, K_AREA };
@@ -1358,12 +1363,41 @@ void PaintGeneralPage(float x, float w) {
 
 // ---- Desktop clock page --------------------------------------------------------------------
 
-ClockLook* EditedLook() {
+// Clock presets: the list, and a preset being edited on the page (the choices above the preview
+// wait meanwhile, and the desktop shows the preset).
+struct PresetUI {
+    bool open = false;       // the list
+    int confirm = -1;        // Use was clicked: asking before it replaces the clock
+    int rename = -1;         // the preset whose name is being typed
+    std::wstring name;
+    bool nameFresh = false;  // the next key replaces the whole name
+    std::wstring note;       // short note in the list's bottom bar
+    int edit = -1;           // the preset being edited on the page
+    ClockLook look;          // its look meanwhile
+} prs;
+const size_t kPresetNameMax = 20;
+
+std::wstring PresetName(int i) {
+    if (i < 0 || i >= kClockPresets) return L"";
+    const std::wstring& n = g_settings.presets[i].name;
+    return n.empty() ? Fmt(L"Preset %d", i + 1) : n;
+}
+
+// The look the choices above the preview pick.
+ClockLook* PickedLook() {
     if (u.clockEdit == 1) return &g_settings.clockStill;
     return g_settings.clockVideoOwn ? &g_settings.clockVideo : &g_settings.clockLive;
 }
 
-bool EditingShownLook() { return (u.clockEdit == 0) == Host_ClockLive(); }
+std::wstring PickedLookName() {
+    if (u.clockEdit == 1) return L"the still wallpaper's clock";
+    return g_settings.clockVideoOwn ? L"this video's clock" : L"the clock all videos share";
+}
+
+// The look the page edits: a preset being edited, else the one picked.
+ClockLook* EditedLook() { return prs.edit >= 0 ? &prs.look : PickedLook(); }
+
+bool EditingShownLook() { return prs.edit >= 0 || (u.clockEdit == 0) == Host_ClockLive(); }
 
 bool ClockUsable() { return EditedLook()->show; }
 
@@ -1655,17 +1689,27 @@ void PaintClockPage(float x, float w) {
         bh = maxH;
         bw = bh / (float)ScreenAspectH();
     }
-    Card(R(x, y, x + w, y + kCardHead + 44 + bh + below + 14), L"\uE121", L"Desktop clock");
+    const bool editing = prs.edit >= 0;  // a preset, on its own: the choices above wait
+    Card(R(x, y, x + w, y + kCardHead + 44 + bh + below + 14), editing ? L"\uE70F" : L"\uE121",
+         editing ? PresetName(prs.edit) : std::wstring(L"Desktop clock"));
+    if (editing) {
+        const float bt = y + 12, bb = y + 44, br = x + w - kPad;
+        Button(ID_PRS_CURRENT, R(br - 344, bt, br - 196, bb), L"Current clock", L"\uE72C");
+        Button(ID_PRS_CANCEL, R(br - 188, bt, br - 98, bb), L"Cancel");
+        Button(ID_PRS_SAVE, R(br - 90, bt, br, bb), L"Save", nullptr, true);
+    } else {
+        Button(ID_PRS, R(x + w - kPad - 120, y + 12, x + w - kPad, y + 44), L"Presets", L"\uE728");
+    }
     const bool on = ClockUsable();
     const std::wstring& video = g_settings.video;
     // Which look is being edited: the wallpaper (in the header), then for the video wallpaper the
     // look every video shares or this video's own; Show / Hide is part of the look picked.
     // One row of three equal parts: which wallpaper, which video's clock, shown or hidden.
     const float segW = (iw - 2 * 12) / 3, ry = y + kCardHead;
-    Seg(ID_CLK_MODE, R(lx, ry, lx + segW, ry + 32), {L"Video", L"Still"}, u.clockEdit);
+    Seg(ID_CLK_MODE, R(lx, ry, lx + segW, ry + 32), {L"Video", L"Still"}, u.clockEdit, !editing);
     Seg(ID_CLK_SCOPE, R(lx + segW + 12, ry, lx + 2 * segW + 12, ry + 32), {L"This video", L"All videos"},
-        g_settings.clockVideoOwn ? 0 : 1, u.clockEdit == 0 && !video.empty());
-    Seg(ID_CLK_SHOW, R(x + w - kPad - segW, ry, x + w - kPad, ry + 32), {L"Show", L"Hide"}, EditedLook()->show ? 0 : 1);
+        g_settings.clockVideoOwn ? 0 : 1, u.clockEdit == 0 && !video.empty() && !editing);
+    Seg(ID_CLK_SHOW, R(x + w - kPad - segW, ry, x + w - kPad, ry + 32), {L"Show", L"Hide"}, EditedLook()->show ? 0 : 1, !editing);
 
     // Preview: the wallpaper with the clock on it; drag the clock to place it.
     float bx = x + (w - bw) / 2;
@@ -1743,12 +1787,18 @@ void PaintClockPage(float x, float w) {
                                           : L"Drag the clock to place it (Alt: no snapping); arrow keys move it (Shift: one pixel)";
             break;
         case ID_CLK_DATE: help = L"How the date reads, and the clock's language, in this look"; break;
+        case ID_PRS: help = L"Saved clock looks: keep this one, or put one on this clock"; break;
+        case ID_PRS_SAVE: help = L"Keep these settings in " + PresetName(prs.edit); break;
+        case ID_PRS_CANCEL: help = L"Leave " + PresetName(prs.edit) + L" as it was"; break;
+        case ID_PRS_CURRENT: help = L"Start again from " + PickedLookName(); break;
         default: break;
     }
     if (u.picking && (u.hot == ID_CLK_AREA || help.empty()))
         help = u.pickColor.empty() ? L"Click the preview to take the wallpaper's colour there (Esc cancels)"
                                    : L"Click to use " + Hex(u.pickColor) + (dlg.target == 1 ? L" for the glow (Esc cancels)" : L" for the text (Esc cancels)");
     if (!u.clockNote.empty() && GetTickCount() - u.clockNoteAt < 3000) help = u.clockNote;
+    if (help.empty() && editing)
+        help = L"Editing " + PresetName(prs.edit) + L": the choices above wait, and your desktop shows it until you save or cancel";
     if (help.empty())
         help = !on                             ? L"The clock is hidden with this look; its settings are kept for when you show it again"
                : u.clockEdit == 1              ? L"Editing the clock for your still wallpaper"
@@ -2537,6 +2587,86 @@ void PaintFontDialog() {
     Button(ID_FNT_DONE, R(L + W - 24 - 110, by, L + W - 24, by + 32), fnt.langs ? L"Back" : L"Done", nullptr, true);
 }
 
+// ---------------------------------------------------------------------------------------
+// Clock presets: saved looks any wallpaper's or video's clock can use. Use puts one on the clock the
+// page's choices pick (after asking); Edit changes one on the page itself.
+
+std::wstring PresetDetails(const ClockLook& l) {
+    return ShownFont(l) + L" \u00B7 " + Fmt(L"%.0f%%", l.size * 100) + L" \u00B7 " + Clock_LanguageName(l.lang);
+}
+
+void PaintPresetsDialog() {
+    const Theme& t = u.th;
+    Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
+    AddHit(ID_PRS_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
+    const float rowH = 60, W = kDialogW, H = 100 + kClockPresets * rowH + 8 + 64, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
+    const D2D1_RECT_F panel = R(L, T, L + W, T + H);
+    const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
+    Fill(R(L - 2, T, L + W + 2, T + H + 4), D2D1::ColorF(0, 0, 0, 0.2f), 10);  // shadow
+    Fill(panel, face, 8);
+    ID2D1RoundedRectangleGeometry* clip = PushRounded(panel, 8);
+    Fill(R(L, T + H - 64, L + W, T + H), bar);
+    Line(L, T + H - 64, L + W, T + H - 64, t.stroke);
+    PopRounded(clip);
+    Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
+
+    Text(L"Clock presets", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
+    Text(L"Clock looks to use again on any wallpaper or video. Use puts one on the clock picked on the page; Edit changes a preset there.",
+         R(L + 24, T + 52, L + W - 24, T + 92), u.fWrap, t.text2);
+
+    float y = T + 100;
+    for (int i = 0; i < kClockPresets; i++, y += rowH) {
+        const ClockPreset& p = g_settings.presets[i];
+        const D2D1_RECT_F r = R(L + 16, y, L + W - 16, y + rowH - 6);
+        const float cy = (r.top + r.bottom) / 2, nx = r.left + 60, bx = r.right - 8, bt = cy - 15, bb = cy + 15;
+        if (prs.confirm == i) {
+            Fill(r, Mix(face, t.accent, 0.14f), 6);
+            Stroke(r, t.accent, 6);
+        }
+        if (p.used) {  // its text and glow colours
+            for (int k = 0; k < 2; k++) {
+                const D2D1_COLOR_F c = LookColor(k && !p.look.glowColor.empty() ? p.look.glowColor : p.look.color);
+                Circle(r.left + 20 + k * 19, cy, 9, t.ctrlStroke);
+                Circle(r.left + 20 + k * 19, cy, 8, c);
+            }
+        } else {
+            Circle(r.left + 29, cy, 9, t.text3);
+            Circle(r.left + 29, cy, 8, face);
+        }
+        if (prs.rename == i) {  // typing its name
+            const D2D1_RECT_F nb = R(nx - 6, cy - 16, bx - 264, cy + 16);
+            Fill(nb, face, 4);
+            Stroke(nb, t.accent, 4, 2);
+            const float tw = TextWidth(prs.name, u.fBody);
+            if (prs.nameFresh && !prs.name.empty()) Fill(R(nb.left + 6, cy - 9, nb.left + 8 + tw, cy + 9), Mix(t.accent, face, 0.55f), 2);
+            Text(prs.name, R(nb.left + 7, nb.top, nb.right - 6, nb.bottom), u.fBody, t.text);
+            if (!prs.nameFresh) Line(nb.left + 8 + tw, cy - 8, nb.left + 8 + tw, cy + 8, t.text);
+            AddHit(ID_PRS_NAME, K_AREA, nb);
+        } else {
+            Text(PresetName(i), R(nx, r.top + 5, bx - 264, cy + 1), u.fStrong, p.used ? t.text : t.text2);
+            Text(p.used ? PresetDetails(p.look) : std::wstring(L"Empty: Edit makes one from your clock"), R(nx, cy, bx - 264, r.bottom - 4),
+                 u.fSmall, t.text2);
+        }
+        // Use, Edit, Rename and Delete; an empty one can only be edited.
+        Button(ID_PRS_USE0 + i, R(bx - 256, bt, bx - 176, bb), L"Use", L"\uE73E", false, p.used);
+        Button(ID_PRS_EDIT0 + i, R(bx - 168, bt, bx - 88, bb), L"Edit", L"\uE70F");
+        Button(ID_PRS_REN0 + i, R(bx - 80, bt, bx - 44, bb), L"", L"\uE8AC", false, p.used);
+        Button(ID_PRS_DEL0 + i, R(bx - 36, bt, bx, bb), L"", L"\uE74D", false, p.used);
+    }
+
+    // Bottom bar: Close, or the question before Use replaces a clock.
+    const float by = T + H - 48;
+    if (prs.confirm >= 0) {
+        Text(L"Use " + PresetName(prs.confirm) + L" for " + PickedLookName() + L"? It replaces that clock's look.",
+             R(L + 24, by - 4, L + W - 24 - 236, by + 36), u.fWrap, t.text);
+        Button(ID_PRS_NO, R(L + W - 24 - 228, by, L + W - 24 - 126, by + 32), L"Cancel");
+        Button(ID_PRS_YES, R(L + W - 24 - 118, by, L + W - 24, by + 32), L"Replace", nullptr, true);
+    } else {
+        Text(prs.note, R(L + 24, by - 2, L + W - 24 - 130, by + 34), u.fWrap, t.text3);
+        Button(ID_PRS_CLOSE, R(L + W - 24 - 110, by, L + W - 24, by + 32), L"Close");
+    }
+}
+
 void PaintMain() {
     PaintHeader();
     PaintSidebar();
@@ -2552,6 +2682,7 @@ void PaintMain() {
     if (dlg.open && !u.picking) PaintColorDialog();
     if (ver.open) PaintVersionsDialog();
     if (fnt.open) PaintFontDialog();
+    if (prs.open) PaintPresetsDialog();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2804,7 +2935,7 @@ void LeaveCrop(bool apply) {
 
 void ShowClockPage() {
     u.nav = NAV_CLOCK;
-    u.clockEdit = Host_ClockLive() ? 0 : 1;
+    if (prs.edit < 0) u.clockEdit = Host_ClockLive() ? 0 : 1;  // kept while a preset is edited
     if (u.stillPx.empty() && !u.stillLoading) {
         u.stillLoading = true;
         Job j;
@@ -2813,9 +2944,11 @@ void ShowClockPage() {
     }
 }
 
-// Saves an edit of the clock look; the host moves/recolours the clock if that look is showing.
+// Saves an edit of the clock look; the host moves/recolours the clock if that look is showing. A
+// preset being edited is only kept on Save: meanwhile the desktop shows it instead.
 void ClockEdited() {
     SafeRelease(u.clockBmp);
+    Host_ClockPreview(prs.edit >= 0 ? &prs.look : nullptr);
     Host_SettingsChanged();
 }
 
@@ -2894,6 +3027,120 @@ void SetClipboardText(const std::wstring& s) {
 void ClockNote(const std::wstring& m) {
     u.clockNote = m;
     u.clockNoteAt = GetTickCount();
+}
+
+// ---- Clock presets: interaction
+
+void OpenPresets() {
+    prs.open = true;
+    prs.confirm = prs.rename = -1;
+    prs.note.clear();
+}
+
+void PresetRenameDone(bool keep);
+
+void ClosePresets() {
+    PresetRenameDone(true);
+    prs.open = false;
+    prs.confirm = -1;
+}
+
+// Puts a preset on the look the page's choices pick; that look keeps its Show / Hide.
+void PresetUse(int i) {
+    const ClockPreset& p = g_settings.presets[i];
+    if (!p.used) return;
+    ClockLook* look = PickedLook();
+    const bool show = look->show;
+    *look = p.look;
+    look->show = show;
+    Log(L"ui: clock preset %d used for %ls", i + 1, PickedLookName().c_str());
+    ClosePresets();
+    ClockEdited();
+    ClockNote(PresetName(i) + L" is now " + PickedLookName() + (show ? L"" : L" (hidden: Show shows it)"));
+}
+
+// Edits a preset on the page: from its own look, or from the clock on the page when it's empty.
+void PresetEdit(int i) {
+    const ClockPreset& p = g_settings.presets[i];
+    prs.look = p.used ? p.look : *PickedLook();
+    prs.look.show = true;
+    prs.edit = i;
+    ClosePresets();
+    u.keySlider = 0;
+    Log(L"ui: editing clock preset %d", i + 1);
+    ClockEdited();  // the desktop shows it from now on
+}
+
+void PresetEditEnd(bool save) {
+    const int i = prs.edit;
+    if (i < 0) return;
+    if (save) {
+        ClockPreset& p = g_settings.presets[i];
+        p.used = true;
+        p.look = prs.look;
+        p.look.show = true;
+        SavePresets(g_settings);
+    }
+    prs.edit = -1;
+    Log(L"ui: clock preset %d %ls", i + 1, save ? L"saved" : L"left as it was");
+    ClockEdited();  // the desktop goes back to the saved looks
+    ClockNote(save ? L"Saved " + PresetName(i) : PresetName(i) + L" is left as it was");
+}
+
+// While editing: start again from the clock the page's choices pick.
+void PresetFromCurrent() {
+    prs.look = *PickedLook();
+    prs.look.show = true;
+    ClockEdited();
+    ClockNote(L"Started again from " + PickedLookName());
+}
+
+void PresetDelete(int i) {
+    if (!g_settings.presets[i].used) return;
+    prs.note = L"Deleted " + PresetName(i);
+    g_settings.presets[i] = ClockPreset{};
+    SavePresets(g_settings);
+    if (prs.confirm == i) prs.confirm = -1;
+    Log(L"ui: clock preset %d deleted", i + 1);
+}
+
+void PresetRenameStart(int i) {
+    if (!g_settings.presets[i].used) return;
+    prs.rename = i;
+    prs.name = PresetName(i);
+    prs.nameFresh = true;
+    prs.confirm = -1;
+}
+
+// Keeps (or drops) the name typed; no name is "Preset N" again.
+void PresetRenameDone(bool keep) {
+    const int i = prs.rename;
+    if (i < 0) return;
+    prs.rename = -1;
+    if (!keep) return;
+    std::wstring n = prs.name;
+    while (!n.empty() && iswspace(n.back())) n.pop_back();
+    while (!n.empty() && iswspace(n.front())) n.erase(0, 1);
+    g_settings.presets[i].name = n == Fmt(L"Preset %d", i + 1) ? std::wstring() : n;
+    SavePresets(g_settings);
+}
+
+// A key typed into a preset's name: a letter, Backspace or Ctrl+V.
+void PresetNameChar(wchar_t c) {
+    if (c == 8) {
+        if (prs.nameFresh) prs.name.clear();
+        else if (!prs.name.empty()) prs.name.pop_back();
+    } else if (c == 22 || (c >= 32 && c != 127)) {
+        if (prs.nameFresh) prs.name.clear();
+        const std::wstring add = c == 22 ? ClipboardText() : std::wstring(1, c);
+        for (wchar_t ch : add) {
+            if (ch == L'\r' || ch == L'\n') break;
+            if (ch >= 32 && prs.name.size() < kPresetNameMax) prs.name += ch;
+        }
+    } else {
+        return;
+    }
+    prs.nameFresh = false;
 }
 
 // Ctrl+C / Ctrl+V on the clock page: copy the clock colour as a hex code, or paste one.
@@ -3294,6 +3541,21 @@ void OnClick(int id) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
+    if (id >= ID_PRS_USE0 && id < ID_PRS_DEL0 + kClockPresets) {
+        const int i = (id - ID_PRS_USE0) % 10;
+        if (id < ID_PRS_EDIT0) {
+            prs.confirm = i;
+            if (u.focus) u.focus = u.hot = ID_PRS_YES;  // from the keyboard: Enter replaces
+        } else if (id < ID_PRS_REN0) {
+            PresetEdit(i);
+        } else if (id < ID_PRS_DEL0) {
+            PresetRenameStart(i);
+        } else {
+            PresetDelete(i);
+        }
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return;
+    }
     if (id >= ID_VER_ROW0 && id < ID_VER_DEL0) {
         if (id - ID_VER_ROW0 < (int)ver.list.size()) VerSelect(id - ID_VER_ROW0);
         InvalidateRect(u.hwnd, nullptr, FALSE);
@@ -3376,6 +3638,15 @@ void OnClick(int id) {
         case ID_VERSIONS: OpenVersions(); break;
         case ID_VER_CANCEL: CloseVersions(); break;
         case ID_CLK_FONT: OpenFontDialog(); break;
+        case ID_PRS: OpenPresets(); break;
+        case ID_PRS_CLOSE: ClosePresets(); break;
+        case ID_PRS_NO: prs.confirm = -1; break;
+        case ID_PRS_YES:
+            if (prs.confirm >= 0) PresetUse(prs.confirm);
+            break;
+        case ID_PRS_SAVE: PresetEditEnd(true); break;
+        case ID_PRS_CANCEL: PresetEditEnd(false); break;
+        case ID_PRS_CURRENT: PresetFromCurrent(); break;
         case ID_CLK_DATE: OpenDateDialog(); break;
         case ID_FNT_DONE:
             if (fnt.langs) CloseLanguageList();
@@ -3436,7 +3707,8 @@ bool Focusable(const Hit& h) {
 size_t FocusStart() {
     size_t start = 0;
     for (size_t i = 0; i < u.hits.size(); i++)
-        if (u.hits[i].id == ID_DLG_SCRIM || u.hits[i].id == ID_VER_SCRIM || u.hits[i].id == ID_FNT_SCRIM) start = i + 1;
+        if (u.hits[i].id == ID_DLG_SCRIM || u.hits[i].id == ID_VER_SCRIM || u.hits[i].id == ID_FNT_SCRIM || u.hits[i].id == ID_PRS_SCRIM)
+            start = i + 1;
     return start;
 }
 
@@ -3575,7 +3847,7 @@ void PaintFocus() {
     if (inList) u.rt->PopAxisAlignedClip();
 }
 
-bool DialogOpen() { return dlg.open || ver.open || fnt.open || u.page == 1; }  // the crop page counts too
+bool DialogOpen() { return dlg.open || ver.open || fnt.open || prs.open || u.page == 1; }  // the crop page counts too
 
 bool OnKeyInner(UINT vk);
 
@@ -3615,6 +3887,15 @@ bool OnKeyInner(UINT vk) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
+    if (prs.rename >= 0) {  // typing a preset's name (the letters come as WM_CHAR); Tab keeps it and goes on
+        if (vk == VK_TAB) {
+            PresetRenameDone(true);
+        } else {
+            if (vk == VK_RETURN || vk == VK_ESCAPE) PresetRenameDone(vk == VK_RETURN);
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return true;
+        }
+    }
     if (vk == VK_TAB && u.picking) return true;  // the eyedropper is out: Esc or a click first
     if (vk == VK_TAB) {
         if (dlg.open) dlg.hexEdit = false;
@@ -3649,6 +3930,13 @@ bool OnKeyInner(UINT vk) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
+    if (prs.open) {
+        if (vk == VK_ESCAPE && prs.confirm >= 0) prs.confirm = -1;
+        else if (vk == VK_ESCAPE) ClosePresets();
+        else if (vk == VK_RETURN && prs.confirm >= 0) PresetUse(prs.confirm);
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
     if (fnt.open) {
         if (fnt.langs && vk >= 'A' && vk <= 'Z') LanguageJump((wchar_t)vk);
         if ((vk == VK_ESCAPE || vk == VK_RETURN) && fnt.langs) CloseLanguageList();
@@ -3675,6 +3963,7 @@ bool OnKeyInner(UINT vk) {
     }
     if (vk == VK_ESCAPE) {
         if (u.page == 1) LeaveCrop(false);
+        else if (prs.edit >= 0) PresetEditEnd(false);  // like a dialog's Cancel
         else DestroyWindow(u.hwnd);
         return true;
     }
@@ -3810,6 +4099,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             SetFocus(h);
             const Hit* ht = HitAt(x, y);
             if (u.recording && (!ht || ht->id != ID_HOTKEY)) StopRecording();
+            if (prs.rename >= 0 && (!ht || ht->id != ID_PRS_NAME)) PresetRenameDone(true);  // clicking elsewhere keeps the name
             FinishStep();
             u.keySlider = ht && ht->kind == K_SLIDER && ht->enabled ? ht->id : 0;
             u.focus = 0;
@@ -3895,7 +4185,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
             }
             return 0;
-        case WM_CHAR:  // typing a hex code in the colour dialog
+        case WM_CHAR:  // typing a preset's name, or a hex code in the colour dialog
+            if (prs.rename >= 0) {
+                PresetNameChar((wchar_t)w);
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             if (dlg.open && (iswxdigit((wchar_t)w) || w == L'#')) {
                 DlgHexChar((wchar_t)w);
                 InvalidateRect(h, nullptr, FALSE);
@@ -4030,6 +4325,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 dlg = ColorDialog{};
                 Host_SettingsChanged();
             }
+            PresetEditEnd(false);  // closed while editing a preset: as Cancel
+            prs = PresetUI{};
             StopRecording();
             KillTimer(h, TIMER_STATUS);
             u.worker.Stop();

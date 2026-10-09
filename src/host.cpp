@@ -57,7 +57,11 @@ bool Running() { return g_proc != nullptr; }
 
 bool WallpaperShowing() { return !g_exiting && g_on && !g_batteryOff && !g_settings.video.empty(); }
 
+bool g_clockPreviewOn;     // a clock preset being edited shows instead of the saved looks
+ClockLook g_clockPreview;
+
 ClockLook WantedLook() {
+    if (g_clockPreviewOn) return g_clockPreview;
     if (!WallpaperShowing()) return g_settings.clockStill;
     return g_settings.clockVideoOwn ? g_settings.clockVideo : g_settings.clockLive;
 }
@@ -718,6 +722,11 @@ bool Host_PickMusic(HWND owner) {
 int Host_CurrentTrack() { return g_track; }
 
 bool Host_ClockLive() { return WallpaperShowing(); }
+
+void Host_ClockPreview(const ClockLook* look) {
+    g_clockPreviewOn = look != nullptr;
+    if (look) g_clockPreview = *look;
+}
 
 void Host_ClockMove(const ClockLook& look) {
     if (!look.show) return;

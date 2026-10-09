@@ -1,5 +1,5 @@
-VideoBG 1.7.1 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
-============================================================================
+VideoBG 1.8 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+==========================================================================
 
 What it does
   - Plays a video behind your desktop icons. Ctrl+Alt+B turns it on and off;
@@ -70,6 +70,13 @@ Using it
         .otf font, or a .zip with one. VideoBG keeps its own copy and sizes
         it like the others; "Remove" deletes the copy.
       * Size, opacity, glow (strength, size and colour) and 12/24-hour time.
+      * Presets (top right) keeps up to 5 clock looks to use again on any
+        clock: make one on the still wallpaper and use it on a video, say.
+        Edit changes a preset right on the page (an empty one starts from
+        the clock you have): the row at the top waits and your desktop
+        shows the preset until you Save or Cancel. Use puts a preset on the
+        clock the top row picks (it asks first; Show / Hide stays as it
+        is). Rename and Delete are next to it.
   - Sound, Playback and Power saving pages: sound source, speed, frame rate,
     and pausing while apps cover the desktop or on battery.
   - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.

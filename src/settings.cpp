@@ -378,6 +378,30 @@ static void WriteLook(const wchar_t* ini, const wchar_t* sec, const std::wstring
     WritePrivateProfileStringW(sec, (prefix + L"Font").c_str(), l && l->font != ClockLook{}.font ? l->font.c_str() : nullptr, ini);
 }
 
+// Clock presets: [Presets] Preset1Name, Preset1X, Preset1Color... (a look's keys); an empty one has none.
+static void LoadPresets(const wchar_t* ini, Settings& s) {
+    for (int i = 0; i < kClockPresets; i++) {
+        const std::wstring prefix = L"Preset" + std::to_wstring(i + 1);
+        ClockPreset& p = s.presets[i];
+        p.used = !ReadStr(ini, L"Presets", (prefix + L"Color").c_str()).empty();
+        if (!p.used) continue;
+        p.name = ReadStr(ini, L"Presets", (prefix + L"Name").c_str());
+        p.look = ReadLook(ini, L"Presets", prefix, ClockLook{});
+        p.look.show = true;
+    }
+}
+
+void SavePresets(const Settings& s) {
+    std::wstring ini = IniPath();
+    for (int i = 0; i < kClockPresets; i++) {
+        const std::wstring prefix = L"Preset" + std::to_wstring(i + 1);
+        const ClockPreset& p = s.presets[i];
+        WriteLook(ini.c_str(), L"Presets", prefix, p.used ? &p.look : nullptr);
+        WritePrivateProfileStringW(L"Presets", (prefix + L"Name").c_str(), p.used && !p.name.empty() ? p.name.c_str() : nullptr, ini.c_str());
+    }
+    WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());
+}
+
 // The colour dialog's saved colours: [Clock] MyColors=RRGGBB,,RRGGBB,... (16 boxes, empty ones blank).
 static void LoadMyColors(const wchar_t* ini, Settings& s) {
     std::wstring v = ReadStr(ini, L"Clock", L"MyColors");
@@ -443,6 +467,7 @@ void LoadSettings(Settings& s) {
     s.clockStill = ReadLook(ini, L"Clock", L"Still", s.clockStill);
     s.clockLive = ReadLook(ini, L"Clock", L"Live", s.clockLive);
     LoadMyColors(ini, s);
+    LoadPresets(ini, s);
     LoadVideoProfile(s);
     // Older versions had one switch for the clock: off there means off with every look.
     if (!GetPrivateProfileIntW(L"Clock", L"Enabled", 1, ini)) s.clockStill.show = s.clockLive.show = s.clockVideo.show = false;
