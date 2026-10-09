@@ -50,7 +50,7 @@ enum Id {
     ID_PRS_REN0 = 2120,
     ID_PRS_DEL0 = 2130,
 };
-enum NavPage { NAV_VIDEO, NAV_CLOCK, NAV_SOUND, NAV_PLAYBACK, NAV_POWER, NAV_GENERAL, NAV_COUNT };  // sidebar order
+enum NavPage { NAV_VIDEO, NAV_CLOCK, NAV_SOUND, NAV_PLAYBACK, NAV_GENERAL, NAV_COUNT };  // sidebar order
 enum Kind { K_BUTTON, K_TOGGLE, K_SEG, K_SLIDER, K_AREA };
 enum Handle { H_NONE, H_NW, H_NE, H_SW, H_SE, H_N, H_S, H_W, H_E, H_MOVE, H_NEW };
 
@@ -975,7 +975,7 @@ struct NavItem {
     const wchar_t* label;
 };
 const NavItem kNav[NAV_COUNT] = {{L"\uE714", L"Video"},    {L"\uE121", L"Desktop clock"}, {L"\uE767", L"Sound"},
-                                 {L"\uE768", L"Playback"}, {L"\uE83F", L"Power saving"},  {L"\uE713", L"General"}};
+                                 {L"\uE768", L"Playback"}, {L"\uE713", L"General"}};
 
 void PaintHeader() {
     const Theme& t = u.th;
@@ -1281,11 +1281,15 @@ void QueryScreen();
 
 void QueryGpu();
 
+void PaintPowerCard(float x, float y, float w);
+
+// Playback, then power saving (pausing while covered or on battery) under it.
 void PaintPlaybackPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const bool twoGpus = !u.gpuLow.empty() && !u.gpuHigh.empty() && u.gpuLow != u.gpuHigh;  // laptops with a dedicated chip
-    Card(R(x, y, x + w, y + kCardHead + 4 * kRowH + 48 + (twoGpus ? kRowH + 44 : 0)), L"\uE768", L"Playback");
+    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 4 * kRowH + 48 + (twoGpus ? kRowH + 44 : 0));
+    Card(card, L"\uE768", L"Playback");
     float yy = y + kCardHead;
     Row(lx, yy, kLabelW, L"Scaling");
     Seg(ID_SCALE, SegRect(cx, yy, cw), {L"Fill", L"Fit", L"Stretch"}, g_settings.scale);
@@ -1316,11 +1320,12 @@ void PaintPlaybackPage(float x, float w) {
              L"but uses more power, which matters on battery.",
              R(lx, yy, x + w - kPad, yy + 38), u.fWrap, t.text2);
     }
+    PaintPowerCard(x, card.bottom + 12, w);
 }
 
-void PaintPowerPage(float x, float w) {
+void PaintPowerCard(float x, float y, float w) {
     const Theme& t = u.th;
-    const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
+    const float lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     Card(R(x, y, x + w, y + kCardHead + 44 + 2 * kRowH + 10), L"\uE83F", L"Power saving");
     Text(L"While paused, the video freezes on its current frame and stops decoding, so it uses no CPU or GPU, and after a "
          L"while it frees its memory too. It always pauses while the PC is locked or the screen is off.",
@@ -2775,7 +2780,6 @@ void PaintMain() {
         case NAV_VIDEO: PaintVideoPage(x, w); break;
         case NAV_SOUND: PaintSoundPage(x, w); break;
         case NAV_PLAYBACK: PaintPlaybackPage(x, w); break;
-        case NAV_POWER: PaintPowerPage(x, w); break;
         case NAV_CLOCK: PaintClockPage(x, w); break;
         case NAV_GENERAL: PaintGeneralPage(x, w); break;
     }

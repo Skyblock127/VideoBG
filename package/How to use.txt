@@ -1,4 +1,4 @@
-VideoBG 1.8.2 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+VideoBG 1.8.3 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
 ============================================================================
 
 What it does
@@ -38,7 +38,7 @@ Using it
     (NVIDIA/AMD), which keeps the video in its own memory instead of your
     RAM but uses more power, so mind your battery.
   - While the wallpaper is paused for a while (PC locked, screen off, or
-    covered by apps if you chose that on the Power saving page), VideoBG
+    covered by apps if you chose that on the Playback page), VideoBG
     lets go of the video's memory and picks up at the same frame later.
   - Show on lock screen (switch under the preview, on by default): while
     the video wallpaper is on, the lock screen and the Windows desktop
@@ -85,8 +85,8 @@ Using it
         clock the top row picks (it asks first; Show / Hide stays as it
         is). Rename and Delete are next to it. Tip: save your clock as a
         preset before changing it, so you can get it back later.
-  - Sound, Playback and Power saving pages: sound source, speed, frame rate,
-    and pausing while apps cover the desktop or on battery.
+  - Sound and Playback pages: sound source, speed, frame rate, and (under
+    Power saving) pausing while apps cover the desktop or on battery.
   - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.
   - No mouse needed: Tab (Shift+Tab back) moves between controls, Enter or
     Space uses one (a choice of several goes on to the next), the arrow keys
