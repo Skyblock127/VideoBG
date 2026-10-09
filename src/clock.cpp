@@ -22,6 +22,111 @@ const wchar_t* const kDays[] = {L"SUNDAY", L"MONDAY", L"TUESDAY", L"WEDNESDAY", 
 const wchar_t* const kMonths[] = {L"JANUARY", L"FEBRUARY", L"MARCH",     L"APRIL",   L"MAY",      L"JUNE",
                                   L"JULY",    L"AUGUST",   L"SEPTEMBER", L"OCTOBER", L"NOVEMBER", L"DECEMBER"};
 
+// ---- Language -------------------------------------------------------------------------------
+// The clock's words in a language: Windows' own data for it (days, months, AM/PM, digits), in
+// capitals like Mond's English. "" is Mond's own English.
+struct Words {
+    std::wstring lang;
+    bool native = false;
+    std::wstring days[7], months[12], monthsAfterDay[12], shortMonths[12], am, pm, digits;
+    bool amFirst = false;  // AM/PM goes before the time (Chinese, Korean, ...)
+    bool joined = false;   // a script whose letters join up (Devanagari, Arabic, Thai...): no letter spacing
+    bool rtl = false;      // written right to left (Arabic, Hebrew, Urdu...)
+};
+
+std::wstring LocaleText(const std::wstring& lang, LCTYPE type) {
+    wchar_t b[128] = {};
+    return GetLocaleInfoEx(lang.c_str(), type, b, 128) > 0 ? b : L"";
+}
+
+// The Gregorian calendar's names in a language (its own calendar may be another, like Arabic's).
+std::wstring GregorianText(const std::wstring& lang, CALTYPE type) {
+    wchar_t b[128] = {};
+    return GetCalendarInfoEx(lang.c_str(), CAL_GREGORIAN, nullptr, type, b, 128, nullptr) > 0 ? b : L"";
+}
+
+std::wstring Upper(const std::wstring& lang, const std::wstring& s) {
+    if (s.empty()) return s;
+    std::wstring out(s.size() * 3 + 8, L'\0');
+    int n = LCMapStringEx(lang.empty() ? L"en-US" : lang.c_str(), LCMAP_UPPERCASE | LCMAP_LINGUISTIC_CASING, s.c_str(), (int)s.size(),
+                          out.data(), (int)out.size(), nullptr, nullptr, 0);
+    if (n <= 0) return s;
+    out.resize(n);
+    return out;
+}
+
+// A month as a date writes it after the day number: some languages change the word there
+// (Russian, for one, uses another form of the word after a day number).
+std::wstring MonthAfterDay(const std::wstring& lang, int month) {
+    SYSTEMTIME st{};
+    st.wYear = 2026;
+    st.wMonth = (WORD)month;
+    st.wDay = 15;
+    wchar_t b[128] = {};
+    if (GetDateFormatEx(lang.c_str(), 0, &st, L"d MMMM", b, 128, nullptr) <= 0) return L"";
+    std::wstring s = b;
+    size_t at = s.find(L"15");  // the day number goes, with the spaces and dots around it
+    if (at == std::wstring::npos) return L"";
+    s.erase(at, 2);
+    const wchar_t* trim = L" .,";
+    size_t first = s.find_first_not_of(trim), last = s.find_last_not_of(trim);
+    return first == std::wstring::npos ? L"" : s.substr(first, last - first + 1);
+}
+
+bool JoinedScript(const std::wstring& s) {
+    for (wchar_t c : s)
+        if ((c >= 0x0590 && c <= 0x08FF) || (c >= 0x0900 && c <= 0x0FFF) || (c >= 0x1000 && c <= 0x109F) ||
+            (c >= 0x1780 && c <= 0x18AF) || (c >= 0xA8E0 && c <= 0xA8FF) || (c >= 0xFB1D && c <= 0xFEFF))
+            return true;
+    return false;
+}
+
+const Words& WordsFor(const std::wstring& lang, bool native) {
+    static Words w;
+    static bool made = false;
+    if (made && w.lang == lang && w.native == native) return w;
+    w = Words{};
+    w.lang = lang;
+    w.native = native;
+    made = true;
+    for (int i = 0; i < 7; i++) w.days[i] = kDays[i];
+    for (int i = 0; i < 12; i++) {
+        w.months[i] = w.monthsAfterDay[i] = kMonths[i];
+        w.shortMonths[i] = std::wstring(kMonths[i]).substr(0, 3);
+    }
+    w.am = L"AM";
+    w.pm = L"PM";
+    if (lang.empty()) return w;
+    for (int i = 0; i < 7; i++) {  // the first day name is Monday's
+        std::wstring d = GregorianText(lang, i == 0 ? CAL_SDAYNAME7 : CAL_SDAYNAME1 + i - 1);
+        if (!d.empty()) w.days[i] = Upper(lang, d);
+    }
+    // The month after a day number comes from Windows' date formatting, which uses the language's
+    // own calendar: only when that's the Gregorian one.
+    const bool gregorian = LocaleText(lang, LOCALE_ICALENDARTYPE) == L"1";
+    for (int i = 0; i < 12; i++) {
+        std::wstring m = GregorianText(lang, CAL_SMONTHNAME1 + i), sm = GregorianText(lang, CAL_SABBREVMONTHNAME1 + i);
+        std::wstring after = gregorian ? MonthAfterDay(lang, i + 1) : L"";
+        if (!m.empty()) w.months[i] = Upper(lang, m);
+        w.monthsAfterDay[i] = after.empty() ? w.months[i] : Upper(lang, after);
+        if (!sm.empty()) w.shortMonths[i] = Upper(lang, sm);
+    }
+    w.am = Upper(lang, LocaleText(lang, LOCALE_S1159));
+    w.pm = Upper(lang, LocaleText(lang, LOCALE_S2359));
+    w.amFirst = LocaleText(lang, LOCALE_ITIMEMARKPOSN) == L"1";
+    if (native) w.digits = Clock_NativeDigits(lang);
+    w.joined = JoinedScript(w.days[5]);
+    w.rtl = LocaleText(lang, LOCALE_IREADINGLAYOUT) == L"1";
+    return w;
+}
+
+std::wstring WithDigits(const Words& w, std::wstring s) {
+    if (w.digits.size() == 10)
+        for (wchar_t& c : s)
+            if (c >= L'0' && c <= L'9') c = w.digits[c - L'0'];
+    return s;
+}
+
 // ---- Fonts ----------------------------------------------------------------------------------
 // The whole clock is in one font. Each has scales that make every font about as wide as Audiowide
 // at the same size: one for the day, one for the date and time. Fonts VideoBG can't include come
@@ -416,8 +521,8 @@ void AddGlow(uint32_t* px, int w, int h, float radius, float strength, D2D1_COLO
 
 std::wstring Clock_StyleKey(const ClockLook& l) {
     wchar_t b[160];
-    swprintf(b, 160, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls|%d", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
-             l.glowColor.c_str(), l.h24, l.font.c_str(), l.date);
+    swprintf(b, 160, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls|%d|%ls|%d", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
+             l.glowColor.c_str(), l.h24, l.font.c_str(), l.date, l.lang.c_str(), l.nativeDigits);
     return b;
 }
 
@@ -481,10 +586,19 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
     const float size = look.size;
     if (!OpenPainter()) return false;
     if (!UseFont(look.font) && !UseFont(kFonts[0].key)) return false;  // a font that's gone: the default
-    const std::wstring date = Clock_DateText(look.date, t);
-    wchar_t time[32];
-    if (look.h24) swprintf(time, 32, L"- %02d:%02d -", t.wHour, t.wMinute);
-    else swprintf(time, 32, L"- %d:%02d %ls -", (t.wHour + 11) % 12 + 1, t.wMinute, t.wHour < 12 ? L"AM" : L"PM");
+    const Words& words = WordsFor(look.lang, look.nativeDigits);
+    const std::wstring day = words.days[t.wDayOfWeek % 7], date = Clock_DateText(look, look.date, t);
+    wchar_t clock[32];
+    std::wstring time;
+    if (look.h24) {
+        swprintf(clock, 32, L"%02d:%02d", t.wHour, t.wMinute);
+        time = clock;
+    } else {
+        swprintf(clock, 32, L"%d:%02d", (t.wHour + 11) % 12 + 1, t.wMinute);
+        const std::wstring& mark = t.wHour < 12 ? words.am : words.pm;
+        time = mark.empty() ? std::wstring(clock) : words.amFirst ? mark + L" " + clock : clock + std::wstring(L" ") + mark;
+    }
+    time = WithDigits(words, L"- " + time + L" -");
     struct Line {
         const wchar_t* text;
         const wchar_t* font;
@@ -492,9 +606,9 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
         IDWriteTextLayout* layout;
         DWRITE_TEXT_METRICS m;
         float top;  // where the layout's top goes
-    } lines[3] = {{kDays[t.wDayOfWeek % 7], P.family.c_str(), 40 * P.dayScale, 10 * P.dayScale, P.dayCap, nullptr, {}, 0},
+    } lines[3] = {{day.c_str(), P.family.c_str(), 40 * P.dayScale, words.joined ? 0 : 10 * P.dayScale, P.dayCap, nullptr, {}, 0},
                   {date.c_str(), P.smallFamily.c_str(), 14 * P.smallScale, 0, P.smallCap, nullptr, {}, 0},
-                  {time, P.smallFamily.c_str(), 14 * P.smallScale, 0, P.smallCap, nullptr, {}, 0}};
+                  {time.c_str(), P.smallFamily.c_str(), 14 * P.smallScale, 0, P.smallCap, nullptr, {}, 0}};
     int n = 3;
     if (date.empty()) {  // no date line: the time comes right under the day
         lines[1] = lines[2];
@@ -512,6 +626,7 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
                                    px, L"en-us", &fmt);
         if (SUCCEEDED(hr)) {
             fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            if (words.rtl) fmt->SetReadingDirection(DWRITE_READING_DIRECTION_RIGHT_TO_LEFT);
             hr = P.f->CreateTextLayout(l.text, len, fmt, 8192, 8192, &l.layout);
         }
         Rel(fmt);
@@ -522,6 +637,9 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
                 l1->Release();
             }
         }
+        if (SUCCEEDED(hr)) hr = l.layout->GetMetrics(&l.m);
+        // As wide as the text, so it starts at the layout's left whichever way it reads.
+        if (SUCCEEDED(hr)) hr = l.layout->SetMaxWidth(l.m.widthIncludingTrailingWhitespace);
         if (SUCCEEDED(hr)) hr = l.layout->GetMetrics(&l.m);
         DWRITE_LINE_METRICS lm{};
         UINT32 count = 0;
@@ -625,28 +743,63 @@ const int kDateStyles = 15;
 
 int Clock_DateStyleCount() { return kDateStyles; }
 
-std::wstring Clock_DateText(int style, const SYSTEMTIME& t) {
-    const wchar_t* month = kMonths[(t.wMonth + 11) % 12];
-    const int d = t.wDay, m = t.wMonth, y = t.wYear;
-    wchar_t b[64];
+std::wstring Clock_DateText(const ClockLook& look, int style, const SYSTEMTIME& t) {
+    const Words& w = WordsFor(look.lang, look.nativeDigits);
+    const int d = t.wDay, m = t.wMonth, y = t.wYear, mi = (m + 11) % 12;
+    const wchar_t *month = w.months[mi].c_str(), *ofDay = w.monthsAfterDay[mi].c_str(), *shortMonth = w.shortMonths[mi].c_str();
+    wchar_t b[160];
     switch (style) {
-        case 1: swprintf(b, 64, L"%ls %d, %d", month, d, y); break;                // OCTOBER 9, 2026
-        case 2: swprintf(b, 64, L"%d %ls %d", d, month, y); break;                 // 9 OCTOBER 2026
-        case 3: swprintf(b, 64, L"%02d %.3ls %d", d, month, y); break;             // 09 OCT 2026
-        case 4: swprintf(b, 64, L"%.3ls %02d, %d", month, d, y); break;            // OCT 09, 2026
-        case 5: swprintf(b, 64, L"%02d . %02d . %d", d, m, y); break;              // 09 . 10 . 2026
-        case 6: swprintf(b, 64, L"%02d . %02d . %d", m, d, y); break;              // 10 . 09 . 2026
-        case 7: swprintf(b, 64, L"%02d / %02d / %02d", d, m, y % 100); break;      // 09 / 10 / 26
-        case 8: swprintf(b, 64, L"%02d / %02d / %02d", m, d, y % 100); break;      // 10 / 09 / 26
-        case 9: swprintf(b, 64, L"%d - %02d - %02d", y, m, d); break;              // 2026 - 10 - 09
-        case 10: swprintf(b, 64, L"%02d  %ls", d, month); break;                   // 09  OCTOBER
-        case 11: swprintf(b, 64, L"%ls  %02d", month, d); break;                   // OCTOBER  09
-        case 12: swprintf(b, 64, L"%ls  %d", month, y); break;                     // OCTOBER  2026
-        case 13: swprintf(b, 64, L"%02d . %02d", d, m); break;                     // 09 . 10
+        case 1: swprintf(b, 160, L"%ls %d, %d", month, d, y); break;               // OCTOBER 9, 2026
+        case 2: swprintf(b, 160, L"%d %ls %d", d, ofDay, y); break;                // 9 OCTOBER 2026
+        case 3: swprintf(b, 160, L"%02d %ls %d", d, shortMonth, y); break;         // 09 OCT 2026
+        case 4: swprintf(b, 160, L"%ls %02d, %d", shortMonth, d, y); break;        // OCT 09, 2026
+        case 5: swprintf(b, 160, L"%02d . %02d . %d", d, m, y); break;             // 09 . 10 . 2026
+        case 6: swprintf(b, 160, L"%02d . %02d . %d", m, d, y); break;             // 10 . 09 . 2026
+        case 7: swprintf(b, 160, L"%02d / %02d / %02d", d, m, y % 100); break;     // 09 / 10 / 26
+        case 8: swprintf(b, 160, L"%02d / %02d / %02d", m, d, y % 100); break;     // 10 / 09 / 26
+        case 9: swprintf(b, 160, L"%d - %02d - %02d", y, m, d); break;             // 2026 - 10 - 09
+        case 10: swprintf(b, 160, L"%02d  %ls", d, ofDay); break;                  // 09  OCTOBER
+        case 11: swprintf(b, 160, L"%ls  %02d", month, d); break;                  // OCTOBER  09
+        case 12: swprintf(b, 160, L"%ls  %d", month, y); break;                    // OCTOBER  2026
+        case 13: swprintf(b, 160, L"%02d . %02d", d, m); break;                    // 09 . 10
         case 14: return L"";                                                        // no date
-        default: swprintf(b, 64, L"%02d  %ls,  %d.", d, month, y);                 // Mond: 09  OCTOBER,  2026.
+        default: swprintf(b, 160, L"%02d  %ls,  %d.", d, ofDay, y);                // Mond: 09  OCTOBER,  2026.
     }
-    return b;
+    return WithDigits(w, b);
+}
+
+namespace {
+
+BOOL CALLBACK AddLanguage(LPWSTR name, DWORD, LPARAM list) {
+    const std::wstring code = name;
+    // Languages (not regions): skip the invariant one, English (that's Mond's own) and test locales.
+    if (code.empty() || code == L"en" || code.rfind(L"qps", 0) == 0 || code.rfind(L"x-", 0) == 0) return TRUE;
+    if (LocaleText(code, LOCALE_SDAYNAME1).empty()) return TRUE;
+    ClockLanguage l{code, LocaleText(code, LOCALE_SENGLISHDISPLAYNAME), LocaleText(code, LOCALE_SNATIVEDISPLAYNAME)};
+    if (!l.english.empty()) ((std::vector<ClockLanguage>*)list)->push_back(l);
+    return TRUE;
+}
+
+}  // namespace
+
+std::vector<ClockLanguage> Clock_Languages() {
+    std::vector<ClockLanguage> list;
+    EnumSystemLocalesEx(AddLanguage, LOCALE_NEUTRALDATA, (LPARAM)&list, nullptr);
+    std::sort(list.begin(), list.end(), [](const ClockLanguage& a, const ClockLanguage& b) { return _wcsicmp(a.english.c_str(), b.english.c_str()) < 0; });
+    list.insert(list.begin(), ClockLanguage{L"", L"English", L"English"});
+    return list;
+}
+
+std::wstring Clock_LanguageName(const std::wstring& code) {
+    if (code.empty()) return L"English";
+    std::wstring name = LocaleText(code, LOCALE_SENGLISHDISPLAYNAME);
+    return name.empty() ? code : name;
+}
+
+std::wstring Clock_NativeDigits(const std::wstring& code) {
+    if (code.empty()) return L"";
+    std::wstring d = LocaleText(code, LOCALE_SNATIVEDIGITS);
+    return d.size() == 10 && d != L"0123456789" ? d : L"";
 }
 
 bool Clock_PaintLine(const std::wstring& text, const std::wstring& font, float pt, const std::wstring& color, float k,
@@ -657,7 +810,12 @@ bool Clock_PaintLine(const std::wstring& text, const std::wstring& font, float p
     DWRITE_TEXT_METRICS m{};
     HRESULT hr = P.f->CreateTextFormat(P.family.c_str(), P.fonts, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                                        DWRITE_FONT_STRETCH_NORMAL, pt * 4 / 3 * k, L"en-us", &fmt);
+    bool rtl = false;  // text in a right-to-left script reads that way
+    for (wchar_t c : text) rtl = rtl || (c >= 0x0590 && c <= 0x08FF) || (c >= 0xFB1D && c <= 0xFEFF);
+    if (SUCCEEDED(hr) && rtl) fmt->SetReadingDirection(DWRITE_READING_DIRECTION_RIGHT_TO_LEFT);
     if (SUCCEEDED(hr)) hr = P.f->CreateTextLayout(text.c_str(), (UINT32)text.size(), fmt, 8192, 8192, &layout);
+    if (SUCCEEDED(hr)) hr = layout->GetMetrics(&m);
+    if (SUCCEEDED(hr)) hr = layout->SetMaxWidth(m.widthIncludingTrailingWhitespace);
     if (SUCCEEDED(hr)) hr = layout->GetMetrics(&m);
     const int w = SUCCEEDED(hr) ? (int)ceilf(m.widthIncludingTrailingWhitespace) + 2 : 0, h = SUCCEEDED(hr) ? (int)ceilf(m.height) : 0;
     bool ok = false;

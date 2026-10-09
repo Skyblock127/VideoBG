@@ -31,7 +31,7 @@ enum Id {
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_SHUFFLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
-    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_REPO,
+    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO,
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
@@ -42,6 +42,7 @@ enum Id {
     ID_FNT_GET0 = 600,
     ID_FNT_ADD0 = 700,
     ID_FNT_DEL0 = 800,
+    ID_LANG_ROW0 = 1000,  // the clock language list: a language's row (as many as Windows has)
 };
 enum NavPage { NAV_VIDEO, NAV_CLOCK, NAV_SOUND, NAV_PLAYBACK, NAV_POWER, NAV_GENERAL, NAV_COUNT };  // sidebar order
 enum Kind { K_BUTTON, K_TOGGLE, K_SEG, K_SLIDER, K_AREA };
@@ -1588,13 +1589,13 @@ void Badge(const std::wstring& s, float x, float y) {
 // The font a look shows: its own, or Audiowide when that font isn't on this PC any more.
 std::wstring ShownFont(const ClockLook& l) { return Clock_FontReady(l.font) ? l.font : std::wstring(L"Audiowide"); }
 
-// A button that shows the clock's font and opens the font picker.
-void FontButton(int id, const D2D1_RECT_F& r, const std::wstring& font, bool enabled) {
+// A button that shows the clock's font (or another choice, with its icon) and opens its list.
+void FontButton(int id, const D2D1_RECT_F& r, const std::wstring& font, bool enabled, const wchar_t* icon = L"\uE8D2") {
     const Theme& t = u.th;
     bool hot = enabled && IsHot(id), pressed = enabled && u.press == id && u.hot == id;
     Fill(r, pressed ? t.ctrlPress : hot ? t.ctrlHover : t.ctrl, 4);
     Stroke(r, t.ctrlStroke, 4);
-    Text(L"\uE8D2", R(r.left + 8, r.top, r.left + 26, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
+    Text(icon, R(r.left + 8, r.top, r.left + 26, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
     Text(font, R(r.left + 33, r.top, r.right - 28, r.bottom), u.fBody, enabled ? t.text : t.text3);
     Text(L"\uE76C", R(r.right - 26, r.top, r.right - 10, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3,
          DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -1602,14 +1603,14 @@ void FontButton(int id, const D2D1_RECT_F& r, const std::wstring& font, bool ena
 }
 
 // A button that shows how the date reads (today, in the look's style) and opens the date styles.
-void DateButton(int id, const D2D1_RECT_F& r, int style, bool enabled) {
+void DateButton(int id, const D2D1_RECT_F& r, const ClockLook& look, bool enabled) {
     const Theme& t = u.th;
     bool hot = enabled && IsHot(id), pressed = enabled && u.press == id && u.hot == id;
     Fill(r, pressed ? t.ctrlPress : hot ? t.ctrlHover : t.ctrl, 4);
     Stroke(r, t.ctrlStroke, 4);
     SYSTEMTIME now;
     GetLocalTime(&now);
-    std::wstring date = Clock_DateText(style, now);
+    std::wstring date = Clock_DateText(look, look.date, now);
     if (date.empty()) date = L"No date";
     Text(L"\uE787", R(r.left + 8, r.top, r.left + 26, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
     Text(date, R(r.left + 33, r.top, r.right - 28, r.bottom), u.fSmall, enabled ? t.text : t.text3);
@@ -1712,7 +1713,7 @@ void PaintClockPage(float x, float w) {
     sliderRow(rx, ID_CLK_GLOWSIZE, L"Glow size", (look->glowSize - 2) / 38, Fmt(L"%.0f", look->glowSize), glowOn);
     yy += rowH;
     Row(lx, yy, labW, L"Date", rowH, on);
-    DateButton(ID_CLK_DATE, R(lx + labW, yy + 3, lx + colW, yy + rowH - 3), look->date, on);
+    DateButton(ID_CLK_DATE, R(lx + labW, yy + 3, lx + colW, yy + rowH - 3), *look, on);
     Row(rx, yy, labW, L"Time", rowH, on);
     Seg(ID_CLK_HOURS, SegRect(rx + labW, yy, cw, rowH), {L"12-hour", L"24-hour"}, look->h24 ? 1 : 0, on);
     yy += rowH + 4;
@@ -1741,7 +1742,7 @@ void PaintClockPage(float x, float w) {
             help = u.focus == ID_CLK_AREA ? L"Arrow keys move the clock (Shift: one pixel); Enter centres it across, and again puts it back"
                                           : L"Drag the clock to place it (Alt: no snapping); arrow keys move it (Shift: one pixel)";
             break;
-        case ID_CLK_DATE: help = L"How the date reads, in this look"; break;
+        case ID_CLK_DATE: help = L"How the date reads, and the clock's language, in this look"; break;
         default: break;
     }
     if (u.picking && (u.hot == ID_CLK_AREA || help.empty()))
@@ -2111,10 +2112,13 @@ void ClockEdited();
 
 const float kFontRowH = 132, kFontAddH = 76;  // a font's row; the "Add your own font" row at the end
 const float kDateRowH = 48;                     // a date style's row
+const float kLangRowH = 40;                     // a language's row
 
 struct FontDialog {
     bool open = false;
     bool dates = false;  // the date styles instead of the fonts
+    bool langs = false;  // within the date styles: the list of languages
+    std::vector<ClockLanguage> langList;
     std::vector<ClockFontInfo> list;
     std::vector<ID2D1Bitmap*> samples;
     std::vector<D2D1_SIZE_F> sizes;  // in DIPs
@@ -2143,8 +2147,8 @@ void FontBarDrag(float y, bool start) {
 }
 
 // The rows: date styles, or fonts.
-int PickerRows() { return fnt.dates ? Clock_DateStyleCount() : (int)fnt.list.size(); }
-float PickerRowH() { return fnt.dates ? kDateRowH : kFontRowH; }
+int PickerRows() { return fnt.langs ? (int)fnt.langList.size() : fnt.dates ? Clock_DateStyleCount() : (int)fnt.list.size(); }
+float PickerRowH() { return fnt.langs ? kLangRowH : fnt.dates ? kDateRowH : kFontRowH; }
 
 void ReleaseFontSamples() {
     for (ID2D1Bitmap*& b : fnt.samples) SafeRelease(b);
@@ -2189,6 +2193,37 @@ void OpenDateDialog() {
     ReleaseFontSamples();
 }
 
+// The languages, in place of the date styles (Back, Esc or picking one goes back to them).
+void OpenLanguageList() {
+    fnt.langs = true;
+    fnt.langList = Clock_Languages();
+    ReleaseFontSamples();
+    int at = 0;
+    for (size_t i = 0; i < fnt.langList.size(); i++)
+        if (fnt.langList[i].code == EditedLook()->lang) at = (int)i;
+    fnt.scroll = fnt.target = std::max(0.f, (at - 3) * kLangRowH);  // the next paint keeps it in range
+    fnt.note.clear();
+}
+
+void CloseLanguageList() {
+    fnt.langs = false;
+    fnt.langList.clear();
+    ReleaseFontSamples();
+    fnt.scroll = fnt.target = std::max(0.f, (EditedLook()->date - 3) * kDateRowH);
+}
+
+// A letter typed in the language list: the next language starting with it.
+void LanguageJump(wchar_t letter) {
+    const int n = (int)fnt.langList.size(), from = (int)(fnt.target / kLangRowH);
+    for (int k = 1; k <= n; k++) {
+        const int i = (from + k) % n;
+        if (!fnt.langList[i].english.empty() && towupper(fnt.langList[i].english[0]) == letter) {
+            FontScrollTo(i * kLangRowH, true);
+            return;
+        }
+    }
+}
+
 void CloseFontDialog() {
     if (!fnt.open) return;
     ReleaseFontSamples();
@@ -2203,6 +2238,16 @@ void UseFontInLook(const std::wstring& key) {
 }
 
 void FontPick(int i) {
+    if (fnt.langs) {
+        if (i >= (int)fnt.langList.size()) return;
+        ClockLook* look = EditedLook();
+        look->lang = fnt.langList[i].code;
+        if (Clock_NativeDigits(look->lang).empty()) look->nativeDigits = false;
+        Log(L"ui: clock language %ls", fnt.langList[i].english.c_str());
+        ClockEdited();
+        CloseLanguageList();
+        return;
+    }
     if (fnt.dates) {
         EditedLook()->date = i;
         Log(L"ui: date style %d", i);
@@ -2291,7 +2336,7 @@ void EnsureDateSample(int i) {
     fnt.tried[i] = true;
     SYSTEMTIME t;
     GetLocalTime(&t);
-    std::wstring text = Clock_DateText(i, t);
+    std::wstring text = Clock_DateText(*EditedLook(), i, t);
     if (text.empty()) text = L"NO DATE";
     const float k = u.dpi / 96;
     const std::wstring color =
@@ -2312,6 +2357,8 @@ void EnsureFontSample(int i, float maxW, float maxH) {
     ClockLook l;
     l.font = fnt.list[i].key;
     l.date = EditedLook()->date;
+    l.lang = EditedLook()->lang;
+    l.nativeDigits = EditedLook()->nativeDigits;
     l.h24 = EditedLook()->h24;
     l.color = Fmt(L"%d,%d,%d", (int)lroundf(u.th.text.r * 255), (int)lroundf(u.th.text.g * 255), (int)lroundf(u.th.text.b * 255));
     SYSTEMTIME t;
@@ -2348,8 +2395,21 @@ void PaintFontDialog() {
     PopRounded(clip);
     Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
 
-    Text(fnt.dates ? L"Date style" : L"Clock font", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
-    Text(L"Click one to use it; your desktop shows it right away.", R(L + 24, T + 50, L + W - 24, T + 72), u.fBody, t.text2);
+    Text(fnt.langs ? L"Clock language" : fnt.dates ? L"Date style" : L"Clock font", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle,
+         t.text);
+    Text(fnt.langs ? L"The day, month and AM/PM words come from Windows. Type a letter to jump."
+                   : L"Click one to use it; your desktop shows it right away.",
+         R(L + 24, T + 50, L + W - 24, T + 72), u.fBody, t.text2);
+    if (fnt.dates && !fnt.langs) {  // the clock's language, and its own digits when it has them
+        const ClockLook* look = EditedLook();
+        const float bl = L + W - 24 - 190;
+        FontButton(ID_FNT_LANG, R(bl, T + 14, L + W - 24, T + 46), Clock_LanguageName(look->lang), true, L"\uE774");
+        const std::wstring digits = Clock_NativeDigits(look->lang);
+        if (!digits.empty()) {
+            Text(digits.substr(1, 3) + L" digits", R(L + 170, T + 16, bl - 16 - 40 - 10, T + 46), u.fBody, t.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            Toggle(ID_FNT_DIGITS, bl - 16 - 40, T + 30, look->nativeDigits);
+        }
+    }
 
     const D2D1_RECT_F view = R(L + 1, T + 84, L + W - 1, T + 84 + listH);
     fnt.maxScroll = std::max(0.f, content - listH);
@@ -2368,6 +2428,28 @@ void PaintFontDialog() {
     fnt.viewH = listH;
     fnt.view = view;
     for (int i = 0; i < n; i++, y += rowH) {  // all rows, also the ones out of view: Tab goes through them
+        if (fnt.langs) {  // a language: its name in English, and in itself
+            if (y + rowH <= view.top - rowH || y >= view.bottom + rowH) {  // far out of view: just reachable by Tab
+                AddHit(ID_LANG_ROW0 + i, K_BUTTON, R(0, 0, 0, 0));
+                continue;
+            }
+            const ClockLanguage& lg = fnt.langList[i];
+            const D2D1_RECT_F r = R(L + 16, y + 2, L + W - 16 - barW, y + rowH - 2);
+            const bool sel = lg.code == EditedLook()->lang, hot = IsHot(ID_LANG_ROW0 + i);
+            if (sel) {
+                Fill(r, Mix(face, t.accent, 0.14f), 6);
+                Stroke(r, t.accent, 6);
+            } else if (hot) {
+                Fill(r, Mix(face, t.text, 0.05f), 6);
+            }
+            AddHit(ID_LANG_ROW0 + i, K_BUTTON, r);
+            const float cy = (r.top + r.bottom) / 2;
+            Circle(r.left + 22, cy, 8, sel ? t.accent : t.text2);
+            Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
+            Text(lg.english, R(r.left + 42, r.top, r.left + 300, r.bottom), u.fBody, t.text);
+            Text(lg.native, R(r.left + 300, r.top, r.right - 14, r.bottom), u.fBody, t.text2, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            continue;
+        }
         if (fnt.dates) {  // just the date, as it reads today
             const D2D1_RECT_F r = R(L + 16, y + 2, L + W - 16 - barW, y + rowH - 2);
             const bool sel = EditedLook()->date == i, hot = IsHot(ID_FNT_ROW0 + i);
@@ -2452,7 +2534,7 @@ void PaintFontDialog() {
 
     const float by = T + H - 48;
     Text(fnt.note, R(L + 24, by - 2, L + W - 24 - 130, by + 34), u.fWrap, t.text3);
-    Button(ID_FNT_DONE, R(L + W - 24 - 110, by, L + W - 24, by + 32), L"Done", nullptr, true);
+    Button(ID_FNT_DONE, R(L + W - 24 - 110, by, L + W - 24, by + 32), fnt.langs ? L"Back" : L"Done", nullptr, true);
 }
 
 void PaintMain() {
@@ -3227,6 +3309,11 @@ void OnClick(int id) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
+    if (id >= ID_LANG_ROW0 && id < ID_LANG_ROW0 + 1000) {
+        FontPick(id - ID_LANG_ROW0);
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return;
+    }
     if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) {
         int i = (id - ID_FNT_ROW0) % 100;
         if (id < ID_FNT_GET0) FontPick(i);
@@ -3290,8 +3377,17 @@ void OnClick(int id) {
         case ID_VER_CANCEL: CloseVersions(); break;
         case ID_CLK_FONT: OpenFontDialog(); break;
         case ID_CLK_DATE: OpenDateDialog(); break;
-        case ID_FNT_DONE: CloseFontDialog(); break;
+        case ID_FNT_DONE:
+            if (fnt.langs) CloseLanguageList();
+            else CloseFontDialog();
+            break;
         case ID_FNT_OWN: FontAddOwn(); break;
+        case ID_FNT_LANG: OpenLanguageList(); break;
+        case ID_FNT_DIGITS:
+            EditedLook()->nativeDigits = !EditedLook()->nativeDigits;
+            ClockEdited();
+            ReleaseFontSamples();
+            break;
         case ID_VER_USE: VerApply(); break;
         case ID_LOCK: Host_SetLockFollow(!g_settings.lockFollow); break;
         case ID_HOTKEY:
@@ -3354,7 +3450,8 @@ const Hit* FocusHit() {
 void FontScrollToFocus() {
     const int id = u.focus;
     float top;
-    if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) top = ((id - ID_FNT_ROW0) % 100) * PickerRowH();
+    if (id >= ID_LANG_ROW0 && id < ID_LANG_ROW0 + 1000) top = (id - ID_LANG_ROW0) * kLangRowH;
+    else if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) top = ((id - ID_FNT_ROW0) % 100) * PickerRowH();
     else if (id == ID_FNT_OWN) top = fnt.list.size() * kFontRowH;
     else return;
     const float bottom = top + (id == ID_FNT_OWN ? kFontAddH : PickerRowH());
@@ -3471,7 +3568,8 @@ void PaintFocus() {
         const D2D1_RECT_F c = ClockRectIn(u.clockBox, *EditedLook());
         r = R(c.left - 4, c.top - 4, c.right + 4, c.bottom + 4);
     }
-    const bool inList = fnt.open && ((h->id >= ID_FNT_ROW0 && h->id < ID_FNT_DEL0 + 100) || h->id == ID_FNT_OWN);
+    const bool inList = fnt.open && ((h->id >= ID_FNT_ROW0 && h->id < ID_FNT_DEL0 + 100) || h->id == ID_FNT_OWN ||
+                                     (h->id >= ID_LANG_ROW0 && h->id < ID_LANG_ROW0 + 1000));
     if (inList) u.rt->PushAxisAlignedClip(fnt.view, D2D1_ANTIALIAS_MODE_ALIASED);
     Stroke(r, u.th.accent, h->kind == K_AREA ? 8.f : 7.f, 2);
     if (inList) u.rt->PopAxisAlignedClip();
@@ -3552,7 +3650,9 @@ bool OnKeyInner(UINT vk) {
         return true;
     }
     if (fnt.open) {
-        if (vk == VK_ESCAPE || vk == VK_RETURN) CloseFontDialog();
+        if (fnt.langs && vk >= 'A' && vk <= 'Z') LanguageJump((wchar_t)vk);
+        if ((vk == VK_ESCAPE || vk == VK_RETURN) && fnt.langs) CloseLanguageList();
+        else if (vk == VK_ESCAPE || vk == VK_RETURN) CloseFontDialog();
         if (vk == VK_UP || vk == VK_DOWN) FontScrollTo(fnt.target + (vk == VK_DOWN ? 80.f : -80.f), true);
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;

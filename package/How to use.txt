@@ -55,7 +55,11 @@ Using it
         it), and an eyedropper that takes a colour from anywhere on the
         wallpaper. Ctrl+V pastes a colour code like #72ABDE.
       * Date: how the date reads (09 OCTOBER, 2026. / OCTOBER 9, 2026 /
-        09 / 10 / 26 ...), or no date at all.
+        09 / 10 / 26 ...), or no date at all. Language (top of that list)
+        writes the day, month and AM/PM in any language Windows knows, with
+        its own digits if it has them. A font only changes the letters'
+        shapes, so pick one that has that language's letters (otherwise
+        Windows fills them in).
       * Font: Audiowide, Michroma, Orbitron or Syncopate, for the whole
         clock. Anurati (the original Mond font) is free for personal use
         only, so it isn't included: in the font list, "Get it" opens its

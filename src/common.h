@@ -73,10 +73,12 @@ struct ClockLook {
     bool h24 = false;                // 24-hour time (else 12-hour)
     std::wstring font = L"Audiowide";  // the whole clock's font (a key from Clock_Fonts)
     int date = 0;                    // how the date line reads (a Clock_DateText style)
+    std::wstring lang;               // the language of its words (a Windows locale name, "" = English)
+    bool nativeDigits = false;       // the language's own digits (when it has them) instead of 0-9
     bool operator==(const ClockLook& o) const {
         return x == o.x && y == o.y && color == o.color && size == o.size && opacity == o.opacity && glow == o.glow &&
                glowSize == o.glowSize && glowColor == o.glowColor && show == o.show && h24 == o.h24 && font == o.font &&
-               date == o.date;
+               date == o.date && lang == o.lang && nativeDigits == o.nativeDigits;
     }
 };
 
@@ -256,9 +258,18 @@ struct ClockFontInfo {
     bool removable;         // VideoBG has a copy in its fonts folder, which can be deleted
     bool ready;             // included, or its file is on this PC
 };
-// Date styles: how the clock's middle line reads; "" for the style that leaves it out.
+// Date styles: how the clock's middle line reads in the look's language; "" for the style that
+// leaves it out.
 int Clock_DateStyleCount();
-std::wstring Clock_DateText(int style, const SYSTEMTIME& t);
+std::wstring Clock_DateText(const ClockLook& look, int style, const SYSTEMTIME& t);
+// Languages for the clock's words: Windows' own names for days, months and AM/PM, in every language
+// it knows. English first (code ""), then the rest by English name.
+struct ClockLanguage {
+    std::wstring code, english, native;  // "hi", "Hindi", the name in Hindi
+};
+std::vector<ClockLanguage> Clock_Languages();
+std::wstring Clock_LanguageName(const std::wstring& code);  // in English
+std::wstring Clock_NativeDigits(const std::wstring& code);  // its own digits, or "" when it writes 0-9
 // One line of text in one of the clock's fonts, at pt points (the date styles' samples).
 bool Clock_PaintLine(const std::wstring& text, const std::wstring& font, float pt, const std::wstring& color, float pixelScale,
                      ClockImage* out);
