@@ -344,6 +344,7 @@ static ClockLook ReadLook(const wchar_t* ini, const wchar_t* sec, const std::wst
     l.glowColor = ReadStr(ini, sec, (prefix + L"GlowColor").c_str());  // "" = the text colour
     l.show = GetPrivateProfileIntW(sec, (prefix + L"Show").c_str(), 1, ini) != 0;
     l.h24 = GetPrivateProfileIntW(sec, (prefix + L"Hours").c_str(), def.h24 ? 24 : 12, ini) == 24;
+    l.date = std::clamp((int)GetPrivateProfileIntW(sec, (prefix + L"Date").c_str(), 0, ini), 0, 99);
     l.font = ReadStr(ini, sec, (prefix + L"Font").c_str());
     if (l.font.empty()) l.font = base.font;
     return l;
@@ -368,6 +369,8 @@ static void WriteLook(const wchar_t* ini, const wchar_t* sec, const std::wstring
     WritePrivateProfileStringW(sec, (prefix + L"GlowColor").c_str(), l && !l->glowColor.empty() ? l->glowColor.c_str() : nullptr, ini);
     WritePrivateProfileStringW(sec, (prefix + L"Show").c_str(), l && !l->show ? L"0" : nullptr, ini);
     WritePrivateProfileStringW(sec, (prefix + L"Hours").c_str(), l ? (l->h24 ? L"24" : L"12") : nullptr, ini);
+    swprintf(buf, 32, L"%d", l ? l->date : 0);
+    WritePrivateProfileStringW(sec, (prefix + L"Date").c_str(), l && l->date ? buf : nullptr, ini);
     WritePrivateProfileStringW(sec, (prefix + L"Font").c_str(), l && l->font != ClockLook{}.font ? l->font.c_str() : nullptr, ini);
 }
 

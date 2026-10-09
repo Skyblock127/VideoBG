@@ -71,10 +71,12 @@ struct ClockLook {
     std::wstring glowColor;          // "r,g,b", "" = the text colour
     bool show = true;                // the clock shows at all with this look
     bool h24 = false;                // 24-hour time (else 12-hour)
-    std::wstring font = L"Audiowide";  // the whole clock's font (a key from Clock_Font)
+    std::wstring font = L"Audiowide";  // the whole clock's font (a key from Clock_Fonts)
+    int date = 0;                    // how the date line reads (a Clock_DateText style)
     bool operator==(const ClockLook& o) const {
         return x == o.x && y == o.y && color == o.color && size == o.size && opacity == o.opacity && glow == o.glow &&
-               glowSize == o.glowSize && glowColor == o.glowColor && show == o.show && h24 == o.h24 && font == o.font;
+               glowSize == o.glowSize && glowColor == o.glowColor && show == o.show && h24 == o.h24 && font == o.font &&
+               date == o.date;
     }
 };
 
@@ -254,6 +256,12 @@ struct ClockFontInfo {
     bool removable;         // VideoBG has a copy in its fonts folder, which can be deleted
     bool ready;             // included, or its file is on this PC
 };
+// Date styles: how the clock's middle line reads; "" for the style that leaves it out.
+int Clock_DateStyleCount();
+std::wstring Clock_DateText(int style, const SYSTEMTIME& t);
+// One line of text in one of the clock's fonts, at pt points (the date styles' samples).
+bool Clock_PaintLine(const std::wstring& text, const std::wstring& font, float pt, const std::wstring& color, float pixelScale,
+                     ClockImage* out);
 std::vector<ClockFontInfo> Clock_Fonts();       // the included ones, Anurati, then the user's own
 bool Clock_FontReady(const std::wstring& key);  // included, or its file is on this PC
 // A font file, or a .zip holding one, checked to be that font and copied into VideoBG's fonts folder.

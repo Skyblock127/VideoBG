@@ -416,8 +416,8 @@ void AddGlow(uint32_t* px, int w, int h, float radius, float strength, D2D1_COLO
 
 std::wstring Clock_StyleKey(const ClockLook& l) {
     wchar_t b[160];
-    swprintf(b, 160, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
-             l.glowColor.c_str(), l.h24, l.font.c_str());
+    swprintf(b, 160, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls|%d", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
+             l.glowColor.c_str(), l.h24, l.font.c_str(), l.date);
     return b;
 }
 
@@ -481,8 +481,8 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
     const float size = look.size;
     if (!OpenPainter()) return false;
     if (!UseFont(look.font) && !UseFont(kFonts[0].key)) return false;  // a font that's gone: the default
-    wchar_t date[64], time[32];
-    swprintf(date, 64, L"%02d  %ls,  %d.", t.wDay, kMonths[(t.wMonth + 11) % 12], t.wYear);
+    const std::wstring date = Clock_DateText(look.date, t);
+    wchar_t time[32];
     if (look.h24) swprintf(time, 32, L"- %02d:%02d -", t.wHour, t.wMinute);
     else swprintf(time, 32, L"- %d:%02d %ls -", (t.wHour + 11) % 12 + 1, t.wMinute, t.wHour < 12 ? L"AM" : L"PM");
     struct Line {
@@ -493,12 +493,17 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
         DWRITE_TEXT_METRICS m;
         float top;  // where the layout's top goes
     } lines[3] = {{kDays[t.wDayOfWeek % 7], P.family.c_str(), 40 * P.dayScale, 10 * P.dayScale, P.dayCap, nullptr, {}, 0},
-                  {date, P.smallFamily.c_str(), 14 * P.smallScale, 0, P.smallCap, nullptr, {}, 0},
+                  {date.c_str(), P.smallFamily.c_str(), 14 * P.smallScale, 0, P.smallCap, nullptr, {}, 0},
                   {time, P.smallFamily.c_str(), 14 * P.smallScale, 0, P.smallCap, nullptr, {}, 0}};
+    int n = 3;
+    if (date.empty()) {  // no date line: the time comes right under the day
+        lines[1] = lines[2];
+        n = 2;
+    }
     const float gaps[3] = {0, 25.7f, 31.5f};
     HRESULT hr = S_OK;
     float maxW = 0, capTop = 0, minTop = 0, bottom = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < n; i++) {
         Line& l = lines[i];
         IDWriteTextFormat* fmt = nullptr;
         UINT32 len = (UINT32)wcslen(l.text);
@@ -560,9 +565,11 @@ bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage
                 rt->BeginDraw();
                 rt->Clear(D2D1::ColorF(0, 0, 0, 0));
                 rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-                for (auto& l : lines)
+                for (int i = 0; i < n; i++) {
+                    const Line& l = lines[i];
                     rt->DrawTextLayout(D2D1::Point2F((w - l.m.widthIncludingTrailingWhitespace) / 2, margin + l.top - minTop), l.layout,
                                        brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                }
                 ok = SUCCEEDED(rt->EndDraw());
             }
             if (ok) {
@@ -612,6 +619,94 @@ void Clock_Refresh() {
 
 // ---------------------------------------------------------------------------------------
 // Clock fonts
+
+// Date styles, by number (stored in a look): the clock's middle line.
+const int kDateStyles = 15;
+
+int Clock_DateStyleCount() { return kDateStyles; }
+
+std::wstring Clock_DateText(int style, const SYSTEMTIME& t) {
+    const wchar_t* month = kMonths[(t.wMonth + 11) % 12];
+    const int d = t.wDay, m = t.wMonth, y = t.wYear;
+    wchar_t b[64];
+    switch (style) {
+        case 1: swprintf(b, 64, L"%ls %d, %d", month, d, y); break;                // OCTOBER 9, 2026
+        case 2: swprintf(b, 64, L"%d %ls %d", d, month, y); break;                 // 9 OCTOBER 2026
+        case 3: swprintf(b, 64, L"%02d %.3ls %d", d, month, y); break;             // 09 OCT 2026
+        case 4: swprintf(b, 64, L"%.3ls %02d, %d", month, d, y); break;            // OCT 09, 2026
+        case 5: swprintf(b, 64, L"%02d . %02d . %d", d, m, y); break;              // 09 . 10 . 2026
+        case 6: swprintf(b, 64, L"%02d . %02d . %d", m, d, y); break;              // 10 . 09 . 2026
+        case 7: swprintf(b, 64, L"%02d / %02d / %02d", d, m, y % 100); break;      // 09 / 10 / 26
+        case 8: swprintf(b, 64, L"%02d / %02d / %02d", m, d, y % 100); break;      // 10 / 09 / 26
+        case 9: swprintf(b, 64, L"%d - %02d - %02d", y, m, d); break;              // 2026 - 10 - 09
+        case 10: swprintf(b, 64, L"%02d  %ls", d, month); break;                   // 09  OCTOBER
+        case 11: swprintf(b, 64, L"%ls  %02d", month, d); break;                   // OCTOBER  09
+        case 12: swprintf(b, 64, L"%ls  %d", month, y); break;                     // OCTOBER  2026
+        case 13: swprintf(b, 64, L"%02d . %02d", d, m); break;                     // 09 . 10
+        case 14: return L"";                                                        // no date
+        default: swprintf(b, 64, L"%02d  %ls,  %d.", d, month, y);                 // Mond: 09  OCTOBER,  2026.
+    }
+    return b;
+}
+
+bool Clock_PaintLine(const std::wstring& text, const std::wstring& font, float pt, const std::wstring& color, float k,
+                     ClockImage* out) {
+    if (!OpenPainter() || (!UseFont(font) && !UseFont(kFonts[0].key))) return false;
+    IDWriteTextFormat* fmt = nullptr;
+    IDWriteTextLayout* layout = nullptr;
+    DWRITE_TEXT_METRICS m{};
+    HRESULT hr = P.f->CreateTextFormat(P.family.c_str(), P.fonts, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                       DWRITE_FONT_STRETCH_NORMAL, pt * 4 / 3 * k, L"en-us", &fmt);
+    if (SUCCEEDED(hr)) hr = P.f->CreateTextLayout(text.c_str(), (UINT32)text.size(), fmt, 8192, 8192, &layout);
+    if (SUCCEEDED(hr)) hr = layout->GetMetrics(&m);
+    const int w = SUCCEEDED(hr) ? (int)ceilf(m.widthIncludingTrailingWhitespace) + 2 : 0, h = SUCCEEDED(hr) ? (int)ceilf(m.height) : 0;
+    bool ok = false;
+    if (w > 2 && h > 0 && w < 16384 && h < 16384) {
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+        bi.bmiHeader.biWidth = w;
+        bi.bmiHeader.biHeight = -h;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        void* bits = nullptr;
+        HDC dc = CreateCompatibleDC(nullptr);
+        HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        ID2D1DCRenderTarget* rt = nullptr;
+        ID2D1SolidColorBrush* brush = nullptr;
+        if (bmp) {
+            HGDIOBJ old = SelectObject(dc, bmp);
+            D2D1_RENDER_TARGET_PROPERTIES rp = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
+            RECT rc{0, 0, w, h};
+            BYTE r = 255, g = 255, b = 255;
+            ParseColor(color, &r, &g, &b);
+            D2D1_COLOR_F c = D2D1::ColorF(r / 255.f, g / 255.f, b / 255.f);
+            if (SUCCEEDED(P.d2f->CreateDCRenderTarget(&rp, &rt)) && SUCCEEDED(rt->BindDC(dc, &rc)) &&
+                SUCCEEDED(rt->CreateSolidColorBrush(&c, nullptr, &brush))) {
+                rt->BeginDraw();
+                rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+                rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+                rt->DrawTextLayout(D2D1::Point2F(1, 0), layout, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                ok = SUCCEEDED(rt->EndDraw());
+            }
+            if (ok) {
+                GdiFlush();
+                out->px.assign((uint32_t*)bits, (uint32_t*)bits + (size_t)w * h);
+                out->w = w;
+                out->h = h;
+                out->pad = 0;
+            }
+            SelectObject(dc, old);
+            DeleteObject(bmp);
+        }
+        Rel(brush);
+        Rel(rt);
+        DeleteDC(dc);
+    }
+    Rel(layout);
+    Rel(fmt);
+    return ok;
+}
 
 std::vector<ClockFontInfo> Clock_Fonts() {
     std::vector<ClockFontInfo> list;

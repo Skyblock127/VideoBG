@@ -30,9 +30,9 @@ enum Id {
     ID_MONITORS, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_SHUFFLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
-    ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_EYEDROP, ID_CLK_SIZE, ID_CLK_HOURS,
-    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_GLOWCOLOR, ID_CLK_FONT, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_REPO,
-    ID_DLG_SCRIM, ID_DLG_SV, ID_DLG_HUE, ID_DLG_PREVIEW, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
+    ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
+    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_REPO,
+    ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
@@ -272,6 +272,7 @@ struct UI {
     int hot = 0, hotSeg = -1, press = 0, drag = 0;
     int focus = 0;          // the control with the keyboard focus (Tab), outlined; 0 = none
     int tabFrom = 0;        // the control clicked last: Tab goes on from there
+    float clockPrevX = -1;  // where Enter on the clock moved it from (to centre it), for Enter again
     int focusReturn = 0;    // what opened a dialog (or the crop page) by keyboard: the focus goes back to it
     bool focusFirst = false;  // a dialog just opened by keyboard: focus its first control once it's drawn
     int keySlider = 0;      // the slider clicked last: arrow keys move it a step at a time
@@ -1077,8 +1078,11 @@ void PaintVideoPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop;
     // The preview as big as fits over what goes under it: the frame slider, the lock screen, the
-    // file, a status line and the help line.
-    const float below = 180;
+    // file, a status line (only while there's one) and the help line.
+    FaultText faultBuf;
+    const FaultText* fault = CurrentFault(&faultBuf);
+    const bool hasStatus = u.optBusy || !u.optMsg.empty() || fault;
+    const float below = hasStatus ? 180 : 154;
     float bw = w - 2 * kPad, previewH = bw * (float)ScreenAspectH();
     const float maxH = kH - 24 - y - kCardHead - below;
     if (previewH > maxH) {
@@ -1090,8 +1094,6 @@ void PaintVideoPage(float x, float w) {
     D2D1_RECT_F vc = R(x, y, x + w, box.bottom + below);
     Card(vc, L"\uE714", L"Video");
     Button(ID_CHOOSE, R(x + w - kPad - 148, y + 12, x + w - kPad, y + 44), L"Choose video", L"\uE8E5", true);
-    FaultText faultBuf;
-    const FaultText* fault = CurrentFault(&faultBuf);
     const std::wstring& video = g_settings.video;
     const bool infoCurrent = u.infoOk && _wcsicmp(u.infoPath.c_str(), video.c_str()) == 0;
     DrawComposed(box, g_settings.crop, g_settings.scale);
@@ -1368,19 +1370,19 @@ bool ClockUsable() { return EditedLook()->show; }
 // and, when the look is the one on the desktop, on the desktop too; Cancel puts the old one back.
 struct ColorDialog {
     bool open = false;
-    int target = 0;              // 0 the clock's colour, 1 its glow colour
+    int target = 0;              // the colour being edited: 0 the text's, 1 the glow's
     float h = 0, s = 0, v = 1;   // the colour being edited (the hue stays put while it's grey)
     std::wstring exact;          // "r,g,b" when set from a code, box or eyedropper (HSV would round it)
-    std::wstring before;         // the look's value when the dialog opened
+    std::wstring beforeText, beforeGlow;  // the look's colours when the dialog opened (Cancel puts both back)
     bool sameAsText = false;     // glow: follow the text colour
     int slot = -1;               // chosen box in My colours (kept between openings)
     bool hexEdit = false, hexFresh = false;  // typing a hex code (fresh: the next key replaces it)
     std::wstring hex;
-    bool picking = false;        // eyedropper over the dialog's preview
     std::wstring msg;            // short note in the bottom bar: copied, pasted, saved
     DWORD msgAt = 0;
     bool msgWarn = false;
     D2D1_RECT_F sv{}, hue{}, preview{}, previewScreen{};  // previewScreen: the whole screen, zoomed onto the clock
+    // The eyedropper (u.picking) hides the dialog: the colour comes from the whole wallpaper on the page.
 } dlg;
 
 void HsvToRgb(float h, float s, float v, BYTE* r, BYTE* g, BYTE* b) {
@@ -1583,21 +1585,6 @@ void Badge(const std::wstring& s, float x, float y) {
     Text(s, R(x, y, x + tw, y + 20), u.fSmall, Rgb(0xFFFFFF), DWRITE_TEXT_ALIGNMENT_CENTER);
 }
 
-// A button that shows a colour and its name.
-void ColorButton(int id, const D2D1_RECT_F& r, const std::wstring& color, const std::wstring& name, bool enabled) {
-    const Theme& t = u.th;
-    bool hot = enabled && IsHot(id), pressed = enabled && u.press == id && u.hot == id;
-    Fill(r, pressed ? t.ctrlPress : hot ? t.ctrlHover : t.ctrl, 4);
-    Stroke(r, t.ctrlStroke, 4);
-    float cy = (r.top + r.bottom) / 2;
-    Circle(r.left + 17, cy, 8, t.ctrlStroke);
-    Circle(r.left + 17, cy, 7, enabled ? LookColor(color) : Mix(LookColor(color), t.card, 0.6f));
-    Text(name, R(r.left + 33, r.top, r.right - 28, r.bottom), u.fBody, enabled ? t.text : t.text3);
-    Text(L"\uE790", R(r.right - 26, r.top, r.right - 10, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3,
-         DWRITE_TEXT_ALIGNMENT_CENTER);
-    AddHit(id, K_BUTTON, r, enabled);
-}
-
 // The font a look shows: its own, or Audiowide when that font isn't on this PC any more.
 std::wstring ShownFont(const ClockLook& l) { return Clock_FontReady(l.font) ? l.font : std::wstring(L"Audiowide"); }
 
@@ -1610,6 +1597,41 @@ void FontButton(int id, const D2D1_RECT_F& r, const std::wstring& font, bool ena
     Text(L"\uE8D2", R(r.left + 8, r.top, r.left + 26, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
     Text(font, R(r.left + 33, r.top, r.right - 28, r.bottom), u.fBody, enabled ? t.text : t.text3);
     Text(L"\uE76C", R(r.right - 26, r.top, r.right - 10, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3,
+         DWRITE_TEXT_ALIGNMENT_CENTER);
+    AddHit(id, K_BUTTON, r, enabled);
+}
+
+// A button that shows how the date reads (today, in the look's style) and opens the date styles.
+void DateButton(int id, const D2D1_RECT_F& r, int style, bool enabled) {
+    const Theme& t = u.th;
+    bool hot = enabled && IsHot(id), pressed = enabled && u.press == id && u.hot == id;
+    Fill(r, pressed ? t.ctrlPress : hot ? t.ctrlHover : t.ctrl, 4);
+    Stroke(r, t.ctrlStroke, 4);
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    std::wstring date = Clock_DateText(style, now);
+    if (date.empty()) date = L"No date";
+    Text(L"\uE787", R(r.left + 8, r.top, r.left + 26, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
+    Text(date, R(r.left + 33, r.top, r.right - 28, r.bottom), u.fSmall, enabled ? t.text : t.text3);
+    Text(L"\uE76C", R(r.right - 26, r.top, r.right - 10, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3,
+         DWRITE_TEXT_ALIGNMENT_CENTER);
+    AddHit(id, K_BUTTON, r, enabled);
+}
+
+// The colour button: the text's colour and code, with the glow's colour beside it.
+void ColorPairButton(int id, const D2D1_RECT_F& r, const std::wstring& text, const std::wstring& glow, bool enabled) {
+    const Theme& t = u.th;
+    bool hot = enabled && IsHot(id), pressed = enabled && u.press == id && u.hot == id;
+    Fill(r, pressed ? t.ctrlPress : hot ? t.ctrlHover : t.ctrl, 4);
+    Stroke(r, t.ctrlStroke, 4);
+    const float cy = (r.top + r.bottom) / 2;
+    for (int i = 0; i < 2; i++) {
+        const D2D1_COLOR_F c = LookColor(i ? glow : text);
+        Circle(r.left + 17 + i * 19, cy, 8, t.ctrlStroke);
+        Circle(r.left + 17 + i * 19, cy, 7, enabled ? c : Mix(c, t.card, 0.6f));
+    }
+    Text(Hex(text), R(r.left + 52, r.top, r.right - 28, r.bottom), u.fBody, enabled ? t.text : t.text3);
+    Text(L"\uE790", R(r.right - 26, r.top, r.right - 10, r.bottom), u.fIconSmall, enabled ? t.text2 : t.text3,
          DWRITE_TEXT_ALIGNMENT_CENTER);
     AddHit(id, K_BUTTON, r, enabled);
 }
@@ -1650,8 +1672,7 @@ void PaintClockPage(float x, float w) {
     u.clockBox = box;
     ClockLook* look = EditedLook();
     ClockLook shown = *look;  // an eyedropper previews the colour under it
-    if (u.picking && !u.pickColor.empty()) shown.color = u.pickColor;
-    if (dlg.open && dlg.picking && !u.pickColor.empty()) (dlg.target == 0 ? shown.color : shown.glowColor) = u.pickColor;
+    if (u.picking && !u.pickColor.empty()) (dlg.open && dlg.target == 1 ? shown.glowColor : shown.color) = u.pickColor;
     EnsureClockBitmap(shown);
     DrawWallpaper(box);
     ID2D1RoundedRectangleGeometry* clip = PushRounded(box, 6);
@@ -1663,40 +1684,37 @@ void PaintClockPage(float x, float w) {
     }
     if (u.picking && !u.pickColor.empty()) Loupe(u.pickAt.x, u.pickAt.y, box, u.pickColor);
     PopRounded(clip);
-    if (on && (u.drag == ID_CLK_AREA || (u.overClock && u.hot == ID_CLK_AREA && !u.picking)))
+    if (on && (u.drag == ID_CLK_AREA || u.focus == ID_CLK_AREA || (u.overClock && u.hot == ID_CLK_AREA && !u.picking)))
         Badge(Fmt(L"%.1f%% across  \u00B7  %.1f%% down", look->x * 100, look->y * 100), box.left + 8, box.bottom - 28);
     if (!on) Fill(box, D2D1::ColorF(t.card.r, t.card.g, t.card.b, 0.55f), 6);  // greyed out
     AddHit(ID_CLK_AREA, K_AREA, box, on);
     float yy = box.bottom + 10;
 
-    // Colour (the colour dialog, or an eyedropper for the wallpaper) and the font, side by side.
-    // Left column: the text (size, opacity, 12/24-hour). Right column: its glow.
+    // The font and the colours (the text's and the glow's), the sizes and the glow, then the date and
+    // the time: the text on the left, its colour and glow on the right.
     const float labW = 80, colW = (iw - 24) / 2, rx = lx + colW + 24, cw = colW - labW;
-    Row(lx, yy, labW, L"Colour", rowH, on);
-    ColorButton(ID_CLK_CUSTOM, R(lx + labW, yy + 3, lx + colW - 42, yy + rowH - 3), look->color, Hex(look->color), on);
-    Button(ID_CLK_EYEDROP, R(lx + colW - 36, yy + 3, lx + colW, yy + rowH - 3), L"", L"\uEF3C", u.picking, on);
-    Row(rx, yy, labW, L"Font", rowH, on);
-    FontButton(ID_CLK_FONT, R(rx + labW, yy + 3, rx + colW, yy + rowH - 3), ShownFont(*look), on);
-    yy += rowH;
-
     const bool glowOn = on && look->glow > 0;
     auto sliderRow = [&](float cx0, int id, const wchar_t* label, float frac, const std::wstring& value, bool en) {
         Row(cx0, yy, labW, label, rowH, en);
-        Slider(id, SliderRect(cx0 + labW, yy, cw, rowH), frac, en);
+        Slider(id, SliderRect(cx0 + labW, yy, cw), frac, en);
         SliderValue(value, cx0 + labW, yy, cw, en, rowH);
     };
+    Row(lx, yy, labW, L"Font", rowH, on);
+    FontButton(ID_CLK_FONT, R(lx + labW, yy + 3, lx + colW, yy + rowH - 3), ShownFont(*look), on);
+    Row(rx, yy, labW, L"Colour", rowH, on);
+    ColorPairButton(ID_CLK_CUSTOM, R(rx + labW, yy + 3, rx + colW, yy + rowH - 3), look->color,
+                    look->glowColor.empty() ? look->color : look->glowColor, on);
+    yy += rowH;
     sliderRow(lx, ID_CLK_SIZE, L"Size", (look->size - 0.5f) / 1.5f, Fmt(L"%.0f%%", look->size * 100), on);
     sliderRow(rx, ID_CLK_GLOW, L"Glow", look->glow, look->glow > 0 ? Fmt(L"%.0f%%", look->glow * 100) : std::wstring(L"Off"), on);
     yy += rowH;
     sliderRow(lx, ID_CLK_OPACITY, L"Opacity", (look->opacity - 0.2f) / 0.8f, Fmt(L"%.0f%%", look->opacity * 100), on);
     sliderRow(rx, ID_CLK_GLOWSIZE, L"Glow size", (look->glowSize - 2) / 38, Fmt(L"%.0f", look->glowSize), glowOn);
     yy += rowH;
-    Row(lx, yy, labW, L"Time", rowH, on);
-    Seg(ID_CLK_HOURS, SegRect(lx + labW, yy, cw, rowH), {L"12-hour", L"24-hour"}, look->h24 ? 1 : 0, on);
-    Row(rx, yy, labW, L"Glow colour", rowH, glowOn);
-    ColorButton(ID_CLK_GLOWCOLOR, R(rx + labW, yy + 3, rx + colW, yy + rowH - 3),
-                look->glowColor.empty() ? look->color : look->glowColor,
-                look->glowColor.empty() ? std::wstring(L"Same as the text") : Hex(look->glowColor), glowOn);
+    Row(lx, yy, labW, L"Date", rowH, on);
+    DateButton(ID_CLK_DATE, R(lx + labW, yy + 3, lx + colW, yy + rowH - 3), look->date, on);
+    Row(rx, yy, labW, L"Time", rowH, on);
+    Seg(ID_CLK_HOURS, SegRect(rx + labW, yy, cw, rowH), {L"12-hour", L"24-hour"}, look->h24 ? 1 : 0, on);
     yy += rowH + 4;
 
     // Help line.
@@ -1712,24 +1730,23 @@ void PaintClockPage(float x, float w) {
             help = u.clockEdit == 1 ? L"Only for the video wallpaper: a clock just for this video, or the one every video shares"
                                     : L"This video's own clock, or the one every video shares (this video keeps its own)";
             break;
-        case ID_CLK_CUSTOM: help = L"Any colour, from a colour field, a hex code or your saved colours (Ctrl+V pastes a code)"; break;
+        case ID_CLK_CUSTOM: help = L"The text's and the glow's colours: any colour, a code, your saved ones or the wallpaper's"; break;
         case ID_CLK_FONT: help = L"The font of the whole clock in this look"; break;
-        case ID_CLK_EYEDROP:
-            help = u.picking ? L"Click here again (or press Esc) to stop picking"
-                             : L"Take the colour from the wallpaper: click Pick, then the preview";
-            break;
         case ID_CLK_SIZE: help = L"The clock's size in this look"; break;
         case ID_CLK_OPACITY: help = L"How solid the clock is; lower lets the wallpaper show through (glow included)"; break;
         case ID_CLK_HOURS: help = L"12-hour (1:30 PM) or 24-hour (13:30) time"; break;
         case ID_CLK_GLOW: help = L"A soft glow behind the letters that makes the clock stand out on busy wallpapers"; break;
         case ID_CLK_GLOWSIZE: help = L"How far the glow spreads"; break;
-        case ID_CLK_GLOWCOLOR: help = L"The glow's colour; a dark glow works as a soft shadow"; break;
-        case ID_CLK_AREA: help = L"Drag the clock to place it (Alt: no snapping); arrow keys nudge it (Shift: 10\u00D7)"; break;
+        case ID_CLK_AREA:
+            help = u.focus == ID_CLK_AREA ? L"Arrow keys move the clock (Shift: one pixel); Enter centres it across, and again puts it back"
+                                          : L"Drag the clock to place it (Alt: no snapping); arrow keys move it (Shift: one pixel)";
+            break;
+        case ID_CLK_DATE: help = L"How the date reads, in this look"; break;
         default: break;
     }
     if (u.picking && (u.hot == ID_CLK_AREA || help.empty()))
         help = u.pickColor.empty() ? L"Click the preview to take the wallpaper's colour there (Esc cancels)"
-                                   : L"Click to use " + Hex(u.pickColor) + L" for the clock (Esc cancels)";
+                                   : L"Click to use " + Hex(u.pickColor) + (dlg.target == 1 ? L" for the glow (Esc cancels)" : L" for the text (Esc cancels)");
     if (!u.clockNote.empty() && GetTickCount() - u.clockNoteAt < 3000) help = u.clockNote;
     if (help.empty())
         help = !on                             ? L"The clock is hidden with this look; its settings are kept for when you show it again"
@@ -1771,11 +1788,13 @@ void PaintColorDialog() {
     Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
 
     ClockLook* look = EditedLook();
-    Text(dlg.target == 0 ? L"Clock colour" : L"Glow colour", R(L + 24, T + 16, L + 300, T + 46), u.fSubtitle, t.text);
+    // Which colour: the text's or the glow's (which can follow the text's).
+    Text(L"Clock colour", R(L + 24, T + 16, L + 200, T + 46), u.fSubtitle, t.text);
+    const float segL = L + W - 24 - 170;
+    Seg(ID_DLG_TARGET, R(segL, T + 14, L + W - 24, T + 46), {L"Text", L"Glow"}, dlg.target);
     if (dlg.target == 1) {
-        Text(L"Same as the text", R(L + W - 24 - 52 - 160, T + 16, L + W - 24 - 52, T + 46), u.fBody, t.text,
-             DWRITE_TEXT_ALIGNMENT_TRAILING);
-        Toggle(ID_DLG_SAME, L + W - 24 - 40, T + 31, dlg.sameAsText);
+        Text(L"Same as the text", R(L + 180, T + 16, segL - 16 - 40 - 12, T + 46), u.fBody, t.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        Toggle(ID_DLG_SAME, segL - 16 - 40, T + 31, dlg.sameAsText);
     }
     BYTE cr = 255, cg = 255, cb = 255;
     ParseColor(DlgColor(), &cr, &cg, &cb);
@@ -1822,10 +1841,8 @@ void PaintColorDialog() {
     clip = PushRounded(dlg.preview, 6);
     DrawWallpaper(dlg.previewScreen);
     DrawClockIn(dlg.previewScreen, *look);
-    if (dlg.picking && !u.pickColor.empty()) Loupe(u.pickAt.x, u.pickAt.y, dlg.preview, u.pickColor);
     PopRounded(clip);
     Stroke(dlg.preview, t.ctrlStroke, 6);
-    AddHit(ID_DLG_PREVIEW, K_AREA, dlg.preview, dlg.picking);
 
     // Hex code (click to type, or just type / paste), copy, eyedropper.
     const float hy = T + 194;
@@ -1839,14 +1856,15 @@ void PaintColorDialog() {
     if (dlg.hexEdit && !dlg.hexFresh) Line(hx.left + 13 + cw, hy + 8, hx.left + 13 + cw, hy + 24, t.text);
     AddHit(ID_DLG_HEX, K_BUTTON, hx);
     Button(ID_DLG_COPY, R(rx + 130, hy, rx + 166, hy + 32), L"", L"\uE8C8");
-    Button(ID_DLG_PICK, R(rx + 172, hy, rx + rw, hy + 32), L"", L"\uEF3C", dlg.picking);
+    Button(ID_DLG_PICK, R(rx + 172, hy, rx + rw, hy + 32), L"", L"\uEF3C", u.picking);
 
     // RGB, and the colour before and now.
     const float iy = T + 236;
     Text(Fmt(L"RGB  %d, %d, %d", cr, cg, cb), R(rx, iy, rx + 150, iy + 20), u.fSmall, t.text2);
     D2D1_RECT_F ch = R(rx + 152, iy + 1, rx + rw, iy + 19);
     clip = PushRounded(ch, 4);
-    Fill(R(ch.left, ch.top, (ch.left + ch.right) / 2, ch.bottom), LookColor(dlg.before.empty() ? look->color : dlg.before));
+    const std::wstring& before = dlg.target == 0 ? dlg.beforeText : dlg.beforeGlow;
+    Fill(R(ch.left, ch.top, (ch.left + ch.right) / 2, ch.bottom), LookColor(before.empty() ? dlg.beforeText : before));
     Fill(R((ch.left + ch.right) / 2, ch.top, ch.right, ch.bottom), cur);
     PopRounded(clip);
     Stroke(ch, t.ctrlStroke, 4);
@@ -2092,9 +2110,11 @@ void PaintVersionsDialog() {
 void ClockEdited();
 
 const float kFontRowH = 132, kFontAddH = 76;  // a font's row; the "Add your own font" row at the end
+const float kDateRowH = 48;                     // a date style's row
 
 struct FontDialog {
     bool open = false;
+    bool dates = false;  // the date styles instead of the fonts
     std::vector<ClockFontInfo> list;
     std::vector<ID2D1Bitmap*> samples;
     std::vector<D2D1_SIZE_F> sizes;  // in DIPs
@@ -2122,9 +2142,13 @@ void FontBarDrag(float y, bool start) {
     FontScrollTo((y - fnt.grab - fnt.trackTop) / (fnt.trackH - fnt.thumbH) * fnt.maxScroll, false);
 }
 
+// The rows: date styles, or fonts.
+int PickerRows() { return fnt.dates ? Clock_DateStyleCount() : (int)fnt.list.size(); }
+float PickerRowH() { return fnt.dates ? kDateRowH : kFontRowH; }
+
 void ReleaseFontSamples() {
     for (ID2D1Bitmap*& b : fnt.samples) SafeRelease(b);
-    const size_t n = fnt.list.size();
+    const size_t n = PickerRows();
     fnt.samples.assign(n, nullptr);
     fnt.sizes.assign(n, D2D1::SizeF(0, 0));
     fnt.tried.assign(n, false);
@@ -2159,6 +2183,12 @@ void OpenFontDialog() {
     FindDownloadedFonts();
 }
 
+void OpenDateDialog() {
+    fnt = FontDialog{};
+    fnt.open = fnt.dates = true;
+    ReleaseFontSamples();
+}
+
 void CloseFontDialog() {
     if (!fnt.open) return;
     ReleaseFontSamples();
@@ -2173,7 +2203,13 @@ void UseFontInLook(const std::wstring& key) {
 }
 
 void FontPick(int i) {
-    if (i < (int)fnt.list.size() && fnt.list[i].ready) UseFontInLook(fnt.list[i].key);
+    if (fnt.dates) {
+        EditedLook()->date = i;
+        Log(L"ui: date style %d", i);
+        ClockEdited();
+    } else if (i < (int)fnt.list.size() && fnt.list[i].ready) {
+        UseFontInLook(fnt.list[i].key);
+    }
 }
 
 void FontGet(int i) {
@@ -2249,6 +2285,24 @@ void FontRemove(int i) {
     fnt.note = L"Removed " + key;
 }
 
+// Date style i as it reads today, in a plain font (the clock's own font is a separate choice).
+void EnsureDateSample(int i) {
+    if (fnt.samples[i] || fnt.tried[i] || !u.rt) return;
+    fnt.tried[i] = true;
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    std::wstring text = Clock_DateText(i, t);
+    if (text.empty()) text = L"NO DATE";
+    const float k = u.dpi / 96;
+    const std::wstring color =
+        Fmt(L"%d,%d,%d", (int)lroundf(u.th.text.r * 255), (int)lroundf(u.th.text.g * 255), (int)lroundf(u.th.text.b * 255));
+    ClockImage img;
+    if (!Clock_PaintLine(text, L"Syncopate", 11, color, k, &img)) return;
+    D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    u.rt->CreateBitmap(D2D1::SizeU((UINT32)img.w, (UINT32)img.h), img.px.data(), (UINT32)img.w * 4, &bp, &fnt.samples[i]);
+    fnt.sizes[i] = D2D1::SizeF(img.w / k, img.h / k);
+}
+
 // Draws font i as the clock, just the letters, at exactly the size it's shown (so it stays sharp),
 // as big as fits in maxW x maxH DIPs.
 void EnsureFontSample(int i, float maxW, float maxH) {
@@ -2257,6 +2311,7 @@ void EnsureFontSample(int i, float maxW, float maxH) {
     if (!fnt.list[i].ready) return;
     ClockLook l;
     l.font = fnt.list[i].key;
+    l.date = EditedLook()->date;
     l.h24 = EditedLook()->h24;
     l.color = Fmt(L"%d,%d,%d", (int)lroundf(u.th.text.r * 255), (int)lroundf(u.th.text.g * 255), (int)lroundf(u.th.text.b * 255));
     SYSTEMTIME t;
@@ -2279,9 +2334,9 @@ void PaintFontDialog() {
     const Theme& t = u.th;
     Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
     AddHit(ID_FNT_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
-    const int n = (int)fnt.list.size();
-    const float rowH = kFontRowH, W = kDialogW, content = n * rowH + kFontAddH;
-    const float listH = std::min(content, 3.4f * rowH), H = 84 + listH + 8 + 64;
+    const int n = PickerRows();
+    const float rowH = PickerRowH(), W = kDialogW, content = n * rowH + (fnt.dates ? 0 : kFontAddH);
+    const float listH = std::min(content, fnt.dates ? 9.4f * rowH : 3.4f * rowH), H = 84 + listH + 8 + 64;
     const float L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2), k = u.dpi / 96;
     const D2D1_RECT_F panel = R(L, T, L + W, T + H);
     const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
@@ -2293,7 +2348,7 @@ void PaintFontDialog() {
     PopRounded(clip);
     Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
 
-    Text(L"Clock font", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
+    Text(fnt.dates ? L"Date style" : L"Clock font", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
     Text(L"Click one to use it; your desktop shows it right away.", R(L + 24, T + 50, L + W - 24, T + 72), u.fBody, t.text2);
 
     const D2D1_RECT_F view = R(L + 1, T + 84, L + W - 1, T + 84 + listH);
@@ -2313,6 +2368,28 @@ void PaintFontDialog() {
     fnt.viewH = listH;
     fnt.view = view;
     for (int i = 0; i < n; i++, y += rowH) {  // all rows, also the ones out of view: Tab goes through them
+        if (fnt.dates) {  // just the date, as it reads today
+            const D2D1_RECT_F r = R(L + 16, y + 2, L + W - 16 - barW, y + rowH - 2);
+            const bool sel = EditedLook()->date == i, hot = IsHot(ID_FNT_ROW0 + i);
+            if (sel) {
+                Fill(r, Mix(face, t.accent, 0.14f), 6);
+                Stroke(r, t.accent, 6);
+            } else if (hot) {
+                Fill(r, Mix(face, t.text, 0.05f), 6);
+            }
+            AddHit(ID_FNT_ROW0 + i, K_BUTTON, r);
+            const float cy = (r.top + r.bottom) / 2;
+            Circle(r.left + 22, cy, 8, sel ? t.accent : t.text2);
+            Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
+            EnsureDateSample(i);
+            if (fnt.samples[i]) {  // 1:1 on whole pixels
+                const D2D1_SIZE_F sz = fnt.sizes[i];
+                const float x0 = roundf((r.left + 46) * k) / k, y0 = roundf((cy - sz.height / 2) * k) / k;
+                D2D1_RECT_F dst = R(x0, y0, x0 + sz.width, y0 + sz.height);
+                u.rt->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr);
+            }
+            continue;
+        }
         const ClockFontInfo& f = fnt.list[i];
         const bool sel = !_wcsicmp(shown.c_str(), f.key.c_str());
         const D2D1_RECT_F r = R(L + 16, y + 3, L + W - 16 - barW, y + rowH - 3);
@@ -2327,14 +2404,15 @@ void PaintFontDialog() {
         const float cy = (r.top + r.bottom) / 2;
         Circle(r.left + 22, cy, 8, sel ? t.accent : f.ready ? t.text2 : t.text3);
         Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
-        const float ny = f.removable ? cy - 36 : cy - 22;  // name and what it is; then Remove, for the user's copies
-        Text(f.key, R(r.left + 42, ny, r.left + 150, ny + 24), u.fStrong, f.ready ? t.text : t.text2);
+        // The name and what it is (then Remove, for the user's copies), centred on the row.
+        const float aboutH = f.ready ? 20.f : 38.f, blockH = 22 + aboutH + (f.removable ? 34 : 0), ny = cy - blockH / 2;
+        Text(f.key, R(r.left + 42, ny, r.left + 150, ny + 22), u.fStrong, f.ready ? t.text : t.text2);
         const wchar_t* about = !f.getUrl && !f.removable ? L"Included"
                                : !f.getUrl               ? L"Added by you"
                                : f.ready                 ? L"Your copy"
                                                          : L"Free for personal use only, so not included";
-        Text(about, R(r.left + 42, ny + 24, r.left + (f.ready ? 150 : 290), ny + 62), f.ready ? u.fSmall : u.fWrap, t.text2);
-        if (f.removable) Button(ID_FNT_DEL0 + i, R(r.left + 38, cy + 18, r.left + 134, cy + 46), L"Remove", L"\uE74D");
+        Text(about, R(r.left + 42, ny + 22, r.left + (f.ready ? 150 : 290), ny + 22 + aboutH), f.ready ? u.fSmall : u.fWrap, t.text2);
+        if (f.removable) Button(ID_FNT_DEL0 + i, R(r.left + 38, ny + 50, r.left + 134, ny + 78), L"Remove", L"\uE74D");
         if (f.ready) {
             EnsureFontSample(i, boxW, boxH);
             if (fnt.samples[i]) {  // drawn 1:1 on whole pixels
@@ -2348,7 +2426,7 @@ void PaintFontDialog() {
             Button(ID_FNT_GET0 + i, R(r.right - 12 - 150 - 8 - 96, cy - 16, r.right - 12 - 158, cy + 16), L"Get it", L"\uE8A7");
         }
     }
-    {  // the last row: any font of the user's own
+    if (!fnt.dates) {  // the last row: any font of the user's own
         const float cy = y + kFontAddH / 2;
         Button(ID_FNT_OWN, R(L + 24, cy - 18, L + 24 + 200, cy + 18), L"Add your own font\u2026", L"\uE710");
         Text(L"A .ttf or .otf file, or a .zip with one. VideoBG keeps its own copy.", R(L + 24 + 216, cy - 20, L + W - 24 - barW, cy + 20),
@@ -2389,7 +2467,7 @@ void PaintMain() {
         case NAV_CLOCK: PaintClockPage(x, w); break;
         case NAV_GENERAL: PaintGeneralPage(x, w); break;
     }
-    if (dlg.open) PaintColorDialog();
+    if (dlg.open && !u.picking) PaintColorDialog();
     if (ver.open) PaintVersionsDialog();
     if (fnt.open) PaintFontDialog();
 }
@@ -2696,7 +2774,7 @@ void ClockDrag(float mx, float my, bool start) {
 
 void ClockNudge(UINT vk) {
     ClockLook* look = EditedLook();
-    float step = (GetKeyState(VK_SHIFT) < 0 ? 10.f : 1.f);
+    float step = (GetKeyState(VK_SHIFT) < 0 ? 1.f : 10.f);  // screen pixels; Shift for fine steps
     float fw, fh;
     ClockSize(&fw, &fh);
     if (vk == VK_LEFT || vk == VK_RIGHT) look->x += (vk == VK_LEFT ? -step : step) / std::max(1, u.screenW);
@@ -2779,28 +2857,42 @@ void DlgSetRgb(BYTE r, BYTE g, BYTE b, bool typing = false) {
     DlgApply(true);
 }
 
+// Edits the text's (0) or the glow's (1) colour: the colour field starts from it.
+void DlgSetTarget(int target) {
+    ClockLook* look = EditedLook();
+    dlg.target = target;
+    dlg.sameAsText = target == 1 && look->glowColor.empty();
+    dlg.hexEdit = false;
+    BYTE r = 255, g = 255, b = 255;
+    ParseColor(dlg.sameAsText || target == 0 ? look->color : look->glowColor, &r, &g, &b);
+    RgbToHsv(r, g, b, &dlg.h, &dlg.s, &dlg.v);
+    dlg.exact = Fmt(L"%d,%d,%d", r, g, b);
+}
+
 void OpenColorDialog(int target) {
     ClockLook* look = EditedLook();
     int slot = dlg.slot;
     dlg = ColorDialog{};
     dlg.open = true;
     dlg.slot = slot;
-    dlg.target = target;
-    dlg.before = target == 0 ? look->color : look->glowColor;
-    dlg.sameAsText = target == 1 && look->glowColor.empty();
-    BYTE r = 255, g = 255, b = 255;
-    ParseColor(dlg.sameAsText || target == 0 ? look->color : look->glowColor, &r, &g, &b);
-    RgbToHsv(r, g, b, &dlg.h, &dlg.s, &dlg.v);
-    dlg.exact = Fmt(L"%d,%d,%d", r, g, b);
+    dlg.beforeText = look->color;
+    dlg.beforeGlow = look->glowColor;
+    DlgSetTarget(target);
     u.picking = false;
     u.pickColor.clear();
 }
 
 void CloseColorDialog(bool keep) {
-    if (!keep) DlgTarget() = dlg.before;
-    else if (DlgTarget() != dlg.before)
-        Log(L"ui: clock %ls colour set to %ls", dlg.target ? L"glow" : L"text", DlgTarget().empty() ? L"the text's" : DlgTarget().c_str());
-    dlg.open = dlg.picking = dlg.hexEdit = false;
+    ClockLook* look = EditedLook();
+    if (!keep) {
+        look->color = dlg.beforeText;
+        look->glowColor = dlg.beforeGlow;
+    } else {
+        if (look->color != dlg.beforeText) Log(L"ui: clock text colour set to %ls", look->color.c_str());
+        if (look->glowColor != dlg.beforeGlow)
+            Log(L"ui: clock glow colour set to %ls", look->glowColor.empty() ? L"the text's" : look->glowColor.c_str());
+    }
+    dlg.open = dlg.hexEdit = u.picking = false;
     u.pickColor.clear();
     ClockEdited();  // saves, and the desktop shows the kept (or the old) colour
 }
@@ -2891,8 +2983,8 @@ bool DlgKey(UINT vk) {
     const bool ctrl = GetKeyState(VK_CONTROL) < 0;
     switch (vk) {
         case VK_ESCAPE:
-            if (dlg.picking) {
-                dlg.picking = false;
+            if (u.picking) {
+                u.picking = false;
                 u.pickColor.clear();
             } else if (dlg.hexEdit) {
                 dlg.hexEdit = false;
@@ -2937,18 +3029,6 @@ bool DlgDoubleClick(float x, float y) {
 // A click while the dialog is open; true when it's dealt with here.
 bool DlgMouseDown(const Hit* ht, float x, float y) {
     if (!ht || ht->id != ID_DLG_HEX) dlg.hexEdit = false;
-    if (dlg.picking && ht && ht->id == ID_DLG_PREVIEW) {  // eyedropper: take the colour and stop
-        std::wstring pc;
-        BYTE r, g, b;
-        if (SampleWallpaper(dlg.previewScreen, x, y, &pc) && ParseColor(pc, &r, &g, &b)) DlgSetRgb(r, g, b);
-        dlg.picking = false;
-        u.pickColor.clear();
-        return true;
-    }
-    if (dlg.picking && (!ht || ht->id != ID_DLG_PICK)) {
-        dlg.picking = false;
-        u.pickColor.clear();
-    }
     return false;
 }
 
@@ -3092,6 +3172,9 @@ void OnSeg(int id, int i) {
         case ID_CLK_MODE:
             u.clockEdit = i;
             return;
+        case ID_DLG_TARGET:
+            if (i != dlg.target) DlgSetTarget(i);
+            return;
         case ID_CLK_SCOPE:
             if ((i == 0) == g_settings.clockVideoOwn) return;
             g_settings.clockVideoOwn = i == 0;
@@ -3156,11 +3239,6 @@ void OnClick(int id) {
     switch (id) {
         case ID_POWER: Host_SetOn(!Host_IsOn()); break;
         case ID_CLK_CUSTOM: OpenColorDialog(0); break;
-        case ID_CLK_GLOWCOLOR: OpenColorDialog(1); break;
-        case ID_CLK_EYEDROP:
-            u.picking = !u.picking;
-            u.pickColor.clear();
-            break;
         case ID_DLG_OK: CloseColorDialog(true); break;
         case ID_DLG_CANCEL: CloseColorDialog(false); break;
         case ID_DLG_SAME: DlgSameAsText(!dlg.sameAsText); break;
@@ -3170,9 +3248,10 @@ void OnClick(int id) {
             dlg.hex = Hex(DlgColor()).substr(1);
             break;
         case ID_DLG_COPY: DlgCopy(); break;
-        case ID_DLG_PICK:
-            dlg.picking = !dlg.picking;
+        case ID_DLG_PICK:  // the dialog steps aside: the colour comes from the wallpaper on the page
+            u.picking = true;
             u.pickColor.clear();
+            dlg.hexEdit = false;
             break;
         case ID_DLG_SAVE: DlgSaveSlot(); break;
         case ID_DLG_USE: DlgUseSlot(dlg.slot); break;
@@ -3210,6 +3289,7 @@ void OnClick(int id) {
         case ID_VERSIONS: OpenVersions(); break;
         case ID_VER_CANCEL: CloseVersions(); break;
         case ID_CLK_FONT: OpenFontDialog(); break;
+        case ID_CLK_DATE: OpenDateDialog(); break;
         case ID_FNT_DONE: CloseFontDialog(); break;
         case ID_FNT_OWN: FontAddOwn(); break;
         case ID_VER_USE: VerApply(); break;
@@ -3274,10 +3354,10 @@ const Hit* FocusHit() {
 void FontScrollToFocus() {
     const int id = u.focus;
     float top;
-    if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) top = ((id - ID_FNT_ROW0) % 100) * kFontRowH;
+    if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) top = ((id - ID_FNT_ROW0) % 100) * PickerRowH();
     else if (id == ID_FNT_OWN) top = fnt.list.size() * kFontRowH;
     else return;
-    const float bottom = top + (id == ID_FNT_OWN ? kFontAddH : kFontRowH);
+    const float bottom = top + (id == ID_FNT_OWN ? kFontAddH : PickerRowH());
     if (top < fnt.target) FontScrollTo(top, true);
     else if (bottom > fnt.target + fnt.viewH) FontScrollTo(bottom - fnt.viewH, true);
 }
@@ -3304,9 +3384,26 @@ void FocusMove(int dir) {
     InvalidateRect(u.hwnd, nullptr, FALSE);
 }
 
+// Enter on the clock: centred across the screen; Enter again puts it back.
+void ClockCentre() {
+    ClockLook* l = EditedLook();
+    if (fabsf(l->x - 0.5f) < 0.0005f && u.clockPrevX >= 0) {
+        l->x = u.clockPrevX;
+        u.clockPrevX = -1;
+    } else {
+        u.clockPrevX = l->x;
+        l->x = 0.5f;
+    }
+    ClockEdited();
+}
+
 void FocusActivate() {
     const Hit* h = FocusHit();
     if (!h || !h->enabled) return;
+    if (h->id == ID_CLK_AREA) {
+        if (ClockUsable()) ClockCentre();
+        return;
+    }
     const int id = h->id, n = (int)h->segs.size() - 1, sel = h->sel;
     if (h->kind == K_SEG) {
         if (n > 0) OnSeg(id, (sel + 1) % n);
@@ -3369,7 +3466,11 @@ void FocusArrow(UINT vk) {
 void PaintFocus() {
     const Hit* h = u.focus ? FocusHit() : nullptr;
     if (!h || h->kind == K_SLIDER || h->r.right <= h->r.left) return;
-    const D2D1_RECT_F r = R(h->r.left - 3, h->r.top - 3, h->r.right + 3, h->r.bottom + 3);
+    D2D1_RECT_F r = R(h->r.left - 3, h->r.top - 3, h->r.right + 3, h->r.bottom + 3);
+    if (h->id == ID_CLK_AREA) {  // around the clock, not the whole preview
+        const D2D1_RECT_F c = ClockRectIn(u.clockBox, *EditedLook());
+        r = R(c.left - 4, c.top - 4, c.right + 4, c.bottom + 4);
+    }
     const bool inList = fnt.open && ((h->id >= ID_FNT_ROW0 && h->id < ID_FNT_DEL0 + 100) || h->id == ID_FNT_OWN);
     if (inList) u.rt->PushAxisAlignedClip(fnt.view, D2D1_ANTIALIAS_MODE_ALIASED);
     Stroke(r, u.th.accent, h->kind == K_AREA ? 8.f : 7.f, 2);
@@ -3416,12 +3517,13 @@ bool OnKeyInner(UINT vk) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
+    if (vk == VK_TAB && u.picking) return true;  // the eyedropper is out: Esc or a click first
     if (vk == VK_TAB) {
         if (dlg.open) dlg.hexEdit = false;
         FocusMove(GetKeyState(VK_SHIFT) < 0 ? -1 : 1);
         return true;
     }
-    const bool typing = dlg.open && (dlg.hexEdit || dlg.picking);  // the colour dialog's own keys first
+    const bool typing = dlg.open && (dlg.hexEdit || u.picking);  // the colour dialog's own keys first
     if (vk == VK_ESCAPE && (FocusHit() || u.keySlider) && !typing && !u.picking) {  // Esc: no focus; Esc again closes
         FinishStep();
         u.focus = u.keySlider = 0;
@@ -3542,10 +3644,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             const Hit* ht = HitAt(x, y);
             int hot = ht && ht->enabled ? ht->id : 0;
             int seg = ht && ht->kind == K_SEG ? SegAt(*ht, x) : -1;
-            if (u.picking || (dlg.open && dlg.picking)) {  // the colour under an eyedropper
+            if (u.picking) {  // the colour under the eyedropper
                 std::wstring pc;
-                bool ok = u.picking ? SampleWallpaper(u.clockBox, x, y, &pc)
-                                    : In(dlg.preview, x, y) && SampleWallpaper(dlg.previewScreen, x, y, &pc);
+                bool ok = SampleWallpaper(u.clockBox, x, y, &pc);
                 if (!ok) pc.clear();
                 if (pc != u.pickColor || u.pickAt.x != x || u.pickAt.y != y) {
                     u.pickColor = pc;
@@ -3585,7 +3686,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 return TRUE;
             }
             if (LOWORD(l) == HTCLIENT && u.page == 0 && dlg.open) {
-                bool cross = u.hot == ID_DLG_SV || u.drag == ID_DLG_SV || (dlg.picking && u.hot == ID_DLG_PREVIEW);
+                bool cross = u.hot == ID_DLG_SV || u.drag == ID_DLG_SV;
                 if (cross || u.hot == ID_DLG_HEX) {
                     SetCursor(LoadCursorW(nullptr, cross ? IDC_CROSS : IDC_IBEAM));
                     return TRUE;
@@ -3613,25 +3714,19 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             u.keySlider = ht && ht->kind == K_SLIDER && ht->enabled ? ht->id : 0;
             u.focus = 0;
             u.tabFrom = ht ? ht->id : 0;
+            if (u.picking) {  // the colour dialog's eyedropper: take the wallpaper's colour, or put it away
+                std::wstring pc;
+                BYTE r = 0, g = 0, b = 0;
+                if (dlg.open && ht && ht->id == ID_CLK_AREA && SampleWallpaper(u.clockBox, x, y, &pc) && ParseColor(pc, &r, &g, &b))
+                    DlgSetRgb(r, g, b);
+                u.picking = false;
+                u.pickColor.clear();
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             if (dlg.open && DlgMouseDown(ht, x, y)) {
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
-            }
-            if (u.picking && ht && ht->id == ID_CLK_AREA) {  // eyedropper: take the colour and stop
-                std::wstring pc;
-                if (SampleWallpaper(u.clockBox, x, y, &pc)) {
-                    EditedLook()->color = pc;
-                    Log(L"ui: clock colour picked from the wallpaper: %ls", pc.c_str());
-                    ClockEdited();
-                }
-                u.picking = false;
-                u.pickColor.clear();
-                InvalidateRect(h, nullptr, FALSE);
-                return 0;
-            }
-            if (u.picking && (!ht || ht->id != ID_CLK_EYEDROP)) {  // clicked elsewhere: stop picking
-                u.picking = false;
-                u.pickColor.clear();
             }
             if (!ht || !ht->enabled) return 0;
             SetCapture(h);
@@ -3830,7 +3925,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (u.page == 1) Host_PreviewCrop(nullptr);
             CloseVersions();
             if (dlg.open) {  // closed with the colour dialog open: as Cancel
-                DlgTarget() = dlg.before;
+                EditedLook()->color = dlg.beforeText;
+                EditedLook()->glowColor = dlg.beforeGlow;
                 dlg = ColorDialog{};
                 Host_SettingsChanged();
             }

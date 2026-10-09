@@ -49,10 +49,13 @@ Using it
         e.g. on the video wallpaper but not on the still one.
       * Drag the clock on the preview to place it (it snaps to the middle;
         hold Alt to place it freely, arrow keys nudge it).
-      * Colour: click it for the colour dialog (colour field, hex codes, and
-        16 boxes for your own colours: click a box, then "Save to box";
-        double-click a box to use it); the eyedropper next to it takes a
-        colour from the wallpaper. Ctrl+V pastes a colour code like #72ABDE.
+      * Colour: the text's and the glow's (Text / Glow at the top of the
+        colour dialog): a colour field, hex codes, 16 boxes for your own
+        colours (click a box, then "Save to box"; double-click a box to use
+        it), and an eyedropper that takes a colour from anywhere on the
+        wallpaper. Ctrl+V pastes a colour code like #72ABDE.
+      * Date: how the date reads (09 OCTOBER, 2026. / OCTOBER 9, 2026 /
+        09 / 10 / 26 ...), or no date at all.
       * Font: Audiowide, Michroma, Orbitron or Syncopate, for the whole
         clock. Anurati (the original Mond font) is free for personal use
         only, so it isn't included: in the font list, "Get it" opens its
