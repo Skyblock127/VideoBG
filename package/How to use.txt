@@ -1,4 +1,4 @@
-VideoBG 1.6 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+VideoBG 1.7 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
 ==========================================================================
 
 What it does
@@ -41,12 +41,12 @@ Using it
     (The desktop background only follows with one screen and a
     single-picture background on Windows 11 24H2 or newer.)
   - Desktop clock page:
-      * Video wallpaper / Still wallpaper (top right) picks which clock
-        you're editing. For the video wallpaper, This video / All videos
-        picks a clock just for this video or the one every video shares.
+      * The row at the top picks the clock you're editing: Video / Still
+        (the video wallpaper's or the still wallpaper's), then for the
+        video wallpaper This video / All videos (a clock just for this
+        video, or the one every video shares). Show / Hide shows or hides
+        it, e.g. on the video wallpaper but not on the still one.
         Everything under the preview belongs to the clock you're editing.
-      * Show clock / Hide clock shows or hides the clock you're editing,
-        e.g. on the video wallpaper but not on the still one.
       * Drag the clock on the preview to place it (it snaps to the middle;
         hold Alt to place it freely, arrow keys nudge it).
       * Colour: the text's and the glow's (Text / Glow at the top of the
