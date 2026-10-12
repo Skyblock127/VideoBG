@@ -20,7 +20,7 @@ def main() -> None:
     n = (W * S, H * S)
     img = Image.new("RGBA", n)
     d = ImageDraw.Draw(img)
-    top, bottom = (34, 22, 84), (22, 64, 140)
+    top, bottom = (10, 27, 61), (22, 64, 140)  # deep navy into the icon's blue
     for y in range(n[1]):
         t = y / (n[1] - 1)
         d.line([(0, y), (n[0], y)], fill=tuple(round(top[i] + (bottom[i] - top[i]) * t) for i in range(3)))
@@ -78,14 +78,15 @@ def main() -> None:
     chips = Image.new("RGBA", n, (0, 0, 0, 0))
     cd = ImageDraw.Draw(chips)
     x = x0
-    for chip in ["Hardware decoding", "Built-in clock", "Lightweight"]:
+    chips_text = ["Built-in clock", "Lightweight"]
+    for chip in chips_text:
         tw = cd.textlength(chip, font=small)
         cd.rounded_rectangle((x, 486 * S, x + tw + 28 * S, 522 * S), radius=18 * S, fill=(255, 255, 255, 34),
                              outline=(255, 255, 255, 80), width=S)
         x += tw + 40 * S
     img.alpha_composite(chips)
     x = x0
-    for chip in ["Hardware decoding", "Built-in clock", "Lightweight"]:
+    for chip in chips_text:
         d.text((x + 14 * S, 489 * S), chip, font=small, fill=(255, 255, 255))
         x += d.textlength(chip, font=small) + 40 * S
 

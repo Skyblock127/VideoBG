@@ -25,22 +25,14 @@ def render(size: int, on: bool) -> Image.Image:
     box = (pad, pad, n - pad, n - pad)
     radius = round(n * 0.22)
 
-    # night sky: vertical gradient inside a rounded square
+    # night sky: a solid rounded square, in the banner's colours (grey while the wallpaper is off)
     if on:
-        top, bottom = (124, 92, 255), (36, 164, 255)
-        far, near = (255, 255, 255, 46), (44, 26, 120, 235)
+        sky, far, near = (22, 64, 140), (255, 255, 255, 22), (16, 10, 46, 255)
     else:
-        top, bottom = (132, 136, 146), (92, 96, 106)
-        far, near = (255, 255, 255, 40), (58, 60, 68, 235)
-    grad = Image.new("RGBA", (n, n))
-    gd = ImageDraw.Draw(grad)
-    for y in range(n):
-        t = y / (n - 1)
-        c = tuple(round(top[i] + (bottom[i] - top[i]) * t) for i in range(3)) + (255,)
-        gd.line([(0, y), (n, y)], fill=c)
+        sky, far, near = (107, 111, 120), (255, 255, 255, 22), (42, 44, 51, 255)
     mask = Image.new("L", (n, n), 0)
     ImageDraw.Draw(mask).rounded_rectangle(box, radius=radius, fill=255)
-    img.paste(grad, (0, 0), mask)
+    img.paste(Image.new("RGBA", (n, n), sky + (255,)), (0, 0), mask)
 
     def layer(points, fill):
         shape = Image.new("L", (n, n), 0)
@@ -53,7 +45,7 @@ def render(size: int, on: bool) -> Image.Image:
     # stars (left out where they would only be a smudge)
     if size >= 32:
         d = ImageDraw.Draw(img)
-        white = (255, 255, 255, 235)
+        white = (255, 255, 255, 230)
         star(d, n * 0.24, n * 0.25, n * 0.075, white)
         star(d, n * 0.80, n * 0.20, n * 0.05, white)
         star(d, n * 0.84, n * 0.44, n * 0.035, white)
@@ -66,12 +58,13 @@ def render(size: int, on: bool) -> Image.Image:
     layer([(0, 0.84), (0.16, 0.72), (0.28, 0.80), (0.52, 0.58), (0.76, 0.82),
            (0.88, 0.74), (1, 0.82), (1, 1), (0, 1)], near)
 
-    # play triangle
+    # play triangle, centred: exactly up and down, and across halfway between its box's centre and
+    # its centre of mass (centred by its box, a play triangle looks shifted left)
     d = ImageDraw.Draw(img)
-    cx, cy = n * 0.52, n * 0.45
+    cx, cy = n * 0.4962, n * 0.5
     r = n * 0.22
     tri = [(cx - r * 0.72, cy - r), (cx - r * 0.72, cy + r), (cx + r * 1.05, cy)]
-    d.polygon(tri, fill=(255, 255, 255, 255 if on else 235))
+    d.polygon(tri, fill=(255, 255, 255, 255))
     return img.resize((size, size), Image.LANCZOS)
 
 
