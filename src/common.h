@@ -17,6 +17,7 @@
 
 #define APP_NAME     L"VideoBG"
 #define APP_VERSION  L"1.8.4"
+#define FEEDBACK_URL L"https://videobg-feedback.vercel.app/api/feedback"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
 #define RCTL_CLASS   L"VideoBG.RendererCtl"
@@ -129,6 +130,18 @@ struct Settings {
 std::wstring AppDataDir();    // %APPDATA%\VideoBG (created on demand): settings, log
 std::wstring LocalDataDir();  // %LOCALAPPDATA%\VideoBG (created on demand): light copies
 void Log(const wchar_t* fmt, ...);  // appends to %APPDATA%\VideoBG\videobg.log (events only, never per frame)
+std::wstring LogPath(bool old = false);  // the log, or the one before it (videobg.old.log)
+std::wstring FeedbackUrl();               // where feedback goes: FEEDBACK_URL, or settings.ini [General] FeedbackUrl
+
+// feedback.cpp: a feature idea or a problem report, sent to the VideoBG-feedback server.
+struct FeedbackReport {
+    bool bug = false;
+    std::wstring text, steps, often, email, system, log;
+};
+std::wstring Feedback_Windows();                 // "Windows 11 24H2 (build 26200.6899)"
+std::wstring Feedback_Log();                     // the newest part of the log, user and file names taken out
+std::wstring Feedback_Preview(const FeedbackReport& r);  // what's sent, as plain text
+bool Feedback_Send(const FeedbackReport& r, std::wstring* error);  // blocking: call it off the UI thread
 void InstallCrashLog(const wchar_t* role);  // logs module+offset of any crash before Windows' crash report
 std::vector<std::wstring> LoadPlaylist();   // %APPDATA%\VideoBG\music.m3u8
 void SavePlaylist(const std::vector<std::wstring>& files);

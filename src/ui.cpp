@@ -8,6 +8,7 @@
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <shobjidl.h>
+#include <uxtheme.h>
 #include <wincodec.h>
 #include <windowsx.h>
 #include <algorithm>
@@ -21,7 +22,7 @@ namespace {
 constexpr float kW = 820;  // client width in DIPs
 float kH = 660;            // client height: taller when the screen has room (set in UI_Show)
 constexpr UINT WM_UI_FRAME = WM_APP + 100, WM_UI_INFO = WM_APP + 101, WM_UI_OPT_PROGRESS = WM_APP + 103,
-               WM_UI_OPT_DONE = WM_APP + 104, WM_UI_STILL = WM_APP + 106;
+               WM_UI_OPT_DONE = WM_APP + 104, WM_UI_STILL = WM_APP + 106, WM_UI_FEEDBACK = WM_APP + 107, WM_UI_FB_CLOSE = WM_APP + 108;
 constexpr UINT_PTR TIMER_STATUS = 1;
 constexpr UINT_PTR TIMER_SCROLL = 2;  // the font list gliding to where the wheel sent it
 
@@ -35,6 +36,8 @@ enum Id {
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_FNT_YES, ID_FNT_NO, ID_VER_YES, ID_VER_NO,
+    ID_FB_IDEA, ID_FB_BUG, ID_FB_SCRIM, ID_FB_TEXT, ID_FB_STEPS, ID_FB_EMAIL, ID_FB_OFTEN, ID_FB_LOG, ID_FB_PREVIEW, ID_FB_CANCEL,
+    ID_FB_SEND,
     ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
@@ -1335,6 +1338,53 @@ void PaintPowerCard(float x, float y, float w) {
     Seg(ID_BATTERY, SegRect(cx, yy, cw), {L"Keep playing", L"Pause", L"Turn off"}, g_settings.onBattery);
 }
 
+// ---- Feedback (General page) -----------------------------------------------------------------
+// A feature idea or a problem report, sent to the developer (feedback.cpp). The text boxes are
+// Windows' own (typing, pasting, undo and every language for free), placed over the dialog.
+struct FeedbackUI {
+    bool open = false;
+    bool bug = false;  // a problem report (else a feature idea)
+    HWND text = nullptr, steps = nullptr, email = nullptr;
+    HFONT font = nullptr;
+    HBRUSH brush = nullptr;
+    COLORREF face = 0;
+    int often = -1;  // 0 once, 1 sometimes, 2 every time
+    bool withLog = true;
+    bool sending = false;
+    std::wstring note;                     // the bottom bar: why it wasn't sent
+    std::wstring sent;                     // on the page once sent
+    std::wstring idea, what, doing, mail;  // drafts, kept while VideoBG runs (Cancel doesn't lose them)
+    D2D1_RECT_F boxText{}, boxSteps{}, boxEmail{};
+    WNDPROC editProc = nullptr;
+} fb;
+
+std::wstring FbGet(HWND e) {
+    std::wstring t(e ? GetWindowTextLengthW(e) : 0, L'\0');
+    if (!t.empty()) GetWindowTextW(e, t.data(), (int)t.size() + 1);
+    const size_t a = t.find_first_not_of(L" \t\r\n"), b = t.find_last_not_of(L" \t\r\n");
+    return a == std::wstring::npos ? L"" : t.substr(a, b - a + 1);
+}
+
+bool FbBox(int id) { return id == ID_FB_TEXT || id == ID_FB_STEPS || id == ID_FB_EMAIL; }
+HWND FbEditFor(int id) { return id == ID_FB_TEXT ? fb.text : id == ID_FB_STEPS ? fb.steps : id == ID_FB_EMAIL ? fb.email : nullptr; }
+
+// The dialog (DIPs), and its text boxes.
+D2D1_RECT_F FeedbackLayout() {
+    const float W = kDialogW, H = fb.bug ? 548 : 376, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
+    float y = T + 84;
+    if (!fb.bug) {
+        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 188);
+        fb.boxSteps = fb.boxEmail = R(0, 0, 0, 0);
+    } else {
+        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 96);
+        y = fb.boxText.bottom + 14;
+        fb.boxSteps = R(L + 24, y + 24, L + W - 24, y + 24 + 64);
+        y = fb.boxSteps.bottom + 14 + 32 + 14 + 28 + 14;
+        fb.boxEmail = R(L + 24, y + 24, L + 24 + 320, y + 24 + 32);
+    }
+    return R(L, T, L + W, T + H);
+}
+
 void PaintGeneralPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
@@ -1374,8 +1424,19 @@ void PaintGeneralPage(float x, float w) {
         Button(ID_STARTUP_REG, SegRect(cx, yy, cw), L"Add to Windows startup");
     }
 
+    // Feedback: an idea or a problem, straight to the developer.
+    const float by0 = gc.bottom + 12;
+    const D2D1_RECT_F fc = R(x, by0, x + w, by0 + kCardHead + 74);
+    Card(fc, L"\uE939", L"Feedback");
+    Text(L"Ideas and problem reports go straight to the developer. No account or personal details needed.",
+         R(lx, by0 + kCardHead - 6, x + w - kPad, by0 + kCardHead + 14), u.fSmall, t.text2);
+    const float fby = by0 + kCardHead + 24;
+    Button(ID_FB_IDEA, R(lx, fby, lx + 186, fby + 32), L"Suggest a feature", L"\uE82F");
+    Button(ID_FB_BUG, R(lx + 198, fby, lx + 384, fby + 32), L"Report a problem", L"\uE7BA");
+    if (!fb.sent.empty()) Text(fb.sent, R(lx + 400, fby, x + w - kPad, fby + 32), u.fSmall, t.good);
+
     // Where things are kept.
-    float fy = gc.bottom + 12;
+    float fy = fc.bottom + 12;
     const float itemH = 46;
     Card(R(x, fy, x + w, fy + kCardHead + 2 * itemH + 34), L"\uE8B7", L"Your data");
     auto folder = [&](float iy, int id, const wchar_t* what, const wchar_t* where) {
@@ -2769,6 +2830,53 @@ void PaintPresetsDialog() {
     }
 }
 
+void PaintFeedbackDialog() {
+    const Theme& t = u.th;
+    Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
+    AddHit(ID_FB_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
+    const D2D1_RECT_F panel = FeedbackLayout();
+    const float L = panel.left, T = panel.top, W = panel.right - L, H = panel.bottom - T;
+    const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
+    Fill(R(L - 2, T, L + W + 2, T + H + 4), D2D1::ColorF(0, 0, 0, 0.2f), 10);  // shadow
+    Fill(panel, face, 8);
+    ID2D1RoundedRectangleGeometry* clip = PushRounded(panel, 8);
+    Fill(R(L, T + H - 64, L + W, T + H), bar);
+    Line(L, T + H - 64, L + W, T + H - 64, t.stroke);
+    PopRounded(clip);
+    Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
+
+    Text(fb.bug ? L"Report a problem" : L"Suggest a feature", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
+    Text(fb.bug ? L"Tell the developer what happened. No account or personal details needed."
+                : L"Your idea goes straight to the developer. No account or personal details needed.",
+         R(L + 24, T + 50, L + W - 24, T + 72), u.fBody, t.text2);
+    // A text box: its label above, and a frame around Windows' own box (which draws the text).
+    auto box = [&](int id, const D2D1_RECT_F& r, HWND edit, const wchar_t* label) {
+        Text(label, R(r.left, r.top - 24, r.right, r.top - 4), u.fBody, t.text);
+        const bool focused = edit && GetFocus() == edit;
+        Fill(r, face, 4);
+        Stroke(r, focused ? t.accent : t.ctrlStroke, 4, focused ? 2.f : 1.f);
+        AddHit(id, K_AREA, r);
+    };
+    box(ID_FB_TEXT, fb.boxText, fb.text, fb.bug ? L"What went wrong?" : L"What would you like VideoBG to do?");
+    if (fb.bug) {
+        box(ID_FB_STEPS, fb.boxSteps, fb.steps, L"What were you doing when it happened? (optional)");
+        float y = fb.boxSteps.bottom + 14;
+        Text(L"How often does it happen?", R(L + 24, y, L + 260, y + 32), u.fBody, t.text);
+        Seg(ID_FB_OFTEN, R(L + W - 24 - 330, y, L + W - 24, y + 32), {L"Once", L"Sometimes", L"Every time"}, fb.often);
+        y += 32 + 14;
+        Toggle(ID_FB_LOG, L + 24, y + 14, fb.withLog);
+        Text(L"Include VideoBG's log (it helps find the cause)", R(L + 76, y, L + W - 24 - 130, y + 28), u.fBody, t.text);
+        Link(ID_FB_PREVIEW, R(L + W - 24 - 130, y + 5, L + W - 24, y + 23), L"See what's sent");
+        box(ID_FB_EMAIL, fb.boxEmail, fb.email, L"Your email, if you'd like a reply (optional)");
+    }
+    const float by = T + H - 48;
+    const bool canSend = !fb.sending && FbGet(fb.text).size() >= 3;
+    Text(fb.sending ? std::wstring(L"Sending\u2026") : fb.note, R(L + 24, by - 4, L + W - 24 - 236, by + 36), u.fWrap,
+         fb.sending ? t.text2 : t.warn);
+    Button(ID_FB_CANCEL, R(L + W - 24 - 228, by, L + W - 24 - 126, by + 32), L"Cancel");
+    Button(ID_FB_SEND, R(L + W - 24 - 118, by, L + W - 24, by + 32), L"Send", L"\uE724", true, canSend);
+}
+
 void PaintMain() {
     PaintHeader();
     PaintSidebar();
@@ -2784,6 +2892,7 @@ void PaintMain() {
     if (ver.open) PaintVersionsDialog();
     if (fnt.open) PaintFontDialog();
     if (prs.open) PaintPresetsDialog();
+    if (fb.open) PaintFeedbackDialog();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -3626,6 +3735,7 @@ void OnSeg(int id, int i) {
         case ID_DLG_TARGET:
             if (i != dlg.target) DlgSetTarget(i);
             return;
+        case ID_FB_OFTEN: fb.often = i; return;
         case ID_CLK_SCOPE:
             if ((i == 0) == g_settings.clockVideoOwn) return;
             g_settings.clockVideoOwn = i == 0;
@@ -3650,6 +3760,222 @@ void OnSeg(int id, int i) {
         default: return;
     }
     Host_SettingsChanged();
+}
+
+// ---- Feedback: interaction
+
+void CloseFeedback() {
+    if (!fb.open) return;
+    (fb.bug ? fb.what : fb.idea) = FbGet(fb.text);  // kept for next time
+    if (fb.bug) {
+        fb.doing = FbGet(fb.steps);
+        fb.mail = FbGet(fb.email);
+    }
+    for (HWND* e : {&fb.text, &fb.steps, &fb.email})
+        if (*e) {
+            DestroyWindow(*e);
+            *e = nullptr;
+        }
+    if (fb.font) DeleteObject(fb.font);
+    if (fb.brush) DeleteObject(fb.brush);
+    fb.font = nullptr;
+    fb.brush = nullptr;
+    fb.open = false;
+    SetFocus(u.hwnd);
+    u.focus = 0;
+}
+
+void FeedbackSend();
+
+// The text boxes' own keys: Tab moves on through the dialog, Esc closes it, Ctrl+Enter sends.
+LRESULT CALLBACK FbEditProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    const bool ctrl = GetKeyState(VK_CONTROL) < 0;
+    if (m == WM_KEYDOWN) {
+        if (w == VK_TAB) {
+            u.focus = GetDlgCtrlID(h);
+            SetFocus(u.hwnd);
+            FocusMove(GetKeyState(VK_SHIFT) < 0 ? -1 : 1);
+            return 0;
+        }
+        if (w == VK_ESCAPE) {
+            PostMessageW(u.hwnd, WM_UI_FB_CLOSE, 0, 0);
+            return 0;
+        }
+        if (w == 'A' && ctrl) {
+            SendMessageW(h, EM_SETSEL, 0, -1);
+            return 0;
+        }
+        if (w == VK_RETURN && (ctrl || h == fb.email)) {
+            FeedbackSend();
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return 0;
+        }
+    }
+    if (m == WM_CHAR && (w == L'\t' || w == 27 || w == 1 || w == 10 || (w == L'\r' && h == fb.email))) return 0;  // no beeps
+    return CallWindowProcW(fb.editProc, h, m, w, l);
+}
+
+// A text box shows its scroll bar only once its text is longer than the box.
+void FbFitScroll(HWND e) {
+    if (!e || !(GetWindowLongW(e, GWL_STYLE) & ES_MULTILINE)) return;
+    RECT rc;
+    GetClientRect(e, &rc);
+    TEXTMETRICW tm{};
+    HDC dc = GetDC(e);
+    HGDIOBJ old = SelectObject(dc, fb.font);
+    GetTextMetricsW(dc, &tm);
+    SelectObject(dc, old);
+    ReleaseDC(e, dc);
+    const int lines = (int)SendMessageW(e, EM_GETLINECOUNT, 0, 0);
+    ShowScrollBar(e, SB_VERT, tm.tmHeight > 0 && lines * tm.tmHeight > rc.bottom);
+}
+
+HWND FbEdit(int id, const D2D1_RECT_F& box, bool multi, const std::wstring& text) {
+    const float k = u.dpi / 96.f;
+    const int x = (int)lroundf((box.left + 8) * k), y = (int)lroundf((box.top + 6) * k);
+    const int w = (int)lroundf((box.right - box.left - (multi ? 10 : 16)) * k), h = (int)lroundf((box.bottom - box.top - 12) * k);
+    const DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | (multi ? ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL : ES_AUTOHSCROLL);
+    HWND e = CreateWindowExW(0, L"EDIT", text.c_str(), style, x, y, w, h, u.hwnd, (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
+    if (!e) return nullptr;
+    SendMessageW(e, WM_SETFONT, (WPARAM)fb.font, FALSE);
+    SendMessageW(e, EM_SETLIMITTEXT, multi ? 4000 : 200, 0);
+    if (u.th.dark) SetWindowTheme(e, L"DarkMode_Explorer", nullptr);  // a dark scroll bar
+    fb.editProc = (WNDPROC)SetWindowLongPtrW(e, GWLP_WNDPROC, (LONG_PTR)FbEditProc);
+    FbFitScroll(e);
+    return e;
+}
+
+void OpenFeedback(bool bug) {
+    if (fb.open) return;
+    fb.open = true;
+    fb.bug = bug;
+    fb.note.clear();
+    fb.sending = false;
+    FeedbackLayout();
+    const float k = u.dpi / 96.f;
+    fb.font = CreateFontW(-(int)lroundf(13 * k), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0,
+                          FontExists(L"Segoe UI Variable Text") ? L"Segoe UI Variable Text" : L"Segoe UI");
+    fb.face = u.th.dark ? RGB(0x2B, 0x2B, 0x2B) : RGB(0xFF, 0xFF, 0xFF);
+    fb.brush = CreateSolidBrush(fb.face);
+    fb.text = FbEdit(ID_FB_TEXT, fb.boxText, true, bug ? fb.what : fb.idea);
+    if (bug) {
+        fb.steps = FbEdit(ID_FB_STEPS, fb.boxSteps, true, fb.doing);
+        fb.email = FbEdit(ID_FB_EMAIL, fb.boxEmail, false, fb.mail);
+    }
+    if (fb.text) {
+        SetFocus(fb.text);
+        SendMessageW(fb.text, EM_SETSEL, GetWindowTextLengthW(fb.text), GetWindowTextLengthW(fb.text));
+    }
+    u.focus = ID_FB_TEXT;
+}
+
+// The PC, the video and the settings, for a problem report: nothing personal.
+std::wstring FeedbackSystem() {
+    std::wstring s = Feedback_Windows() + L"\n";
+    s += L"Graphics: " + u.gpu + (g_settings.gpu == 1 ? L" (power saving chosen)" : g_settings.gpu == 2 ? L" (high performance chosen)" : L"") +
+         L"\n";
+    std::wstring ds;
+    EnumDisplayMonitors(
+        nullptr, nullptr,
+        [](HMONITOR m, HDC, LPRECT, LPARAM p) -> BOOL {
+            MONITORINFO mi{sizeof mi};
+            GetMonitorInfoW(m, &mi);
+            auto* d = (std::wstring*)p;
+            if (!d->empty()) *d += L", ";
+            *d += Fmt(L"%ldx%ld%ls", mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+                      (mi.dwFlags & MONITORINFOF_PRIMARY) ? L" (main)" : L"");
+            return TRUE;
+        },
+        (LPARAM)&ds);
+    s += L"Displays: " + ds + (g_settings.monitors ? L"; the video on the main one only" : L"; the video on all") + L"\n";
+    const std::wstring& video = g_settings.video;
+    if (video.empty()) s += L"Video: none chosen\n";
+    else if (u.infoOk)
+        s += Fmt(L"Video: %ls, %ux%u, %.0f fps, %.1f s%ls%ls%ls\n", u.info.codec.c_str(), u.info.w, u.info.h, u.info.fps, u.info.duration,
+                 u.info.audioStreams.empty() ? L", no sound" : L", has sound", IsLightCopy(video) ? L", a lighter version" : L"",
+                 IsFromGif(video) ? L", made from a GIF" : L"");
+    else s += L"Video: couldn't be read\n";
+    FaultText faultBuf;
+    if (const FaultText* f = CurrentFault(&faultBuf)) s += L"Problem shown: " + std::wstring(f->what) + L"\n";
+    static const wchar_t* sound[] = {L"none", L"the video's", L"own music"};
+    static const wchar_t* cover[] = {L"nothing", L"fullscreen apps", L"maximized apps"};
+    static const wchar_t* battery[] = {L"keep playing", L"pause", L"turn off"};
+    s += Fmt(L"Wallpaper %ls; sound: %ls; speed %d%%; frame rate %ls; crop: %ls\n", Host_IsOn() ? L"on" : L"off",
+             sound[std::clamp(g_settings.sound, 0, 2)], g_settings.speed,
+             g_settings.fpsCap ? Fmt(L"%d fps", g_settings.fpsCap).c_str() : L"original",
+             g_settings.crop.stretch ? L"stretched" : g_settings.crop.IsFull() ? L"none" : L"screen shape");
+    s += Fmt(L"Pause when covered by: %ls; on battery: %ls; lock screen follows: %ls\n", cover[std::clamp(g_settings.pauseCover, 0, 2)],
+             battery[std::clamp(g_settings.onBattery, 0, 2)], g_settings.lockFollow ? L"yes" : L"no");
+    s += Fmt(L"Clock: %ls on the video wallpaper%ls, %ls on the still one", g_settings.clockLive.show ? L"shown" : L"hidden",
+             g_settings.clockVideoOwn ? L" (this video has its own)" : L"", g_settings.clockStill.show ? L"shown" : L"hidden");
+    return s;
+}
+
+FeedbackReport FeedbackCollect() {
+    FeedbackReport r;
+    r.bug = fb.bug;
+    r.text = FbGet(fb.text);
+    if (fb.bug) {
+        static const wchar_t* often[] = {L"Once", L"Sometimes", L"Every time"};
+        r.steps = FbGet(fb.steps);
+        r.email = FbGet(fb.email);
+        r.often = fb.often >= 0 && fb.often < 3 ? often[fb.often] : L"";
+        r.system = FeedbackSystem();
+        if (fb.withLog) r.log = Feedback_Log();
+    }
+    return r;
+}
+
+struct FeedbackJob {
+    FeedbackReport report;
+    HWND hwnd;
+};
+
+DWORD WINAPI FeedbackThread(void* p) {
+    auto* job = (FeedbackJob*)p;
+    std::wstring error;
+    const bool ok = Feedback_Send(job->report, &error);
+    auto* msg = new std::wstring(error);
+    if (!PostMessageW(job->hwnd, WM_UI_FEEDBACK, (ok ? 1 : 0) | (job->report.bug ? 2 : 0), (LPARAM)msg)) delete msg;  // the window's gone
+    delete job;
+    return 0;
+}
+
+void FeedbackSend() {
+    if (!fb.open || fb.sending) return;
+    FeedbackReport r = FeedbackCollect();
+    if (r.text.size() < 3) {
+        fb.note = L"Write a few words first";
+        return;
+    }
+    fb.sending = true;
+    fb.note.clear();
+    auto* job = new FeedbackJob{r, u.hwnd};
+    if (HANDLE th = CreateThread(nullptr, 0, FeedbackThread, job, 0, nullptr)) {
+        CloseHandle(th);
+    } else {
+        delete job;
+        fb.sending = false;
+        fb.note = L"Couldn't start sending it";
+    }
+}
+
+// Everything that would be sent, in Notepad.
+void FeedbackPreview() {
+    std::wstring text = Feedback_Preview(FeedbackCollect());
+    wchar_t dir[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, dir);
+    const std::wstring path = std::wstring(dir) + L"VideoBG feedback (what's sent).txt";
+    const int n = WideCharToMultiByte(CP_UTF8, 0, text.data(), (int)text.size(), nullptr, 0, nullptr, nullptr);
+    std::string utf8 = "\xef\xbb\xbf";  // a BOM, so Notepad reads it as UTF-8
+    utf8.resize(3 + n);
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), (int)text.size(), utf8.data() + 3, n, nullptr, nullptr);
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w;
+    WriteFile(f, utf8.data(), (DWORD)utf8.size(), &w, nullptr);
+    CloseHandle(f);
+    ShellExecuteW(u.hwnd, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void StopRecording();
@@ -3769,6 +4095,12 @@ void OnClick(int id) {
             ver.confirm = -1;
             break;
         case ID_CLK_FONT: OpenFontDialog(); break;
+        case ID_FB_IDEA: OpenFeedback(false); break;
+        case ID_FB_BUG: OpenFeedback(true); break;
+        case ID_FB_CANCEL: CloseFeedback(); break;
+        case ID_FB_SEND: FeedbackSend(); break;
+        case ID_FB_LOG: fb.withLog = !fb.withLog; break;
+        case ID_FB_PREVIEW: FeedbackPreview(); break;
         case ID_PRS: OpenPresets(); break;
         case ID_PRS_CLOSE: ClosePresets(); break;
         case ID_PRS_NO: prs.confirm = -1; break;
@@ -3837,14 +4169,15 @@ void StopRecording() {
 bool Focusable(const Hit& h) {
     if (!h.enabled) return false;
     if (h.kind == K_BUTTON || h.kind == K_TOGGLE || h.kind == K_SEG || h.kind == K_SLIDER) return true;
-    return h.id == ID_CLK_AREA || h.id == ID_C_AREA || h.id == ID_DLG_SV || h.id == ID_DLG_HUE;
+    return h.id == ID_CLK_AREA || h.id == ID_C_AREA || h.id == ID_DLG_SV || h.id == ID_DLG_HUE || FbBox(h.id);
 }
 
 // Where Tab starts: after the last dialog backdrop, so an open dialog keeps the focus to itself.
 size_t FocusStart() {
     size_t start = 0;
     for (size_t i = 0; i < u.hits.size(); i++)
-        if (u.hits[i].id == ID_DLG_SCRIM || u.hits[i].id == ID_VER_SCRIM || u.hits[i].id == ID_FNT_SCRIM || u.hits[i].id == ID_PRS_SCRIM)
+        if (u.hits[i].id == ID_DLG_SCRIM || u.hits[i].id == ID_VER_SCRIM || u.hits[i].id == ID_FNT_SCRIM || u.hits[i].id == ID_PRS_SCRIM ||
+            u.hits[i].id == ID_FB_SCRIM)
             start = i + 1;
     return start;
 }
@@ -3875,6 +4208,7 @@ void SetFocusTo(int id) {
     const Hit* h = FocusHit();
     u.keySlider = h && h->kind == K_SLIDER ? id : 0;
     if (fnt.open) FontScrollToFocus();
+    if (fb.open) SetFocus(FbBox(id) && FbEditFor(id) ? FbEditFor(id) : u.hwnd);  // a text box takes the keys
 }
 
 void FocusMove(int dir) {
@@ -3970,7 +4304,7 @@ void FocusArrow(UINT vk) {
 // The outline around the focused control (a slider shows a ring around its knob instead).
 void PaintFocus() {
     const Hit* h = u.focus ? FocusHit() : nullptr;
-    if (!h || h->kind == K_SLIDER || h->r.right <= h->r.left) return;
+    if (!h || h->kind == K_SLIDER || h->r.right <= h->r.left || FbBox(h->id)) return;  // a text box shows its own
     D2D1_RECT_F r = R(h->r.left - 3, h->r.top - 3, h->r.right + 3, h->r.bottom + 3);
     if (h->id == ID_CLK_AREA) {  // around the clock, not the whole preview
         const D2D1_RECT_F c = ClockRectIn(u.clockBox, *EditedLook());
@@ -3983,7 +4317,7 @@ void PaintFocus() {
     if (inList) u.rt->PopAxisAlignedClip();
 }
 
-bool DialogOpen() { return dlg.open || ver.open || fnt.open || prs.open || u.page == 1; }  // the crop page counts too
+bool DialogOpen() { return dlg.open || ver.open || fnt.open || prs.open || fb.open || u.page == 1; }  // the crop page counts too
 
 bool OnKeyInner(UINT vk);
 
@@ -4071,6 +4405,11 @@ bool OnKeyInner(UINT vk) {
             VerApply();
         }
         else if ((vk == VK_UP || vk == VK_DOWN) && n) VerSelect(std::clamp(ver.sel + (vk == VK_DOWN ? 1 : -1), 0, n - 1));
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
+    if (fb.open) {
+        if (vk == VK_ESCAPE) CloseFeedback();
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
@@ -4269,6 +4608,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 return 0;
             }
             if (!ht || !ht->enabled) return 0;
+            if (FbBox(ht->id)) {  // the frame around a text box
+                if (HWND e = FbEditFor(ht->id)) SetFocus(e);
+                return 0;
+            }
             SetCapture(h);
             u.press = ht->id;
             if (ht->kind == K_SLIDER) {
@@ -4464,6 +4807,47 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             UI_Refresh();
             return 0;
         }
+        case WM_UI_FEEDBACK: {  // sent, or why not
+            auto* error = (std::wstring*)l;
+            const bool ok = w & 1, bug = w & 2;
+            fb.sending = false;
+            if (ok) {
+                if (fb.open && fb.bug == bug) {
+                    for (HWND e : {fb.text, fb.steps, fb.email})
+                        if (e) SetWindowTextW(e, L"");
+                    CloseFeedback();
+                }
+                if (bug) fb.what.clear(), fb.doing.clear();
+                else fb.idea.clear();
+                fb.sent = L"Thanks, it's sent!";
+            } else {
+                fb.note = L"Couldn't send it: " + *error + L" Your text is kept; try again.";
+            }
+            delete error;
+            InvalidateRect(h, nullptr, FALSE);
+            return 0;
+        }
+        case WM_UI_FB_CLOSE:
+            CloseFeedback();
+            InvalidateRect(h, nullptr, FALSE);
+            return 0;
+        case WM_COMMAND:  // the feedback text boxes: typed in, or focused
+            if (fb.open && (HIWORD(w) == EN_CHANGE || HIWORD(w) == EN_SETFOCUS || HIWORD(w) == EN_KILLFOCUS)) {
+                if (HIWORD(w) == EN_SETFOCUS) u.focus = LOWORD(w);
+                if (HIWORD(w) == EN_CHANGE) FbFitScroll((HWND)l);
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
+            break;
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORSTATIC:
+            if (fb.open && fb.brush) {
+                const D2D1_COLOR_F& c = u.th.text;
+                SetTextColor((HDC)w, RGB(lroundf(c.r * 255), lroundf(c.g * 255), lroundf(c.b * 255)));
+                SetBkColor((HDC)w, fb.face);
+                return (LRESULT)fb.brush;
+            }
+            break;
         case WM_DISPLAYCHANGE:  // a display added, removed or resized
             QueryScreen();
             InvalidateRect(h, nullptr, FALSE);
@@ -4482,6 +4866,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             PresetEditEnd(false);  // closed while editing a preset: as Cancel
             prs = PresetUI{};
+            CloseFeedback();  // what was typed is kept for next time
+            fb.sent.clear();
             StopRecording();
             KillTimer(h, TIMER_STATUS);
             u.worker.Stop();
@@ -4597,7 +4983,7 @@ void UI_Show() {
     u.dpi = (float)dpiX;
     // Tall enough for the clock page's full-width preview when the screen has room.
     kH = std::clamp(std::min((mi.rcWork.bottom - mi.rcWork.top) * 96.f / dpiX - 64, ceilf(ClockPageHeight())), 620.f, 760.f);
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;  // the feedback text boxes
     RECT r{0, 0, (LONG)lround(kW * dpiX / 96), (LONG)lround(kH * dpiX / 96)};
     AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpiX);
     int ww = r.right - r.left, wh = r.bottom - r.top;

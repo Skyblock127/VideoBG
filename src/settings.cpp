@@ -36,13 +36,18 @@ std::wstring LocalDataDir() {
     return dir;
 }
 
+std::wstring LogPath(bool old) { return AppDataDir() + (old ? L"\\videobg.old.log" : L"\\videobg.log"); }
+
 void Log(const wchar_t* fmt, ...) {
+    // Every process (tray, wallpaper, settings) appends to the same file. Past 512 KB it becomes
+    // videobg.old.log (replacing the one before), so about 1 MB at most, with the latest events kept.
     static std::wstring path;
-    if (path.empty()) {
-        path = AppDataDir() + L"\\videobg.log";
+    static unsigned writes;
+    if (path.empty()) path = LogPath(false);
+    if (writes++ % 64 == 0) {  // checked now and then, also by processes that run for weeks
         WIN32_FILE_ATTRIBUTE_DATA fa;
-        if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa) && fa.nFileSizeLow > 256 * 1024)
-            DeleteFileW(path.c_str());
+        if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa) && (fa.nFileSizeHigh || fa.nFileSizeLow > 512 * 1024))
+            MoveFileExW(path.c_str(), LogPath(true).c_str(), MOVEFILE_REPLACE_EXISTING);  // another process may beat us to it
     }
     wchar_t msg[1024];
     va_list ap;
@@ -170,6 +175,11 @@ static std::wstring ReadStr(const wchar_t* ini, const wchar_t* sec, const wchar_
     wchar_t buf[2048];
     GetPrivateProfileStringW(sec, key, L"", buf, (DWORD)std::size(buf), ini);
     return buf;
+}
+
+std::wstring FeedbackUrl() {
+    std::wstring v = ReadStr(IniPath().c_str(), L"General", L"FeedbackUrl");  // for testing a local server
+    return v.empty() ? FEEDBACK_URL : v;
 }
 
 static void WriteInt(const wchar_t* ini, const wchar_t* key, int v) {

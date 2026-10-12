@@ -23,7 +23,7 @@ $flags = @('-std=c++20', '-municode', '-mwindows', '-static', '-fno-exceptions',
            '-DUNICODE', '-D_UNICODE', '-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-DNTDDI_VERSION=0x0A000008',
            '-Wall', '-Wno-unknown-pragmas', '-Wno-missing-field-initializers', '-Wno-stringop-overread')
 $libs = @('-lole32', '-loleaut32', '-luuid', '-lmfuuid', '-lshell32', '-luser32', '-lgdi32', '-ladvapi32',
-          '-ldwmapi', '-lwtsapi32', '-lpsapi', '-lshlwapi', '-lwindowscodecs', '-lpropsys')
+          '-ldwmapi', '-lwtsapi32', '-lpsapi', '-lshlwapi', '-lwindowscodecs', '-lpropsys', '-lwinhttp', '-luxtheme')
 $src = Get-ChildItem "$root\src\*.cpp" | ForEach-Object FullName
 
 # A running copy of the dist build keeps the exe locked; ask it to quit first.
