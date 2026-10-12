@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"1.8.4"
+#define APP_VERSION  L"1.9.0"
 #define FEEDBACK_URL L"https://videobg-feedback.vercel.app/api/feedback"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
