@@ -1319,6 +1319,11 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_ENGINE_EVENT: OnEngineEvent((DWORD)(w & 0xFFFF), (UINT)(w >> 16), l); return 0;
         case WM_MUSIC_EVENT: OnMusicEvent((DWORD)(w & 0xFFFF), (UINT)(w >> 16), l); return 0;
         case WM_VBG_MUSIC: OnMusicCommand(w, l); return 0;
+        case WM_VBG_VOLUME:  // the volume slider moving
+            g.s.volume = (int)w;
+            if (g.eng) g.eng->SetVolume(w / 100.0);
+            if (mu.eng) mu.eng->SetVolume(w / 100.0);
+            return 0;
         case WM_FIRST_FRAME:
             Log(L"first frame presented on %zu display(s)", g.targets.size());
             ShowTargets();

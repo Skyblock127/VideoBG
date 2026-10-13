@@ -473,7 +473,7 @@ void LoadSettings(Settings& s) {
             at = end + 1;
         }
     }
-    s.musicRepeat = ReadInt(ini, L"MusicRepeat", 1, 0, 2);
+    s.musicRepeat = ReadInt(ini, L"MusicRepeat", 1, 1, 2);  // the playlist always repeats; 2: just the song
     s.musicPlaying = ReadInt(ini, L"MusicPlaying", 1, 0, 1) != 0;
     s.keepSound = ReadInt(ini, L"KeepSoundWhenPaused", 1, 0, 1) != 0;
     s.fpsCap = ReadInt(ini, L"FpsCap", 0, 0, 240);

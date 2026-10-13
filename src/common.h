@@ -46,6 +46,7 @@ enum : UINT {
     WM_VBG_MUSIC,                        // host -> renderer   wParam = MusicCommand, lParam = its value
     WM_VBG_MUSIC_POS,                    // renderer -> host   wParam = position (ms), lParam = MusicPack(duration, track, playing)
     WM_VBG_MUSIC_END,                    // renderer -> host   the playlist ended (repeat off): the music stops
+    WM_VBG_VOLUME,                       // host -> renderer   wParam = volume (0-100) while the slider moves (saved when let go)
 };
 enum MusicCommand : WPARAM { MC_NEXT = 1, MC_PREV, MC_SEEK /* lParam = ms */, MC_PLAY_INDEX /* lParam = playlist index */ };
 inline LPARAM MusicPack(UINT durMs, int track, bool playing) {
@@ -111,7 +112,7 @@ struct Settings {
     int volume = 60;      // 0..100, for whichever sound source is chosen
     int sound = 0;        // 0 off (audio never decoded), 1 the video's own audio, 2 my music
     std::vector<int> musicOrder;  // my music: the play order (playlist indices); empty = as chosen
-    int musicRepeat = 1;      // my music: 0 stops at the end, 1 repeats the playlist, 2 repeats the song
+    int musicRepeat = 1;      // my music: 1 repeats the playlist, 2 repeats the song
     bool musicPlaying = true; // my music: playing (else paused by the user)
     bool keepSound = true;    // sound keeps playing while the wallpaper is paused (covered / locked)
     int fpsCap = 0;       // 0 = native frame rate
@@ -226,6 +227,7 @@ void Host_TrimMemory();
 bool Host_PickVideo(HWND owner);
 bool Host_PickMusic(HWND owner);             // choose songs for "my music"
 void Host_MusicCommand(MusicCommand cmd, LPARAM value);  // next, previous, seek, play a song
+void Host_LiveVolume(int volume);            // the sound follows the volume slider before it's saved
 struct MusicState {
     int track = -1;       // playlist index playing (-1 none)
     bool playing = false; // actually playing now

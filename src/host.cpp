@@ -729,8 +729,8 @@ bool Host_PickVideo(HWND owner) { return PickVideo(owner); }
 bool Host_PickMusic(HWND owner) {
     if (!PickMusic(owner)) return false;
     g_settings.sound = 2;
-    g_settings.musicOrder.clear();  // new songs: in the order chosen
-    g_settings.musicPlaying = true;
+    g_settings.musicOrder.clear();  // new songs: in the order chosen, waiting for Play
+    g_settings.musicPlaying = false;
     if (g_settings.volume == 0) g_settings.volume = 60;
     Host_SettingsChanged();
     return true;
@@ -743,6 +743,10 @@ void Host_MusicCommand(MusicCommand cmd, LPARAM value) {
 }
 
 MusicState Host_MusicState() { return g_music; }
+
+void Host_LiveVolume(int volume) {
+    if (g_ctl) PostMessageW(g_ctl, WM_VBG_VOLUME, (WPARAM)std::clamp(volume, 0, 100), 0);
+}
 
 bool Host_ClockLive() { return WallpaperShowing(); }
 

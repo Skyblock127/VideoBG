@@ -25,6 +25,8 @@ constexpr UINT WM_UI_FRAME = WM_APP + 100, WM_UI_INFO = WM_APP + 101, WM_UI_OPT_
                WM_UI_OPT_DONE = WM_APP + 104, WM_UI_STILL = WM_APP + 106, WM_UI_FEEDBACK = WM_APP + 107, WM_UI_FB_CLOSE = WM_APP + 108;
 constexpr UINT_PTR TIMER_STATUS = 1;
 constexpr UINT_PTR TIMER_SCROLL = 2;  // the font list gliding to where the wheel sent it
+constexpr UINT_PTR TIMER_SONGS = 3;   // the playlist gliding, or scrolling by itself while a song is moved near its edge
+constexpr float kSongRowH = 34;       // a song's row in the playlist
 
 enum Id {
     ID_NONE, ID_POWER, ID_CHOOSE, ID_CROP, ID_LOCK, ID_TIMELINE, ID_SPEED, ID_VOLUME, ID_FPS,
@@ -49,9 +51,8 @@ enum Id {
     ID_FNT_ADD0 = 700,
     ID_FNT_DEL0 = 800,
     ID_LANG_ROW0 = 1000,  // the clock language list: a language's row (as many as Windows has)
-    ID_SONG_ROW0 = 10000,  // the playlist: a song's row, and its move up / move down buttons (up to 10000 songs)
-    ID_SONG_UP0 = 20000,
-    ID_SONG_DOWN0 = 30000,
+    ID_SONG_ROW0 = 10000,  // the playlist: a song's row, and its grip for moving it (up to 10000 songs)
+    ID_SONG_GRIP0 = 20000,
     ID_PRS_USE0 = 2100,   // clock presets: a preset's Use, Edit, Rename and Delete buttons
     ID_PRS_EDIT0 = 2110,
     ID_PRS_REN0 = 2120,
@@ -308,8 +309,14 @@ struct UI {
     bool gpuAutoHigh = false;         // the one driving the main display is the high-performance one
     int screenW = 1920, screenH = 1080;
     int playW = 1920, playH = 1080, playCount = 1;
-    float songScroll = 0;      // the playlist, scrolled down this far
+    float songScroll = 0, songTarget = 0, songMax = 0;  // the playlist: scrolled this far, gliding there, at most
     D2D1_RECT_F songView{};    // where the playlist's rows show
+    // A press on a song: a click plays it, a drag scrolls the list, a drag by its grip moves the song.
+    int songPress = -1;        // the song (playlist index)
+    bool songMoving = false, songMoved = false;
+    float songPressY = 0, songPressScroll = 0, songY = 0, songGrab = 0;
+    int songIns = 0;           // moving: the place it would land
+    DWORD songEdgeSince = 0;   // moving: since when the cursor has been near the list's edge
     float seekFrac = -1;       // the music's seek bar while it's dragged
     D2D1_RECT_F memInfo{};  // the sidebar's memory numbers (hovering them explains them)  // the largest display the video plays on, and how many it plays on
 
@@ -1301,20 +1308,24 @@ void PaintPlayer(float x, float w, float yy) {
         AddHit(ID_MUSIC_PLAY, K_BUTTON, R(mid - 22, cy - 22, mid + 22, cy + 22), have);
     }
     IconButton(ID_MUSIC_NEXT, mid + 62, cy, 18, L"\uE893", false, live);
-    IconButton(ID_MUSIC_REPEAT, mid + 118, cy, 18, g_settings.musicRepeat == 2 ? L"\uE8ED" : L"\uE8EE", g_settings.musicRepeat != 0,
-               have);
+    IconButton(ID_MUSIC_REPEAT, mid + 118, cy, 18, g_settings.musicRepeat == 2 ? L"\uE8ED" : L"\uE8EE", g_settings.musicRepeat == 2,
+               have);  // lit: repeats this song; else the playlist goes round
 }
 
-// The playlist, in play order: click a song to play it; the arrows move it up or down.
+// The playlist, in play order: click a song to play it, drag it to scroll the list, or drag it by
+// its grip to move it (the others make room; near the list's edges it scrolls by itself).
 void PaintPlaylist(float x, float w, float top, float bottom) {
     const Theme& t = u.th;
     const D2D1_RECT_F card = R(x, top, x + w, bottom);
     Card(card, L"\uE8FD", L"Playlist");
     Button(ID_MUSIC_PICK, R(x + w - kPad - 148, top + 12, x + w - kPad, top + 44), L"Choose songs", L"\uE8D6", true);
     const size_t n = u.playlist.size();
-    if (n)
+    if (IsHot(ID_MUSIC_PICK) || u.focus == ID_MUSIC_PICK)  // the tip, while pointing at it
+        Text(L"Tip: in the picker, Ctrl+A picks every song in the folder", R(x + kPad + 110, top + 13, x + w - kPad - 160, top + 47),
+             u.fWrap, t.text2, DWRITE_TEXT_ALIGNMENT_TRAILING);
+    else if (n)
         Text(Fmt(L"%zu song%ls", n, n == 1 ? L"" : L"s"), R(x + kPad + 120, top + 16, x + w - kPad - 160, top + 40), u.fSmall, t.text2);
-    const D2D1_RECT_F view = R(x + 8, top + kCardHead - 6, x + w - 8, bottom - 8);
+    const D2D1_RECT_F view = R(x + 8, top + kCardHead + 8, x + w - 8, bottom - 8);
     u.songView = view;
     AddHit(ID_MUSIC_LIST, K_AREA, view);  // the wheel scrolls it
     if (!n) {
@@ -1324,26 +1335,56 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
     }
     const std::vector<int> order = MusicOrderFor(g_settings, n);
     const MusicState ms = Host_MusicState();
-    const float rowH = 34, viewH = view.bottom - view.top;
-    u.songScroll = std::clamp(u.songScroll, 0.f, std::max(0.f, n * rowH - viewH));
+    const float rowH = kSongRowH, viewH = view.bottom - view.top;
+    u.songMax = std::max(0.f, n * rowH - viewH);
+    u.songScroll = std::clamp(u.songScroll, 0.f, u.songMax);
+    u.songTarget = std::clamp(u.songTarget, 0.f, u.songMax);
+    // A song being moved leaves a gap where it would land; it follows the cursor up and down, inside the list.
+    std::vector<int> shown = order;
+    const bool moving = u.drag == ID_MUSIC_LIST && u.songMoving && u.songPress >= 0 && u.songPress < (int)n;
+    float liftTop = 0;
+    if (moving) {
+        shown.erase(std::find(shown.begin(), shown.end(), u.songPress));
+        liftTop = std::clamp(u.songY - u.songGrab, view.top, view.bottom - rowH);
+        u.songIns = std::clamp((int)lroundf((liftTop - view.top + u.songScroll) / rowH), 0, (int)n - 1);
+        shown.insert(shown.begin() + u.songIns, -1);
+    }
+    auto row = [&](int song, size_t p, const D2D1_RECT_F& r, bool lifted) {
+        const bool current = song == ms.track;
+        const bool hot = !moving && (IsHot(ID_SONG_ROW0 + song) || IsHot(ID_SONG_GRIP0 + song) || (u.drag == ID_MUSIC_LIST && u.songPress == song));
+        if (lifted) {
+            Fill(R(r.left, r.top + 2, r.right, r.bottom + 3), D2D1::ColorF(0, 0, 0, 0.25f), 5);  // shadow
+            Fill(r, Mix(t.card, t.accent, current ? 0.22f : 0.1f), 5);
+            Stroke(r, t.accent, 5);
+        } else if (current) {
+            Fill(r, Mix(t.card, t.accent, 0.16f), 5);
+        } else if (hot) {
+            Fill(r, Mix(t.card, t.text, 0.05f), 5);
+        }
+        if (current) Text(L"\uE767", R(r.left + 6, r.top, r.left + 34, r.bottom), u.fIconSmall, t.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
+        else Text(std::to_wstring(p + 1), R(r.left + 6, r.top, r.left + 34, r.bottom), u.fSmall, t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
+        Text(SongName(u.playlist[song]), R(r.left + 42, r.top, r.right - 48, r.bottom), current ? u.fStrong : u.fBody,
+             current || lifted ? t.text : t.text2);
+        const bool gripHot = IsHot(ID_SONG_GRIP0 + song) || lifted;
+        Text(L"\uE76F", R(r.right - 40, r.top, r.right - 8, r.bottom), u.fIconSmall, gripHot ? t.text : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
+        if (!moving) {
+            AddHit(ID_SONG_ROW0 + song, K_BUTTON, R(r.left, r.top, r.right - 44, r.bottom));
+            AddHit(ID_SONG_GRIP0 + song, K_AREA, R(r.right - 44, r.top, r.right, r.bottom));
+        }
+    };
     const size_t firstHit = u.hits.size();
     u.rt->PushAxisAlignedClip(view, D2D1_ANTIALIAS_MODE_ALIASED);
     for (size_t p = 0; p < n; p++) {
         const float ry = view.top - u.songScroll + p * rowH;
         if (ry + rowH < view.top || ry > view.bottom) continue;
-        const int song = order[p];
         const D2D1_RECT_F r = R(view.left + 4, ry + 1, view.right - 4, ry + rowH - 1);
-        const bool current = song == ms.track, hot = IsHot(ID_SONG_ROW0 + song) || IsHot(ID_SONG_UP0 + song) || IsHot(ID_SONG_DOWN0 + song);
-        if (current) Fill(r, Mix(t.card, t.accent, 0.16f), 5);
-        else if (hot) Fill(r, Mix(t.card, t.text, 0.05f), 5);
-        AddHit(ID_SONG_ROW0 + song, K_BUTTON, R(r.left, r.top, r.right - 64, r.bottom));
-        if (current) Text(L"\uE767", R(r.left + 6, r.top, r.left + 34, r.bottom), u.fIconSmall, t.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
-        else Text(std::to_wstring(p + 1), R(r.left + 6, r.top, r.left + 34, r.bottom), u.fSmall, t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
-        Text(SongName(u.playlist[song]), R(r.left + 42, r.top, r.right - 72, r.bottom), current ? u.fStrong : u.fBody,
-             current ? t.text : t.text2);
-        IconButton(ID_SONG_UP0 + song, r.right - 50, (r.top + r.bottom) / 2, 13, L"\uE70E", false, p > 0);
-        IconButton(ID_SONG_DOWN0 + song, r.right - 20, (r.top + r.bottom) / 2, 13, L"\uE70D", false, p + 1 < n);
+        if (shown[p] < 0) {  // where the moved song would land
+            Stroke(R(r.left + 1, r.top + 1, r.right - 1, r.bottom - 1), Mix(t.card, t.accent, 0.5f), 5);
+            continue;
+        }
+        row(shown[p], p, r, false);
     }
+    if (moving) row(u.songPress, u.songIns, R(view.left + 4, liftTop + 1, view.right - 4, liftTop + rowH - 1), true);
     u.rt->PopAxisAlignedClip();
     for (size_t h = firstHit; h < u.hits.size(); h++) {  // what's scrolled out of the list can't be clicked
         if (u.hits[h].id == ID_MUSIC_LIST) continue;
@@ -1364,13 +1405,17 @@ void PaintSoundPage(float x, float w) {
     Row(lx, yy, kLabelW, L"Play");
     Seg(ID_SOUND, SegRect(cx, yy, cw), {L"Nothing", L"Video's audio", L"My music"}, mode);
     yy += kRowH;
+    // The sound when the video pauses (covered, locked, screen off, on battery, low memory). With the
+    // still wallpaper there's no sound at all.
+    Row(lx, yy, kLabelW, L"When video pauses", kRowH, mode != 0);
+    Seg(ID_KEEPSOUND, SegRect(cx, yy, cw), {L"Pause the sound too", L"Keep the sound playing"}, g_settings.keepSound ? 1 : 0, mode != 0);
+    yy += kRowH;
     Row(lx, yy, kLabelW, L"Volume", kRowH, mode != 0);
     Slider(ID_VOLUME, SliderRect(cx, yy, cw), g_settings.volume / 100.f, mode != 0);
     SliderValue(g_settings.volume ? Fmt(L"%d%%", g_settings.volume) : std::wstring(L"Muted"), cx, yy, cw, mode != 0);
     yy += kRowH;
     if (mode == 2) {
         PaintPlayer(x, w, yy + 4);
-        yy += playerH - kRowH;
     } else {
         bool noAudio = mode == 1 && u.infoOk && u.info.audioStreams.empty();
         std::wstring info = mode == 0 ? L"Silent: the video's audio isn't even decoded, which saves power"
@@ -1379,11 +1424,6 @@ void PaintSoundPage(float x, float w) {
         Text(L"\uE946", R(lx, yy, lx + 16, yy + kRowH), u.fIconSmall, noAudio ? t.warn : t.text3);
         Text(info, R(lx + 22, yy, x + w - kPad, yy + kRowH), u.fSmall, noAudio ? t.warn : t.text2);
     }
-    yy += kRowH;
-    Row(lx, yy, kLabelW, L"While paused", kRowH, mode != 0);
-    Toggle(ID_KEEPSOUND, cx, yy + kRowH / 2, g_settings.keepSound, mode != 0);
-    Text(L"Keep the sound playing when the picture pauses", R(cx + 52, yy, cx + cw, yy + kRowH), u.fSmall,
-         mode != 0 ? t.text2 : t.text3);
     if (mode == 2) PaintPlaylist(x, w, card.bottom + 12, kH - 24);
 }
 
@@ -3763,6 +3803,7 @@ void OnSlider(int id, float frac, bool final) {
         }
         case ID_VOLUME:
             g_settings.volume = (int)lround(frac * 100);
+            Host_LiveVolume(g_settings.volume);  // heard while dragging; saved when let go
             if (final) Host_SettingsChanged();
             break;
         case ID_MUSIC_SEEK:
@@ -3800,6 +3841,7 @@ bool StepSlider(int dir) {
         case ID_VOLUME:
             if (g_settings.sound == 0) return false;
             g_settings.volume = std::clamp(g_settings.volume + dir, 0, 100);
+            Host_LiveVolume(g_settings.volume);
             break;
         case ID_MUSIC_SEEK: {  // five seconds a step
             const MusicState ms = Host_MusicState();
@@ -3878,6 +3920,7 @@ void OnSeg(int id, int i) {
             if (i != dlg.target) DlgSetTarget(i);
             return;
         case ID_FB_OFTEN: fb.often = i; return;
+        case ID_KEEPSOUND: g_settings.keepSound = i == 1; break;
         case ID_CLK_SCOPE:
             if ((i == 0) == g_settings.clockVideoOwn) return;
             g_settings.clockVideoOwn = i == 0;
@@ -3929,19 +3972,92 @@ void MusicShuffle() {
     Host_SettingsChanged();
 }
 
-// Moves a song one place up (-1) or down (1) in the play order.
-void MusicMove(int song, int dir) {
+void OnClick(int id);
+
+// Puts a song at place `to` in the play order (the others move along).
+void MusicPlace(int song, int to) {
     std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
-    for (size_t p = 0; p < order.size(); p++)
-        if (order[p] == song) {
-            const size_t q = p + dir;
-            if (q >= order.size()) return;
-            std::swap(order[p], order[q]);
-            break;
-        }
+    auto it = std::find(order.begin(), order.end(), song);
+    if (it == order.end()) return;
+    const int from = (int)(it - order.begin());
+    to = std::clamp(to, 0, (int)order.size() - 1);
+    if (from == to) return;
+    order.erase(it);
+    order.insert(order.begin() + to, song);
     if (MusicShuffled(order)) g_settings.musicOrder = order;
     else g_settings.musicOrder.clear();
+    Log(L"ui: song moved from %d to %d", from + 1, to + 1);
     Host_SettingsChanged();
+}
+
+// Moves a song one place up (-1) or down (1) in the play order (Alt+arrows on a focused song).
+void MusicMove(int song, int dir) {
+    const std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
+    for (size_t p = 0; p < order.size(); p++)
+        if (order[p] == song) MusicPlace(song, (int)p + dir);
+}
+
+// A press on a song: on its grip it starts moving the song, elsewhere a drag scrolls the list.
+void SongPress(int id, float y) {
+    const int song = id % 10000;
+    const std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
+    const int p = (int)(std::find(order.begin(), order.end(), song) - order.begin());
+    u.drag = ID_MUSIC_LIST;
+    u.songPress = song;
+    u.songMoving = id >= ID_SONG_GRIP0;
+    u.songMoved = false;
+    u.songPressY = u.songY = y;
+    u.songPressScroll = u.songTarget = u.songScroll;
+    u.songGrab = y - (u.songView.top - u.songScroll + p * kSongRowH);
+    u.songEdgeSince = 0;
+    if (u.songMoving) SetTimer(u.hwnd, TIMER_SONGS, 15, nullptr);  // the edges scroll the list
+}
+
+void SongDrag(float y) {
+    u.songY = y;
+    if (fabsf(y - u.songPressY) > 4) u.songMoved = true;
+    if (!u.songMoving && u.songMoved)  // the list follows the cursor
+        u.songScroll = u.songTarget = std::clamp(u.songPressScroll - (y - u.songPressY), 0.f, u.songMax);
+}
+
+void SongRelease() {
+    const int song = u.songPress;
+    u.songPress = -1;
+    if (song < 0) return;
+    if (u.songMoving) {
+        if (u.songMoved) MusicPlace(song, u.songIns);
+    } else if (!u.songMoved) {
+        OnClick(ID_SONG_ROW0 + song);  // a click: play it
+    }
+    u.songMoving = false;
+}
+
+// Moving a song near the list's top or bottom edge scrolls it: slowly at first, faster the closer
+// (or further past) the cursor gets, and only once it's been there a moment. The wheel glides too.
+void SongTick() {
+    bool busy = false;
+    if (u.drag == ID_MUSIC_LIST && u.songMoving) {
+        const float zone = 40, top = u.songView.top + zone, bottom = u.songView.bottom - zone;
+        float depth = u.songY < top ? (u.songY - top) / zone : u.songY > bottom ? (u.songY - bottom) / zone : 0;
+        depth = std::clamp(depth, -2.f, 2.f);
+        if (depth != 0) {
+            if (!u.songEdgeSince) u.songEdgeSince = GetTickCount();
+            const float ease = std::min(1.f, (GetTickCount() - u.songEdgeSince) / 500.f);
+            u.songTarget = std::clamp(u.songTarget + depth * fabsf(depth) * 8 * ease, 0.f, u.songMax);
+            u.songScroll = u.songTarget;
+        } else {
+            u.songEdgeSince = 0;
+        }
+        busy = true;
+    }
+    if (fabsf(u.songTarget - u.songScroll) > 0.5f) {
+        u.songScroll += (u.songTarget - u.songScroll) * 0.25f;
+        busy = true;
+    } else {
+        u.songScroll = u.songTarget;
+    }
+    if (!busy) KillTimer(u.hwnd, TIMER_SONGS);
+    InvalidateRect(u.hwnd, nullptr, FALSE);
 }
 
 // ---- Feedback: interaction
@@ -4171,16 +4287,11 @@ void OnClick(int id) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
-    if (id >= ID_SONG_ROW0 && id < ID_SONG_DOWN0 + 10000) {
-        const int song = id % 10000;
-        if (id < ID_SONG_UP0) {  // play this song
-            Host_MusicCommand(MC_PLAY_INDEX, song);
-            if (!g_settings.musicPlaying) {
-                g_settings.musicPlaying = true;
-                Host_SettingsChanged();
-            }
-        } else {
-            MusicMove(song, id < ID_SONG_DOWN0 ? -1 : 1);
+    if (id >= ID_SONG_ROW0 && id < ID_SONG_GRIP0) {  // play this song
+        Host_MusicCommand(MC_PLAY_INDEX, id - ID_SONG_ROW0);
+        if (!g_settings.musicPlaying) {
+            g_settings.musicPlaying = true;
+            Host_SettingsChanged();
         }
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
@@ -4289,14 +4400,11 @@ void OnClick(int id) {
             }
             break;
         case ID_MUSIC_SHUFFLE: MusicShuffle(); break;
-        case ID_MUSIC_REPEAT:  // off, the playlist, the song
-            g_settings.musicRepeat = (g_settings.musicRepeat + 1) % 3;
+        case ID_MUSIC_REPEAT:  // the playlist (always) or just this song
+            g_settings.musicRepeat = g_settings.musicRepeat == 2 ? 1 : 2;
             Host_SettingsChanged();
             break;
-        case ID_KEEPSOUND:
-            g_settings.keepSound = !g_settings.keepSound;
-            Host_SettingsChanged();
-            break;
+
         case ID_VERSIONS: OpenVersions(); break;
         case ID_VER_CANCEL: CloseVersions(); break;
         case ID_VER_NO: ver.confirm = -1; break;
@@ -4589,6 +4697,11 @@ bool OnKeyInner(UINT vk) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
+    if (u.focus >= ID_SONG_ROW0 && u.focus < ID_SONG_GRIP0 && GetKeyState(VK_MENU) < 0 && (vk == VK_UP || vk == VK_DOWN)) {
+        MusicMove(u.focus - ID_SONG_ROW0, vk == VK_UP ? -1 : 1);  // Alt+arrows move the focused song
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
     if (u.focus && !typing && FocusHit()) {
         if (vk == VK_RETURN || vk == VK_SPACE) {
             FocusActivate();
@@ -4716,6 +4829,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 TrackMouseEvent(&tme);
                 u.tracking = true;
             }
+            if (u.drag == ID_MUSIC_LIST) {
+                SongDrag(y);
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             if (u.drag) {
                 for (auto& ht : u.hits)
                     if (ht.id == u.drag) {
@@ -4818,6 +4936,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 return 0;
             }
             if (!ht || !ht->enabled) return 0;
+            if (ht->id >= ID_SONG_ROW0 && ht->id < ID_SONG_GRIP0 + 10000) {  // a song: click, scroll or move
+                SetCapture(h);
+                SongPress(ht->id, y);
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             if (FbBox(ht->id)) {  // the frame around a text box
                 if (HWND e = FbEditFor(ht->id)) SetFocus(e);
                 return 0;
@@ -4855,6 +4979,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             float x = Dip(GET_X_LPARAM(l)), y = Dip(GET_Y_LPARAM(l));
             ReleaseCapture();
             int dragId = u.drag, pressId = u.press;
+            if (dragId == ID_MUSIC_LIST) {
+                SongRelease();
+                u.drag = u.press = 0;
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             u.drag = 0;
             u.press = 0;
             if (dragId) {
@@ -4906,9 +5036,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             } else if (u.page == 0 && u.nav == NAV_SOUND && !DialogOpen()) {  // the playlist
                 POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                 ScreenToClient(h, &pt);
-                if (In(u.songView, Dip(pt.x), Dip(pt.y))) {
-                    u.songScroll -= GET_WHEEL_DELTA_WPARAM(w) / 120.f * 34 * 2;
-                    InvalidateRect(h, nullptr, FALSE);
+                if (In(u.songView, Dip(pt.x), Dip(pt.y))) {  // glides there
+                    u.songTarget = std::clamp(u.songTarget - GET_WHEEL_DELTA_WPARAM(w) / 120.f * kSongRowH * 2, 0.f, u.songMax);
+                    SetTimer(h, TIMER_SONGS, 15, nullptr);
                 }
             } else if (u.page == 1) {
                 ZoomCrop(GET_WHEEL_DELTA_WPARAM(w) > 0 ? 0.92f : 1 / 0.92f);
@@ -4938,6 +5068,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             break;
         case WM_TIMER:
             if (w == TIMER_STATUS) InvalidateRect(h, nullptr, FALSE);  // status, memory, the clock's minute
+            if (w == TIMER_SONGS) SongTick();
             if (w == TIMER_SCROLL) {  // ease towards the target: a third of the way each frame
                 fnt.scroll += (fnt.target - fnt.scroll) * 0.3f;
                 if (!fnt.open || std::abs(fnt.target - fnt.scroll) < 0.5f) {
