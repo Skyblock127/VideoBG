@@ -1,5 +1,5 @@
-VideoBG 1.9.1 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
-============================================================================
+VideoBG 1.10 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+===========================================================================
 
 What it does
   - Plays a video behind your desktop icons. Ctrl+Alt+B turns it on and off;
@@ -88,12 +88,14 @@ Using it
         clock the top row picks (it asks first; Show / Hide stays as it
         is). Rename and Delete are next to it. Tip: save your clock as a
         preset before changing it, so you can get it back later.
-  - My music (Sound page): choose songs, then press Play (picking "My music"
-    doesn't start the music by itself). The player has a seek bar,
-    previous/next, shuffle and repeat (the playlist, or one song). In the
-    playlist, click a song to play it or move it with the arrows; moving
-    songs counts as shuffling, and turning shuffle off goes back to the
-    order you chose them in.
+  - My music (Sound page): choose songs, then press Play (the music never
+    starts by itself). The player has a seek bar, previous/next, shuffle and
+    repeat this song (the playlist always repeats); click the song's name to
+    find it in the playlist. In the playlist, click a song to play it, drag
+    a song by its grip to move it, or drag anywhere else to scroll. Moving
+    songs counts as shuffling; turning shuffle off goes back to the order
+    you chose them in. With the video wallpaper off the music waits where it
+    was, and Play/Pause decides whether it starts when the wallpaper's back.
   - Sound and Playback pages: sound source, speed, frame rate, and (under
     Power saving) pausing while apps cover the desktop or on battery.
   - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.

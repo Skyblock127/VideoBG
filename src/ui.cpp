@@ -33,7 +33,7 @@ enum Id {
     ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_MUSIC_PLAY, ID_MUSIC_PREV, ID_MUSIC_NEXT, ID_MUSIC_SHUFFLE, ID_MUSIC_REPEAT, ID_MUSIC_SEEK,
-    ID_MUSIC_LIST, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
+    ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
     ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO,
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
@@ -318,6 +318,7 @@ struct UI {
     int songIns = 0;           // moving: the place it would land
     DWORD songEdgeSince = 0;   // moving: since when the cursor has been near the list's edge
     float seekFrac = -1;       // the music's seek bar while it's dragged
+    int songShown = -1;        // the song the player shows (clicking its name finds it in the playlist)
     D2D1_RECT_F memInfo{};  // the sidebar's memory numbers (hovering them explains them)  // the largest display the video plays on, and how many it plays on
 
     bool recording = false;
@@ -1305,7 +1306,15 @@ void PaintPlayer(float x, float w, float yy) {
     }
     Text(L"\uE8D6", R(lx, yy, lx + 18, yy + 22), u.fIconSmall, have ? t.accent : t.text3);
     const float noteW = note.empty() ? 0 : TextWidth(note, u.fSmall) + 16;
-    Text(title, R(lx + 24, yy, right - noteW, yy + 22), u.fStrong, have ? t.text : t.text2);
+    // The song's name: clicking it scrolls the playlist to the song.
+    const bool titleHot = track >= 0 && IsHot(ID_MUSIC_TITLE);
+    Text(title, R(lx + 24, yy, right - noteW, yy + 22), u.fStrong, !have ? t.text2 : titleHot ? t.accentHover : t.text);
+    if (track >= 0) {
+        const float tw = std::min(TextWidth(title, u.fStrong), right - noteW - lx - 24);
+        if (titleHot) Line(lx + 24, yy + 20, lx + 24 + tw, yy + 20, t.accentHover);
+        AddHit(ID_MUSIC_TITLE, K_BUTTON, R(lx + 24, yy, lx + 24 + tw, yy + 22));
+        u.songShown = track;
+    }
     Text(note, R(right - noteW, yy, right, yy + 22), u.fSmall, noteColor, DWRITE_TEXT_ALIGNMENT_TRAILING);
     yy += 26;
     float frac = u.drag == ID_MUSIC_SEEK && u.seekFrac >= 0 ? u.seekFrac : ms.durMs ? (float)ms.posMs / ms.durMs : 0;
@@ -4421,6 +4430,16 @@ void OnClick(int id) {
             }
             break;
         case ID_MUSIC_SHUFFLE: MusicShuffle(); break;
+        case ID_MUSIC_TITLE: {  // glide the playlist to the song, in the middle of the list
+            const std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
+            for (size_t p = 0; p < order.size(); p++)
+                if (order[p] == u.songShown) {
+                    const float viewH = u.songView.bottom - u.songView.top;
+                    u.songTarget = std::clamp(p * kSongRowH - (viewH - kSongRowH) / 2, 0.f, u.songMax);
+                    SetTimer(u.hwnd, TIMER_SONGS, 15, nullptr);
+                }
+            break;
+        }
         case ID_MUSIC_REPEAT:  // the playlist (always) or just this song
             g_settings.musicRepeat = g_settings.musicRepeat == 2 ? 1 : 2;
             Host_SettingsChanged();
