@@ -27,7 +27,7 @@ constexpr UINT WM_WALL_LOST = WM_APP + 62;
 constexpr UINT WM_DEVICE_LOST = WM_APP + 63;
 constexpr UINT WM_READER_FAILED = WM_APP + 64;
 constexpr UINT WM_MUSIC_EVENT = WM_APP + 65;
-constexpr UINT_PTR TIMER_HEALTH = 1, TIMER_DISPLAY = 2, TIMER_TRIM = 3, TIMER_RECHECK = 4, TIMER_PARK = 5;
+constexpr UINT_PTR TIMER_HEALTH = 1, TIMER_DISPLAY = 2, TIMER_TRIM = 3, TIMER_RECHECK = 4, TIMER_PARK = 5, TIMER_MUSIC = 6;
 
 struct Target {
     HWND hwnd = nullptr;
@@ -754,25 +754,33 @@ bool StartPlayback(double startPos = 0) {
 }
 
 // ---------------------------------------------------------------------------------------
-// "My music": an audio-only media engine playing the user's songs in order (or shuffled).
+// "My music": an audio-only media engine playing the user's songs in their play order (the
+// order chosen, or one the user shuffled or rearranged), with play/pause, next/previous, seeking
+// and repeat (off, the playlist, the song) driven from the settings window.
 
 struct Music {
     IMFMediaEngine* eng = nullptr;
     UINT gen = 0;
     std::vector<std::wstring> list;
-    std::vector<int> order;
+    std::vector<int> order;  // play order: playlist indices
     int pos = 0, failures = 0;
-    bool shuffle = false;
+    int repeat = 1;          // 0 off, 1 the playlist, 2 the song
+    bool held = false;       // stopped at the end of the playlist (repeat off) until the user plays again
 } mu;
 
 void ReportTrack(int idx) { PostMessageW(g.host, WM_VBG_TRACK, (WPARAM)(INT_PTR)idx, 0); }
 
-void ShuffleOrder() {
-    for (int i = (int)mu.order.size() - 1; i > 0; i--) {
-        static unsigned long long seed = GetTickCount64() * 2654435761ULL;
-        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
-        std::swap(mu.order[i], mu.order[(int)((seed >> 33) % (unsigned long long)(i + 1))]);
-    }
+// One song loops by itself (seamless), as does any song with "repeat the song".
+void MusicLoop() {
+    if (mu.eng) mu.eng->SetLoop(mu.repeat == 2 || (mu.repeat == 1 && mu.list.size() == 1) ? TRUE : FALSE);
+}
+
+// Where the music is, twice a second, for the settings window's player.
+void ReportMusic() {
+    if (!mu.eng || mu.order.empty()) return;
+    double t = mu.eng->GetCurrentTime(), d = mu.eng->GetDuration();
+    const UINT pos = t > 0 ? (UINT)(t * 1000) : 0, dur = d > 0 && d < 1e7 ? (UINT)(d * 1000) : 0;
+    PostMessageW(g.host, WM_VBG_MUSIC_POS, pos, MusicPack(dur, mu.order[mu.pos], !mu.eng->IsPaused()));
 }
 
 void MusicPlayCurrent() {
@@ -786,15 +794,50 @@ void MusicPlayCurrent() {
     ApplyPauseState();
 }
 
-void MusicNext() {
+// The next song; at the end of the playlist with repeat off (and not asked for), the first song,
+// held until the user plays again.
+void MusicNext(bool asked = false) {
     if (++mu.pos >= (int)mu.order.size()) {
         mu.pos = 0;
-        if (mu.shuffle) ShuffleOrder();
+        if (mu.repeat == 0 && !asked) {
+            mu.held = true;
+            PostMessageW(g.host, WM_VBG_MUSIC_END, 0, 0);
+        }
     }
     MusicPlayCurrent();
 }
 
+void OnMusicCommand(WPARAM cmd, LPARAM value) {
+    if (!mu.eng || mu.order.empty()) return;
+    const int n = (int)mu.order.size();
+    switch (cmd) {
+        case MC_NEXT:
+            mu.held = false;
+            MusicNext(true);
+            break;
+        case MC_PREV:  // a few seconds in: back to the start of this song, else the song before
+            mu.held = false;
+            if (mu.eng->GetCurrentTime() > 3) {
+                mu.eng->SetCurrentTime(0);
+            } else {
+                mu.pos = (mu.pos + n - 1) % n;
+                MusicPlayCurrent();
+            }
+            break;
+        case MC_SEEK: mu.eng->SetCurrentTime(value / 1000.0); break;
+        case MC_PLAY_INDEX:
+            for (int i = 0; i < n; i++)
+                if (mu.order[i] == (int)value) mu.pos = i;
+            mu.held = false;
+            MusicPlayCurrent();
+            break;
+    }
+    ApplyPauseState();
+    ReportMusic();
+}
+
 void StopMusic() {
+    KillTimer(g.ctl, TIMER_MUSIC);
     if (!mu.eng) return;
     mu.eng->Shutdown();
     SafeRelease(mu.eng);
@@ -824,16 +867,17 @@ void StartMusic() {
     SafeRelease(cf);
     if (FAILED(hr)) { Log(L"music: engine failed 0x%08lx", (unsigned long)hr); ReportTrack(-2); return; }
     mu.eng->SetAutoPlay(FALSE);
-    mu.eng->SetLoop(mu.list.size() == 1 ? TRUE : FALSE);  // one song: seamless loop
     mu.eng->SetVolume(g.s.volume / 100.0);
-    mu.shuffle = g.s.shuffle;
-    mu.order.resize(mu.list.size());
-    for (size_t i = 0; i < mu.order.size(); i++) mu.order[i] = (int)i;
-    if (mu.shuffle) ShuffleOrder();
+    mu.order = MusicOrderFor(g.s, mu.list.size());
+    mu.repeat = g.s.musicRepeat;
+    MusicLoop();
     mu.pos = 0;
     mu.failures = 0;
-    Log(L"music: %zu song(s)%ls", mu.list.size(), mu.shuffle ? L", shuffled" : L"");
+    mu.held = false;
+    Log(L"music: %zu song(s)%ls%ls", mu.list.size(), MusicShuffled(mu.order) ? L", own order" : L"",
+        g.s.musicPlaying ? L"" : L", paused");
     MusicPlayCurrent();
+    SetTimer(g.ctl, TIMER_MUSIC, 500, nullptr);
 }
 
 void OnMusicEvent(DWORD ev, UINT gen, LPARAM info) {
@@ -924,11 +968,13 @@ void ApplyPauseState() {
         else g.eng->Pause();
     }
     if (mu.eng) {
-        if (soundRuns) mu.eng->Play();
+        const bool musicRuns = soundRuns && g.s.musicPlaying && !mu.held;  // and the user hasn't paused it
+        if (musicRuns) mu.eng->Play();
         else mu.eng->Pause();
         static int last = -1;
-        if (last != (int)soundRuns) Log(L"music: %ls", soundRuns ? L"playing" : L"paused with the video");
-        last = soundRuns;
+        if (last != (int)musicRuns)
+            Log(L"music: %ls", musicRuns ? L"playing" : !g.s.musicPlaying || mu.held ? L"paused" : L"paused with the video");
+        last = musicRuns;
     }
     if (g.wake) SetEvent(g.wake);
 }
@@ -1245,9 +1291,22 @@ void Reload() {
         g.eng->SetPlaybackRate(r);
         g.eng->SetVolume(g.s.volume / 100.0);
     }
-    if (ns.sound != 2) StopMusic();
-    else if (!mu.eng || old.sound != 2 || old.shuffle != ns.shuffle || LoadPlaylist() != mu.list) StartMusic();
-    else mu.eng->SetVolume(ns.volume / 100.0);
+    if (ns.sound != 2) {
+        StopMusic();
+    } else if (!mu.eng || old.sound != 2 || LoadPlaylist() != mu.list) {
+        StartMusic();
+    } else {  // the same songs: the current one carries on in the new order, repeat or play state
+        mu.eng->SetVolume(ns.volume / 100.0);
+        const int current = mu.order[mu.pos];
+        mu.order = MusicOrderFor(ns, mu.list.size());
+        for (int i = 0; i < (int)mu.order.size(); i++)
+            if (mu.order[i] == current) mu.pos = i;
+        mu.repeat = ns.musicRepeat;
+        MusicLoop();
+        if (ns.musicPlaying && !old.musicPlaying) mu.held = false;
+        ApplyPauseState();
+        ReportMusic();
+    }
     UpdateRects();
     RequestRedraw();
     ApplyBatteryPolicy();
@@ -1259,6 +1318,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
         case WM_ENGINE_EVENT: OnEngineEvent((DWORD)(w & 0xFFFF), (UINT)(w >> 16), l); return 0;
         case WM_MUSIC_EVENT: OnMusicEvent((DWORD)(w & 0xFFFF), (UINT)(w >> 16), l); return 0;
+        case WM_VBG_MUSIC: OnMusicCommand(w, l); return 0;
         case WM_FIRST_FRAME:
             Log(L"first frame presented on %zu display(s)", g.targets.size());
             ShowTargets();
@@ -1298,6 +1358,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (w == TIMER_HEALTH) { HealthCheck(); CheckCovered(); CheckMemory(); }
             else if (w == TIMER_RECHECK) { KillTimer(h, TIMER_RECHECK); CheckCovered(); }
             else if (w == TIMER_PARK) { KillTimer(h, TIMER_PARK); Park(); }
+            else if (w == TIMER_MUSIC) ReportMusic();
             else if (w == TIMER_TRIM) {
                 KillTimer(h, TIMER_TRIM);
                 SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);

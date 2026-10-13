@@ -43,7 +43,14 @@ enum : UINT {
     WM_VBG_FAULT,                        // renderer -> host, before RS_ERROR: wParam = VideoFault, lParam = codec (subtype Data1)
     WM_VBG_MEMORY,                       // host -> renderer: report memory; renderer -> host: lParam = graphics memory (KB)
     WM_VBG_PREVIEW_SIZE,                 // host -> renderer   lParam = (h << 16) | w: show the video as if it were that size, 0 = off
+    WM_VBG_MUSIC,                        // host -> renderer   wParam = MusicCommand, lParam = its value
+    WM_VBG_MUSIC_POS,                    // renderer -> host   wParam = position (ms), lParam = MusicPack(duration, track, playing)
+    WM_VBG_MUSIC_END,                    // renderer -> host   the playlist ended (repeat off): the music stops
 };
+enum MusicCommand : WPARAM { MC_NEXT = 1, MC_PREV, MC_SEEK /* lParam = ms */, MC_PLAY_INDEX /* lParam = playlist index */ };
+inline LPARAM MusicPack(UINT durMs, int track, bool playing) {
+    return (LPARAM)((UINT64)durMs | ((UINT64)(UINT)(track + 2) << 32) | ((UINT64)playing << 48));
+}
 enum : LPARAM {
     LSF_LOCKSCREEN = 1,  // the lock screen shows the video's frame
     LSF_BACKGROUND = 2,  // the desktop background shows it
@@ -103,7 +110,9 @@ struct Settings {
     int speed = 100;      // playback speed in percent
     int volume = 60;      // 0..100, for whichever sound source is chosen
     int sound = 0;        // 0 off (audio never decoded), 1 the video's own audio, 2 my music
-    bool shuffle = false;     // my music: random order
+    std::vector<int> musicOrder;  // my music: the play order (playlist indices); empty = as chosen
+    int musicRepeat = 1;      // my music: 0 stops at the end, 1 repeats the playlist, 2 repeats the song
+    bool musicPlaying = true; // my music: playing (else paused by the user)
     bool keepSound = true;    // sound keeps playing while the wallpaper is paused (covered / locked)
     int fpsCap = 0;       // 0 = native frame rate
     int pauseCover = 2;   // 0 never, 1 when fullscreen app, 2 when maximized or fullscreen app
@@ -146,6 +155,22 @@ void InstallCrashLog(const wchar_t* role);  // logs module+offset of any crash b
 std::vector<std::wstring> LoadPlaylist();   // %APPDATA%\VideoBG\music.m3u8
 void SavePlaylist(const std::vector<std::wstring>& files);
 inline bool WantVideoAudio(const Settings& s) { return s.sound == 1 && s.volume > 0; }
+// The play order for a playlist of n songs: the saved one if it fits, else the songs as chosen.
+inline std::vector<int> MusicOrderFor(const Settings& s, size_t n) {
+    std::vector<int> o = s.musicOrder;
+    std::vector<bool> seen(n, false);
+    bool ok = o.size() == n;
+    for (int i : o) ok = ok && i >= 0 && (size_t)i < n && !seen[i] && (seen[i] = true);
+    if (ok) return o;
+    o.resize(n);
+    for (size_t i = 0; i < n; i++) o[i] = (int)i;
+    return o;
+}
+inline bool MusicShuffled(const std::vector<int>& o) {
+    for (size_t i = 0; i < o.size(); i++)
+        if (o[i] != (int)i) return true;
+    return false;
+}
 void LoadSettings(Settings& s);
 void SaveSettings(const Settings& s);
 void SaveMyColors(const Settings& s);  // just the colour dialog's saved colours
@@ -200,6 +225,13 @@ void Host_RegisterStartup();
 void Host_TrimMemory();
 bool Host_PickVideo(HWND owner);
 bool Host_PickMusic(HWND owner);             // choose songs for "my music"
+void Host_MusicCommand(MusicCommand cmd, LPARAM value);  // next, previous, seek, play a song
+struct MusicState {
+    int track = -1;       // playlist index playing (-1 none)
+    bool playing = false; // actually playing now
+    UINT posMs = 0, durMs = 0;
+};
+MusicState Host_MusicState();
 int Host_CurrentTrack();                     // playlist index playing, -1 none, -2 couldn't play
 void Host_SuspendHotkey(bool suspend);       // while the settings UI records a new shortcut
 bool Host_ClockLive();                       // true while the clock should use the video wallpaper look

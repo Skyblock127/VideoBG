@@ -40,6 +40,7 @@ HICON g_icoOn, g_icoOff;
 ULONGLONG g_crashes[3];
 HPOWERNOTIFY g_power;
 int g_track = -1;       // playlist index the renderer is playing
+MusicState g_music;     // what the renderer last said about the music
 bool g_exiting;         // quitting / logging off
 std::wstring g_clockShown;  // what the desktop clock was last told to show, so repeated syncs cost nothing
 std::wstring g_lockWanted;  // what the lock screen was last asked to show ("" = not asked yet)
@@ -195,6 +196,7 @@ void StopRenderer() {
     g_rstate = RS_LOADING;
     g_rmask = 0;
     g_track = -1;
+    g_music = MusicState{};
     RefreshStaticWallpaper();
 }
 
@@ -257,6 +259,7 @@ void OnRendererExit() {
     g_rstate = RS_LOADING;
     g_rmask = 0;
     g_track = -1;
+    g_music = MusicState{};
     Log(L"tray: video renderer exited with code 0x%lx", code);
     if (code == EXIT_RENDER_ERROR) {
         g_on = false;
@@ -456,6 +459,17 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_VBG_TRACK:
             g_track = (int)(INT_PTR)w;
+            UI_Refresh();
+            return 0;
+        case WM_VBG_MUSIC_POS:  // twice a second while there's music (the settings window repaints on its own)
+            g_music.posMs = (UINT)w;
+            g_music.durMs = (UINT)((UINT64)l & 0xFFFFFFFF);
+            g_music.track = (int)(((UINT64)l >> 32) & 0xFFFF) - 2;
+            g_music.playing = ((UINT64)l >> 48) & 1;
+            return 0;
+        case WM_VBG_MUSIC_END:  // the last song ended with repeat off: stopped, ready at the first song
+            g_settings.musicPlaying = false;
+            Host_SettingsChanged();
             UI_Refresh();
             return 0;
         case WM_VBG_SHOW: UI_Show(); return 0;
@@ -715,12 +729,20 @@ bool Host_PickVideo(HWND owner) { return PickVideo(owner); }
 bool Host_PickMusic(HWND owner) {
     if (!PickMusic(owner)) return false;
     g_settings.sound = 2;
+    g_settings.musicOrder.clear();  // new songs: in the order chosen
+    g_settings.musicPlaying = true;
     if (g_settings.volume == 0) g_settings.volume = 60;
     Host_SettingsChanged();
     return true;
 }
 
 int Host_CurrentTrack() { return g_track; }
+
+void Host_MusicCommand(MusicCommand cmd, LPARAM value) {
+    if (g_ctl) PostMessageW(g_ctl, WM_VBG_MUSIC, cmd, value);
+}
+
+MusicState Host_MusicState() { return g_music; }
 
 bool Host_ClockLive() { return WallpaperShowing(); }
 

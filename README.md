@@ -33,7 +33,7 @@ it off stops the video part completely.
   size, opacity and glow. Four fonts are included, and you can add any font of your own. Save
   looks as presets and use them on any clock.
 - **Lock screen:** while the wallpaper is on, the lock screen shows a frame of the video.
-- **Sound:** silent, the video's own sound, or your own music.
+- **Sound:** silent, the video's own sound, or your own music with a player: play/pause, seek, next/previous, shuffle, repeat, and a playlist you can rearrange.
 - **Clear errors:** if a video won't play, VideoBG says why and gives you the fix.
 
 ## Install
@@ -80,7 +80,7 @@ and asks whether to delete your settings too. Then delete the folder.
 | `Ctrl + Alt + B` | Turn the wallpaper on or off. The tray menu does the same. |
 | **Video** | **Choose video**, **Crop** it, and pick the lock screen frame with the **Preview** slider. **Versions** makes lighter copies. |
 | **Desktop clock** | Drag the clock on the preview to place it. Choose its font, text and glow colours, size, opacity, glow, date style, language (any language Windows knows) and 12/24-hour time. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show / Hide** turns it on or off for each. **Presets** keeps up to 5 clock looks you can edit, rename and use on any of these. |
-| **Sound** | Nothing (the default), the video's sound, or your own songs. |
+| **Sound** | Nothing (the default), the video's sound, or your own songs. **My music** has a player (play/pause, seek bar, previous/next, shuffle, repeat the playlist or one song) and a playlist: click a song to play it, or move it up or down. Moving songs counts as shuffling; turning shuffle off goes back to the order you chose them in. |
 | **Playback** | Speed, a frame-rate cap, and which displays to use. Every display shows the same video, so more displays hardly add memory; versions are sized for the largest one. On laptops with two graphics chips, **Graphics chip** picks power saving or high performance. Under **Power saving**: pause when apps cover the desktop, and what to do on battery. |
 | **General** | Change the hotkey, choose whether the wallpaper starts on, find your data folders, and send **Feedback**: suggest a feature or report a problem (no account needed; a report can include the app's log, with your user name and file names taken out). |
 

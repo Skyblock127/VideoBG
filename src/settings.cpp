@@ -463,7 +463,18 @@ void LoadSettings(Settings& s) {
     // Older settings had no sound mode: any volume above 0 meant "the video's audio".
     s.sound = ReadInt(ini, L"Sound", -1, -1, 2);
     if (s.sound < 0) s.sound = GetPrivateProfileIntW(L"General", L"Volume", 0, ini) > 0 ? 1 : 0;
-    s.shuffle = ReadInt(ini, L"Shuffle", 0, 0, 1) != 0;
+    {
+        std::wstring v(65536, L'\0');  // the play order: "3,0,1,2"
+        v.resize(GetPrivateProfileStringW(L"General", L"MusicOrder", L"", v.data(), (DWORD)v.size(), ini));
+        for (size_t at = 0; at < v.size();) {
+            size_t end = v.find(L',', at);
+            if (end == std::wstring::npos) end = v.size();
+            if (end > at) s.musicOrder.push_back(_wtoi(v.substr(at, end - at).c_str()));
+            at = end + 1;
+        }
+    }
+    s.musicRepeat = ReadInt(ini, L"MusicRepeat", 1, 0, 2);
+    s.musicPlaying = ReadInt(ini, L"MusicPlaying", 1, 0, 1) != 0;
     s.keepSound = ReadInt(ini, L"KeepSoundWhenPaused", 1, 0, 1) != 0;
     s.fpsCap = ReadInt(ini, L"FpsCap", 0, 0, 240);
     s.pauseCover = ReadInt(ini, L"PauseWhenCovered", 2, 0, 2);
@@ -515,7 +526,12 @@ void SaveSettings(const Settings& s) {
     WriteInt(ini, L"Speed", s.speed);
     WriteInt(ini, L"Volume", s.volume);
     WriteInt(ini, L"Sound", s.sound);
-    WriteInt(ini, L"Shuffle", s.shuffle ? 1 : 0);
+    WritePrivateProfileStringW(L"General", L"Shuffle", nullptr, ini);  // older: now the play order
+    std::wstring order;
+    for (int i : s.musicOrder) order += (order.empty() ? L"" : L",") + std::to_wstring(i);
+    WritePrivateProfileStringW(L"General", L"MusicOrder", order.empty() ? nullptr : order.c_str(), ini);
+    WriteInt(ini, L"MusicRepeat", s.musicRepeat);
+    WriteInt(ini, L"MusicPlaying", s.musicPlaying ? 1 : 0);
     WriteInt(ini, L"KeepSoundWhenPaused", s.keepSound ? 1 : 0);
     WriteInt(ini, L"FpsCap", s.fpsCap);
     WriteInt(ini, L"PauseWhenCovered", s.pauseCover);
