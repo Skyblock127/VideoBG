@@ -37,7 +37,7 @@ enum Id {
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_FNT_YES, ID_FNT_NO, ID_VER_YES, ID_VER_NO,
     ID_FB_IDEA, ID_FB_BUG, ID_FB_SCRIM, ID_FB_TEXT, ID_FB_STEPS, ID_FB_EMAIL, ID_FB_OFTEN, ID_FB_LOG, ID_FB_PREVIEW, ID_FB_CANCEL,
-    ID_FB_SEND,
+    ID_FB_SEND, ID_MEMINFO,
     ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
@@ -303,7 +303,8 @@ struct UI {
     std::wstring gpuLow, gpuHigh;     // the power-saving and the high-performance one (the same on most PCs)
     bool gpuAutoHigh = false;         // the one driving the main display is the high-performance one
     int screenW = 1920, screenH = 1080;
-    int playW = 1920, playH = 1080, playCount = 1;  // the largest display the video plays on, and how many it plays on
+    int playW = 1920, playH = 1080, playCount = 1;
+    D2D1_RECT_F memInfo{};  // the sidebar's memory numbers (hovering them explains them)  // the largest display the video plays on, and how many it plays on
 
     bool recording = false;
     std::wstring hotkeyMsg;
@@ -956,6 +957,7 @@ std::wstring StatusText(D2D1_COLOR_F* dot) {
         if (mask & PR_LOCKED) return L"Paused while the PC is locked";
         if (mask & PR_DISPLAY_OFF) return L"Paused while the screen is off";
         if (mask & PR_BATTERY) return L"Paused on battery";
+        if (mask & PR_LOW_MEMORY) return L"Paused: the PC is low on memory";
         return L"Paused while an app covers the desktop";
     }
     if (st == RS_PLAYING) { *dot = u.th.good; return L"Playing"; }
@@ -1040,6 +1042,8 @@ void PaintSidebar() {
     stat(yy + 42, L"Total RAM", mb(wall + tray), u.fSmall);
     stat(yy + 66, L"Graphics memory", running && !gfx ? std::wstring(L"\u2026") : mb(gfx), u.fSmall);
     Text(u.gpu, R(x, yy + 84, right, yy + 100), u.fSmall, t.text3);
+    AddHit(ID_MEMINFO, K_AREA, R(sc.left, yy - 2, sc.right, yy + 102));  // hover: what these numbers mean
+    u.memInfo = R(sc.left, yy - 2, sc.right, yy + 102);
     // The version, underlined: a link to VideoBG's page on GitHub.
     const std::wstring version = L"VideoBG " APP_VERSION;
     const float vw = TextWidth(version, u.fSmall);
@@ -2877,6 +2881,23 @@ void PaintFeedbackDialog() {
     Button(ID_FB_SEND, R(L + W - 24 - 118, by, L + W - 24, by + 32), L"Send", L"\uE724", true, canSend);
 }
 
+// Hovering the sidebar's memory numbers: why they rise while the video plays.
+void PaintMemoryTip() {
+    const Theme& t = u.th;
+    const float w = 330, x = u.memInfo.right + 10, bottom = u.memInfo.bottom + 4;
+    const std::wstring text =
+        L"Wallpaper RAM climbs during the first minute of playback, then stays level: it's the video's decoded frames, "
+        L"kept ready so playback is smooth. It isn't a leak.\n\nWhen the wallpaper pauses (covered by an app, PC locked, screen off, "
+        L"or the PC low on memory), VideoBG lets go of those frames and it drops to a few MB.\n\nA lighter version (Video page, "
+        L"Versions) needs less while it plays.";
+    const float h = 186, y = bottom - h;
+    const D2D1_RECT_F r = R(x, y, x + w, bottom);
+    Fill(R(r.left - 1, r.top + 1, r.right + 1, r.bottom + 3), D2D1::ColorF(0, 0, 0, 0.18f), 8);  // shadow
+    Fill(r, t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), 8);
+    Stroke(r, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
+    Text(text, R(r.left + 14, r.top + 12, r.right - 14, r.bottom - 10), u.fWrap, t.text);
+}
+
 void PaintMain() {
     PaintHeader();
     PaintSidebar();
@@ -2888,6 +2909,7 @@ void PaintMain() {
         case NAV_CLOCK: PaintClockPage(x, w); break;
         case NAV_GENERAL: PaintGeneralPage(x, w); break;
     }
+    if (IsHot(ID_MEMINFO) && !(dlg.open || ver.open || fnt.open || prs.open || fb.open)) PaintMemoryTip();
     if (dlg.open && !u.picking) PaintColorDialog();
     if (ver.open) PaintVersionsDialog();
     if (fnt.open) PaintFontDialog();
