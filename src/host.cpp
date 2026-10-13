@@ -184,6 +184,8 @@ void StartRenderer() {
 }
 
 // The song and spot the music was at when the wallpaper stops, to carry on from there next time.
+// Kept in the settings (three numbers), so the music carries on from there: when the wallpaper's
+// back, when My music is picked again, or after a restart.
 void KeepMusicPlace() {
     if (g_music.track < 0) return;
     g_settings.musicTrack = g_music.track;
@@ -800,6 +802,8 @@ void Host_MusicCommand(MusicCommand cmd, LPARAM value) {
 }
 
 MusicState Host_MusicState() { return g_music; }
+
+void Host_KeepMusicPlace() { KeepMusicPlace(); }
 
 void Host_LiveVolume(int volume) {
     if (g_ctl) PostMessageW(g_ctl, WM_VBG_VOLUME, (WPARAM)std::clamp(volume, 0, 100), 0);

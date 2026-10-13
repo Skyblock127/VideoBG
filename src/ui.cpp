@@ -1452,12 +1452,12 @@ void PaintSoundPage(float x, float w) {
         bool noAudio = mode == 1 && u.infoOk && u.info.audioStreams.empty();
         std::wstring info = mode == 0 ? L"Silent: the video's audio isn't even decoded, which saves power"
                           : noAudio   ? L"This video has no sound; try My music instead"
-                          : muted     ? L"Muted by " + HotkeyToString(g_settings.musicHkMods, g_settings.musicHkVk) +
-                                            L"; the video plays on, so the sound comes back in sync"
+                          : muted     ? L"Muted"
                                       : L"Plays the video's own soundtrack, in sync with the picture";
         Text(muted ? L"\uE74F" : L"\uE946", R(lx, yy, lx + 16, yy + kRowH), u.fIconSmall, noAudio || muted ? t.warn : t.text3);
-        Text(info, R(lx + 22, yy, x + w - kPad - (muted ? 70 : 0), yy + kRowH), u.fSmall, noAudio || muted ? t.warn : t.text2);
-        if (muted) Link(ID_UNMUTE, R(x + w - kPad - 60, yy + 11, x + w - kPad, yy + 29), L"Unmute");
+        Text(info, R(lx + 22, yy, x + w - kPad - (mode == 1 ? 70 : 0), yy + kRowH), u.fSmall, noAudio || muted ? t.warn : t.text2);
+        if (mode == 1 && !noAudio)  // mute or unmute (as the sound shortcut does): the video plays on, in sync
+            Link(ID_UNMUTE, R(x + w - kPad - 60, yy + 11, x + w - kPad, yy + 29), muted ? L"Unmute" : L"Mute");
     }
     if (mode == 2) PaintPlaylist(x, w, card.bottom + 12, kH - 24);
 }
@@ -3950,6 +3950,7 @@ void OnSeg(int id, int i) {
                 return;
             }
             if (i == 2) g_settings.musicPlaying = false;  // ready to play, but silent until Play is pressed
+            if (g_settings.sound == 2) Host_KeepMusicPlace();  // leaving My music: it carries on from here next time
             g_settings.sound = i;
             if (i != 0 && g_settings.volume == 0) g_settings.volume = 60;
             Log(L"ui: sound set to %ls", i == 0 ? L"nothing" : i == 1 ? L"video's audio" : L"my music");
@@ -4443,8 +4444,8 @@ void OnClick(int id) {
             }
             break;
         case ID_MUSIC_SHUFFLE: MusicShuffle(); break;
-        case ID_UNMUTE:
-            g_settings.videoMuted = false;
+        case ID_UNMUTE:  // mute / unmute
+            g_settings.videoMuted = !g_settings.videoMuted;
             Host_SettingsChanged();
             break;
         case ID_MUSIC_TITLE: {  // glide the playlist to the song, in the middle of the list

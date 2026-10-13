@@ -234,6 +234,7 @@ bool Host_PickVideo(HWND owner);
 bool Host_PickMusic(HWND owner);             // choose songs for "my music"
 void Host_MusicCommand(MusicCommand cmd, LPARAM value);  // next, previous, seek, play a song
 void Host_LiveVolume(int volume);            // the sound follows the volume slider before it's saved
+void Host_KeepMusicPlace();                  // remember the song and spot (leaving My music; the wallpaper stopping)
 struct MusicState {
     int track = -1;       // playlist index playing (-1 none)
     bool playing = false; // actually playing now
