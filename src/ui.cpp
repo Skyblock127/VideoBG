@@ -372,6 +372,7 @@ struct UI {
     Crop dragOrig;
     D2D1_RECT_F imgRc{};
     DWORD lastPreview = 0;
+    DWORD lastSeek = 0;               // the wallpaper last moved with the Preview slider (tick)
 } u;
 
 // ---------------------------------------------------------------------------------------
@@ -1231,7 +1232,7 @@ void PaintVideoPage(float x, float w) {
     // Help line: what the control under the mouse does.
     std::wstring help;
     switch (u.drag ? u.drag : u.hot) {
-        case ID_TIMELINE: help = L"Picks the frame used for the preview and the lock screen"; break;
+        case ID_TIMELINE: help = L"Picks the frame for the preview and the lock screen; the wallpaper jumps there too"; break;
         case ID_LOCK: help = L"Uses this frame as the lock screen and admin prompt background"; break;
         case ID_CROP: help = L"Choose which part of the video fills the screen"; break;
         case ID_CHOOSE: help = L"Pick a video or an animated GIF for your wallpaper"; break;
@@ -3857,6 +3858,10 @@ void OnSlider(int id, float frac, bool final) {
             break;
         case ID_TIMELINE:
             SetPreviewTimeFromFrac(frac);
+            if (final || GetTickCount() - u.lastSeek >= 60) {  // the wallpaper follows, and plays on from there
+                u.lastSeek = GetTickCount();
+                if (u.infoOk && u.info.duration > 0) Host_SeekWallpaper(PreviewTime(), final);
+            }
             if (final) Host_FrameChanged();  // this video's frame: saved, and the lock screen follows
             break;
         case ID_CLK_SIZE:
@@ -3897,6 +3902,7 @@ bool StepSlider(int dir) {
             double step = u.info.fps > 0 ? 1 / u.info.fps : 0.1;  // one frame
             g_settings.previewTime = std::clamp(PreviewTime() + dir * step, 0.0, std::max(0.0, u.info.duration - step));
             RequestFrame();
+            Host_SeekWallpaper(PreviewTime(), true);
             break;
         }
         case ID_CLK_SIZE:

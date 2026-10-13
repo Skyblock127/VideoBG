@@ -49,7 +49,8 @@ Using it
   - Show on lock screen (switch under the preview, on by default): while
     the video wallpaper is on, the lock screen and the Windows desktop
     background (seen behind admin prompts and at sign-in) show a frame of
-    the video (pick it with the Preview slider); while it's off, your own
+    the video (pick it with the Preview slider, which also moves the
+    wallpaper to that spot to play on from there); while it's off, your own
     pictures. Exiting VideoBG from the tray puts your own pictures back.
     (The desktop background only follows with one screen and a
     single-picture background on Windows 11 24H2 or newer.)

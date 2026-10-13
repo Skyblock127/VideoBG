@@ -809,6 +809,10 @@ void Host_LiveVolume(int volume) {
     if (g_ctl) PostMessageW(g_ctl, WM_VBG_VOLUME, (WPARAM)std::clamp(volume, 0, 100), 0);
 }
 
+void Host_SeekWallpaper(double seconds, bool exact) {
+    if (g_ctl) PostMessageW(g_ctl, WM_VBG_SEEK, (WPARAM)std::max(0.0, seconds * 1000 + 0.5), exact ? 1 : 0);
+}
+
 bool Host_ClockLive() { return WallpaperShowing(); }
 
 void Host_ClockPreview(const ClockLook* look) {

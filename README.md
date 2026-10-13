@@ -78,7 +78,7 @@ and asks whether to delete your settings too. Then delete the folder.
 | Where | What you can do |
 |---|---|
 | `Ctrl + Alt + B` | Turn the wallpaper on or off. The tray menu does the same. |
-| **Video** | **Choose video**, **Crop** it, and pick the lock screen frame with the **Preview** slider. **Versions** makes lighter copies. |
+| **Video** | **Choose video**, **Crop** it, and pick the lock screen frame with the **Preview** slider (the wallpaper jumps there and plays on). **Versions** makes lighter copies. |
 | **Desktop clock** | Drag the clock on the preview to place it. Choose its font, text and glow colours, size, opacity, glow, date style, language (any language Windows knows) and 12/24-hour time. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show / Hide** turns it on or off for each. **Presets** keeps up to 5 clock looks you can edit, rename and use on any of these. |
 | **Sound** | Nothing (the default), the video's sound, or your own songs. **My music** has a player (play/pause, seek bar, previous/next, shuffle, repeat one song) and a playlist: click a song to play it, or drag it by its grip to move it. Moving songs counts as shuffling; turning shuffle off goes back to the order you chose them in. |
 | **Playback** | Speed, a frame-rate cap, and which displays to use. Every display shows the same video, so more displays hardly add memory; versions are sized for the largest one. On laptops with two graphics chips, **Graphics chip** picks power saving or high performance. Under **Power saving**: pause when apps cover the desktop, and what to do on battery. |

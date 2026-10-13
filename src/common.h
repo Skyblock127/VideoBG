@@ -47,6 +47,7 @@ enum : UINT {
     WM_VBG_MUSIC_POS,                    // renderer -> host   wParam = position (ms), lParam = MusicPack(duration, track, playing)
     WM_VBG_MUSIC_END,                    // renderer -> host   the playlist ended (repeat off): the music stops
     WM_VBG_VOLUME,                       // host -> renderer   wParam = volume (0-100) while the slider moves (saved when let go)
+    WM_VBG_SEEK,                         // host -> renderer   wParam = position (ms); lParam 1 = that exact frame, 0 = the key frame before (dragging)
 };
 enum MusicCommand : WPARAM { MC_NEXT = 1, MC_PREV, MC_SEEK /* lParam = ms */, MC_PLAY_INDEX /* lParam = playlist index */ };
 inline LPARAM MusicPack(UINT durMs, int track, bool playing) {
@@ -234,6 +235,7 @@ bool Host_PickVideo(HWND owner);
 bool Host_PickMusic(HWND owner);             // choose songs for "my music"
 void Host_MusicCommand(MusicCommand cmd, LPARAM value);  // next, previous, seek, play a song
 void Host_LiveVolume(int volume);            // the sound follows the volume slider before it's saved
+void Host_SeekWallpaper(double seconds, bool exact);  // the wallpaper follows the Preview slider
 void Host_KeepMusicPlace();                  // remember the song and spot (leaving My music; the wallpaper stopping)
 struct MusicState {
     int track = -1;       // playlist index playing (-1 none)

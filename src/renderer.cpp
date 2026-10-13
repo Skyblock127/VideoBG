@@ -74,6 +74,8 @@ struct State {
     std::atomic<double> readerPos{0};    // silent pipeline: position of the frame on screen (s)
     double skipTo = 0;                   // silent pipeline: resuming mid-video, frames before this (s) aren't shown
     std::atomic<UINT> simWanted{0};      // silent pipeline: (h << 16) | w of a lighter version to preview, 0 = off
+    std::atomic<LONGLONG> seekTo{-1};    // silent pipeline: jump here (100 ns units), -1 = no jump asked for
+    std::atomic<bool> seekExact{true};   // ... to that exact frame, or just the key frame before it (quicker)
 
     // Paused for a while: the video pipeline (decoder frames: most of our memory) is let go and
     // the last frame stays on screen; playback picks up at parkedPos.
@@ -461,11 +463,25 @@ DWORD WINAPI SilentThread(void*) {
     // Resuming mid-video: seeking lands on the key frame before; decode from there without showing.
     LONGLONG skipTo = (LONGLONG)((g.skipTo - g.frameDur / 2) * 1e7);
     int skipped = 0;
+    bool jumped = false;  // moved by the Preview slider: the frame there is shown even while paused
 
     auto videoTime = [&](double now) { return baseVt + (now - baseClock) * lastRate; };
     while (!g.quit) {
         bool redraw = g.redraw.exchange(false);
-        if (g.paused && !first) {
+        const LONGLONG to = g.seekTo.exchange(-1);
+        if (to >= 0) {
+            SafeRelease(next);
+            PROPVARIANT pv;
+            PropVariantInit(&pv);
+            pv.vt = VT_I8;
+            pv.hVal.QuadPart = to;
+            g.rd->SetCurrentPosition(GUID_NULL, pv);  // lands on the key frame before
+            skipTo = g.seekExact ? to - (LONGLONG)(g.frameDur / 2 * 1e7) : 0;
+            jumped = true;
+            clock = false;  // the timeline carries on from the new frame
+            looped = false;
+        }
+        if (g.paused && !first && !jumped) {
             if (!wasPaused) { wasPaused = true; pausedVt = clock ? videoTime(Now()) : 0; }
             if (redraw && curView) { if (!BlitAll(curView)) { result = 1; break; } }
             else WaitForSingleObject(g.wake, INFINITE);
@@ -501,7 +517,7 @@ DWORD WINAPI SilentThread(void*) {
                 continue;
             }
             if (!s) continue;
-            if (first && ts < skipTo) { SafeRelease(s); skipped++; continue; }
+            if ((first || jumped) && ts < skipTo) { SafeRelease(s); skipped++; continue; }
             if (first && skipTo > 0) Log(L"resumed at %.2fs (%d frames decoded to get there)", ts / 1e7, skipped);
             // The first frame comes one frame after the last, whatever time the file starts at
             // (some encoders start at a frame or two in).
@@ -515,7 +531,11 @@ DWORD WINAPI SilentThread(void*) {
         double now = Now();
         if (!clock) { baseVt = nextTs / 1e7; baseClock = now; clock = true; }
         double vt = videoTime(now), due = nextTs / 1e7;
-        if (due > vt + 0.0005 && !first) { Nap((due - vt) / lastRate); continue; }
+        if (due > vt + 0.0005 && !first) {
+            if (g.seekTo >= 0) continue;  // a jump asked for meanwhile: don't wait for this frame
+            Nap((due - vt) / lastRate);
+            continue;
+        }
         if (vt - due > 0.25) { baseVt = due; baseClock = now; }  // fell far behind (busy system): resync
         const int cap = g.fpsCap;
         if (cap > 0 && !first && now - lastPresent < 1.0 / cap - 0.002) { SafeRelease(next); continue; }
@@ -529,6 +549,7 @@ DWORD WINAPI SilentThread(void*) {
         cur = next;
         curView = view;
         next = nullptr;
+        jumped = false;
         if (first) { first = false; PostMessageW(g.ctl, WM_FIRST_FRAME, 0, 0); }
     }
     SafeRelease(next);
@@ -954,6 +975,31 @@ void ReleaseFreedMemory() {
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 }
 
+// The Preview slider moved: the wallpaper jumps there and plays on from it (a paused wallpaper
+// shows the new frame and stays paused; one paused a while picks up there later).
+void Seek(double pos, bool exact) {
+    if (g.vi.duration > 0) pos = std::clamp(pos, 0.0, std::max(0.0, g.vi.duration - 0.1));
+    if (exact) Log(L"wallpaper moved to %.2fs with the Preview slider", pos);
+    if (g.parked) {
+        g.parkedPos = pos;
+    } else if (g.silent) {
+        g.seekExact = exact;
+        g.seekTo = (LONGLONG)(pos * 1e7);
+        SetEvent(g.wake);
+    } else if (g.eng && !g.metadata) {
+        g.pendingSeek = pos;
+    } else if (g.eng) {
+        IMFMediaEngineEx* ex = nullptr;
+        if (!exact && SUCCEEDED(g.eng->QueryInterface(__uuidof(IMFMediaEngineEx), (void**)&ex))) {
+            ex->SetCurrentTimeEx(pos, MF_MEDIA_ENGINE_SEEK_MODE_APPROXIMATE);
+            ex->Release();
+        } else {
+            g.eng->SetCurrentTime(pos);
+        }
+        RequestRedraw();
+    }
+}
+
 void Park() {
     if (!CanPark()) return;
     g.parkedPos = CurrentPos();
@@ -1336,6 +1382,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_ENGINE_EVENT: OnEngineEvent((DWORD)(w & 0xFFFF), (UINT)(w >> 16), l); return 0;
         case WM_MUSIC_EVENT: OnMusicEvent((DWORD)(w & 0xFFFF), (UINT)(w >> 16), l); return 0;
         case WM_VBG_MUSIC: OnMusicCommand(w, l); return 0;
+        case WM_VBG_SEEK: Seek(w / 1000.0, l != 0); return 0;
         case WM_VBG_VOLUME:  // the volume slider moving
             g.s.volume = (int)w;
             if (g.eng) g.eng->SetVolume(w / 100.0);
