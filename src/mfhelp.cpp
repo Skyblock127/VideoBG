@@ -2,6 +2,7 @@
 #include <dxgi1_6.h>
 #include <propvarutil.h>
 #include <mferror.h>
+#include <algorithm>
 #include <cmath>
 
 MFApi MF;
@@ -164,19 +165,37 @@ VideoFault DiagnoseVideo(const std::wstring& path, const VideoInfo& vi) {
     return HasDecoder(vi.subtype) ? VF_OTHER : VF_NO_DECODER;
 }
 
+// Frames come as the decoder makes them (NV12) and only the one that's kept is turned into RGB
+// here: having Media Foundation convert every frame decoded on the way from the key frame (dozens)
+// made a preview frame take 3-7 times as long. Videos that don't decode to NV12, and HDR ones, go
+// through Media Foundation's converter as before.
 bool FrameGrabber::Open(const std::wstring& path) {
     Close();
     path_ = path;
     info = VideoInfo{};
+    if (!MF.starts) { info.hr = E_NOINTERFACE; return false; }
+    if (!OpenReader(true) && (!info.opened || !OpenReader(false))) {
+        Close();
+        return false;
+    }
+    info.ok = true;
+    return true;
+}
+
+bool FrameGrabber::OpenReader(bool nv12) {
+    SafeRelease(rd_);
+    yuv_ = false;
+    lastTs_ = -1;
     IMFAttributes* at = nullptr;
-    if (!MF.starts || FAILED(MF.CreateAttributes(&at, 1))) { info.hr = E_NOINTERFACE; return false; }
-    at->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
-    info.hr = MF.CreateSourceReaderFromURL(path.c_str(), at, &rd_);
+    if (FAILED(MF.CreateAttributes(&at, 1))) { info.hr = E_NOINTERFACE; return false; }
+    if (!nv12) at->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+    info.hr = MF.CreateSourceReaderFromURL(path_.c_str(), at, &rd_);
     at->Release();
     if (FAILED(info.hr)) return false;
     info.opened = true;
 
     // Stream info (native types) before we change the output format.
+    info.audioStreams.clear();
     for (DWORD i = 0;; i++) {
         IMFMediaType* mt = nullptr;
         if (FAILED(rd_->GetNativeMediaType(i, 0, &mt))) break;
@@ -193,11 +212,16 @@ bool FrameGrabber::Open(const std::wstring& path) {
     IMFMediaType* out = nullptr;
     MF.CreateMediaType(&out);
     out->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    out->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+    out->SetGUID(MF_MT_SUBTYPE, nv12 ? MFVideoFormat_NV12 : MFVideoFormat_RGB32);
     info.hr = rd_->SetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, out);
     out->Release();
-    if (FAILED(info.hr) || !ReadFormat()) { Close(); return false; }
-    info.ok = true;
+    yuv_ = nv12;
+    if (FAILED(info.hr) || !ReadFormat() || (yuv_ && hdr_)) {
+        if (SUCCEEDED(info.hr)) info.hr = MF_E_INVALIDMEDIATYPE;
+        SafeRelease(rd_);
+        yuv_ = false;
+        return false;
+    }
     return true;
 }
 
@@ -206,7 +230,24 @@ bool FrameGrabber::ReadFormat() {
     if (FAILED(rd_->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_VIDEO_STREAM, &mt))) return false;
     MFGetAttributeSize(mt, MF_MT_FRAME_SIZE, &fw_, &fh_);
     UINT32 st = 0;
-    stride_ = SUCCEEDED(mt->GetUINT32(MF_MT_DEFAULT_STRIDE, &st)) ? (LONG)(INT32)st : (LONG)fw_ * 4;
+    stride_ = SUCCEEDED(mt->GetUINT32(MF_MT_DEFAULT_STRIDE, &st)) ? (LONG)(INT32)st : (LONG)fw_ * (yuv_ ? 1 : 4);
+    UINT32 matrix = 0, range = 0, transfer = 0;
+    mt->GetUINT32(MF_MT_YUV_MATRIX, &matrix);
+    mt->GetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, &range);
+    mt->GetUINT32(MF_MT_TRANSFER_FUNCTION, &transfer);
+    hdr_ = transfer == 15 || transfer == 16;  // MFVideoTransFunc_2084 (PQ), MFVideoTransFunc_HLG
+    fullRange_ = range == MFNominalRange_0_255;
+    const bool sd = fh_ < 720 && fw_ < 1280;  // what Media Foundation assumes when the video doesn't say
+    if (matrix == MFVideoTransferMatrix_BT601 || (matrix == MFVideoTransferMatrix_Unknown && sd)) {
+        kr_ = 0.299;
+        kb_ = 0.114;
+    } else if (matrix == MFVideoTransferMatrix_BT2020_10 || matrix == MFVideoTransferMatrix_BT2020_12) {
+        kr_ = 0.2627;
+        kb_ = 0.0593;
+    } else {
+        kr_ = 0.2126;
+        kb_ = 0.0722;
+    }
     ap_ = {0, 0, (LONG)fw_, (LONG)fh_};
     MFVideoArea area{};
     if (SUCCEEDED(mt->GetBlob(MF_MT_MINIMUM_DISPLAY_APERTURE, (UINT8*)&area, sizeof area, nullptr)) &&
@@ -225,16 +266,35 @@ bool FrameGrabber::Grab(double seconds, std::vector<uint32_t>& px, int& w, int& 
     if (!rd_) return false;
     if (info.duration > 0 && seconds > info.duration - 0.05) seconds = info.duration - 0.05;
     if (seconds < 0) seconds = 0;
-    LONGLONG target = (LONGLONG)(seconds * 1e7);
-    PROPVARIANT pv;
-    PropVariantInit(&pv);
-    pv.vt = VT_I8;
-    pv.hVal.QuadPart = target;
-    rd_->SetCurrentPosition(GUID_NULL, pv);
+    const LONGLONG target = (LONGLONG)(seconds * 1e7);
+    const LONGLONG half = info.fps > 0 ? (LONGLONG)(0.5e7 / info.fps) : 166666;
+    IMFSample* best = Decode(target, half);
+    bool ok = best && ToPixels(best, px, w, h);
+    SafeRelease(best);
+    if (!ok && yuv_) {  // no frame as NV12 here: Media Foundation's converter, as before
+        Log(L"preview: no NV12 frame from %ls, using the converter", path_.c_str());
+        if (OpenReader(false)) {
+            best = Decode(target, half);
+            ok = best && ToPixels(best, px, w, h);
+            SafeRelease(best);
+        }
+    }
+    return ok;
+}
 
-    // Seeking lands on the previous key frame; decode forward to the requested time.
-    LONGLONG half = info.fps > 0 ? (LONGLONG)(0.5e7 / info.fps) : 166666;
+// Seeking lands on the key frame before; decode forward to the requested time. A time a little
+// ahead of the last frame (arrow keys, dragging right) carries on from there instead.
+IMFSample* FrameGrabber::Decode(LONGLONG target, LONGLONG half) {
+    const bool onward = lastTs_ >= 0 && target > lastTs_ + half && target - lastTs_ < 20000000;
+    if (!onward) {
+        PROPVARIANT pv;
+        PropVariantInit(&pv);
+        pv.vt = VT_I8;
+        pv.hVal.QuadPart = target;
+        rd_->SetCurrentPosition(GUID_NULL, pv);
+    }
     IMFSample* best = nullptr;
+    LONGLONG bestTs = -1;
     for (int i = 0; i < 600; i++) {
         DWORD flags = 0;
         LONGLONG ts = 0;
@@ -244,15 +304,82 @@ bool FrameGrabber::Grab(double seconds, std::vector<uint32_t>& px, int& w, int& 
         if (s) {
             SafeRelease(best);
             best = s;
+            bestTs = ts;
             if (ts + half >= target) break;
         }
         if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
     }
-    if (!best) return false;
+    lastTs_ = best ? bestTs : -1;
+    if (!best && onward) return Decode(target, half);  // the last one was the final frame: jump instead
+    return best;
+}
 
+// NV12 (8-bit 4:2:0) to BGRX: the visible area only, chroma co-sited with even pixels (odd ones
+// take the average of the two around them), integer maths.
+static void Nv12ToBgrx(const BYTE* luma, const BYTE* chroma, LONG pitch, int fw, const RECT& ap, double kr, double kb,
+                       bool full, std::vector<uint32_t>& px) {
+    const int w = ap.right - ap.left, h = ap.bottom - ap.top;
+    px.resize((size_t)w * h);
+    const double kg = 1 - kr - kb, ys = full ? 1.0 : 255.0 / 219, cs = full ? 1.0 : 255.0 / 224;
+    const int cy = (int)lround(ys * 65536), crr = (int)lround(2 * (1 - kr) * cs * 65536), cbb = (int)lround(2 * (1 - kb) * cs * 65536);
+    const int cgb = (int)lround(2 * kb * (1 - kb) / kg * cs * 65536), cgr = (int)lround(2 * kr * (1 - kr) / kg * cs * 65536);
+    const int yoff = full ? 0 : 16, lastC = (fw - 1) / 2;
+    std::vector<int> cb(w), cr(w);
+    for (int y = 0; y < h; y++) {
+        const int sy = y + ap.top;
+        const BYTE* yl = luma + (ptrdiff_t)pitch * sy;
+        const BYTE* cl = chroma + (ptrdiff_t)pitch * (sy / 2);
+        for (int x = 0; x < w; x++) {
+            const int sx = x + ap.left, c0 = sx / 2, c1 = std::min(c0 + (sx & 1), lastC);
+            cb[x] = ((cl[2 * c0] + cl[2 * c1]) >> 1) - 128;
+            cr[x] = ((cl[2 * c0 + 1] + cl[2 * c1 + 1]) >> 1) - 128;
+        }
+        uint32_t* out = &px[(size_t)y * w];
+        for (int x = 0; x < w; x++) {
+            const int yy = (yl[x + ap.left] - yoff) * cy + 32768;
+            const int r = std::clamp((yy + crr * cr[x]) >> 16, 0, 255);
+            const int g = std::clamp((yy - cgb * cb[x] - cgr * cr[x]) >> 16, 0, 255);
+            const int b = std::clamp((yy + cbb * cb[x]) >> 16, 0, 255);
+            out[x] = 0xFF000000u | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+        }
+    }
+}
+
+bool FrameGrabber::ToPixels(IMFSample* best, std::vector<uint32_t>& px, int& w, int& h) {
     bool ok = false;
     IMFMediaBuffer* buf = nullptr;
-    if (SUCCEEDED(best->ConvertToContiguousBuffer(&buf))) {
+    if (yuv_ && SUCCEEDED(best->ConvertToContiguousBuffer(&buf))) {
+        BYTE *scan0 = nullptr, *start = nullptr;
+        LONG pitch = 0;
+        DWORD len = 0;
+        IMF2DBuffer2* b2 = nullptr;
+        if (SUCCEEDED(buf->QueryInterface(__uuidof(IMF2DBuffer2), (void**)&b2)) &&
+            SUCCEEDED(b2->Lock2DSize(MF2DBuffer_LockFlags_Read, &scan0, &pitch, &start, &len))) {
+        } else {
+            SafeRelease(b2);
+            if (SUCCEEDED(buf->Lock(&start, nullptr, &len))) {
+                scan0 = start;
+                pitch = stride_;
+            }
+        }
+        // The chroma plane follows the luma plane (fh_ rows); check it's all there before reading.
+        const size_t need = (size_t)(scan0 - start) + (size_t)pitch * fh_ * 3 / 2;
+        if (scan0 && pitch >= (LONG)fw_ && need <= len && ap_.right <= (LONG)fw_ && ap_.bottom <= (LONG)fh_) {
+            w = ap_.right - ap_.left;
+            h = ap_.bottom - ap_.top;
+            Nv12ToBgrx(scan0, scan0 + (ptrdiff_t)pitch * fh_, pitch, (int)fw_, ap_, kr_, kb_, fullRange_, px);
+            ok = true;
+        }
+        if (b2) {
+            if (scan0) b2->Unlock2D();
+            b2->Release();
+        } else if (start) {
+            buf->Unlock();
+        }
+        buf->Release();
+        return ok;
+    }
+    if (!yuv_ && SUCCEEDED(best->ConvertToContiguousBuffer(&buf))) {
         BYTE* scan0 = nullptr;
         LONG pitch = 0;
         IMF2DBuffer* b2 = nullptr;
@@ -278,7 +405,6 @@ bool FrameGrabber::Grab(double seconds, std::vector<uint32_t>& px, int& w, int& 
         if (raw) buf->Unlock();
         buf->Release();
     }
-    best->Release();
     return ok;
 }
 
@@ -286,6 +412,8 @@ void FrameGrabber::Close() {
     SafeRelease(rd_);
     path_.clear();
     fw_ = fh_ = 0;
+    yuv_ = false;
+    lastTs_ = -1;
 }
 
 void ShrinkPixels(std::vector<uint32_t>& px, int& w, int& h, int maxDim) {

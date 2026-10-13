@@ -154,6 +154,162 @@ static std::wstring Utf16Ini(const wchar_t* name) {
 
 static std::wstring IniPath() { return Utf16Ini(L"settings.ini"); }
 
+// ---------------------------------------------------------------------------------------
+// Saving. WritePrivateProfileString reads and rewrites the whole file for every key (a full save
+// took 30-90 ms on the UI thread), so a save changes the file in memory and writes it once, as a
+// new file that replaces the old one in one step: it's never left half-written. Everything else in
+// the file (other sections, keys this version doesn't know) stays as it was.
+
+// One writer at a time in this process (the lock screen worker saves its state from its own thread).
+struct IniLock {
+    IniLock() { EnterCriticalSection(Cs()); }
+    ~IniLock() { LeaveCriticalSection(Cs()); }
+    IniLock(const IniLock&) = delete;
+    IniLock& operator=(const IniLock&) = delete;
+    static CRITICAL_SECTION* Cs() {
+        static CRITICAL_SECTION cs;
+        static const bool init = (InitializeCriticalSection(&cs), true);
+        (void)init;
+        return &cs;
+    }
+};
+
+static std::wstring Trim(const std::wstring& t) {
+    const size_t a = t.find_first_not_of(L" \t"), b = t.find_last_not_of(L" \t");
+    return a == std::wstring::npos ? std::wstring() : t.substr(a, b - a + 1);
+}
+
+static bool IsSection(const std::wstring& line, std::wstring* name) {
+    const std::wstring t = Trim(line);
+    const size_t close = t.find(L']');
+    if (t.size() < 2 || t[0] != L'[' || close == std::wstring::npos) return false;
+    if (name) *name = Trim(t.substr(1, close - 1));
+    return true;
+}
+
+class IniBatch {
+public:
+    explicit IniBatch(std::wstring path) : path_(std::move(path)) { loaded_ = Load(); }
+    ~IniBatch() { Commit(); }
+    IniBatch(const IniBatch&) = delete;
+    IniBatch& operator=(const IniBatch&) = delete;
+    // As WritePrivateProfileString: value nullptr removes the key.
+    void Set(const wchar_t* sec, const std::wstring& key, const wchar_t* value);
+    void Commit();
+
+private:
+    bool Load();
+    IniLock lock_;
+    std::wstring path_;
+    std::vector<std::wstring> lines_;
+    struct Op {
+        std::wstring sec, key, value;
+        bool remove;
+    };
+    std::vector<Op> ops_;  // replayed key by key if the file can't be read or replaced
+    bool loaded_ = false, changed_ = false, done_ = false;
+};
+
+bool IniBatch::Load() {
+    HANDLE f = CreateFileW(path_.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;  // a new file starts empty
+    LARGE_INTEGER size{};
+    std::string raw;
+    bool ok = GetFileSizeEx(f, &size) && size.QuadPart < (16 << 20);
+    if (ok && size.QuadPart > 0) {
+        raw.resize((size_t)size.QuadPart);
+        DWORD got = 0;
+        ok = ReadFile(f, raw.data(), (DWORD)raw.size(), &got, nullptr) && got == raw.size();
+    }
+    CloseHandle(f);
+    if (!ok) return false;
+    std::wstring text;
+    if (raw.size() >= 2 && (BYTE)raw[0] == 0xFF && (BYTE)raw[1] == 0xFE) {
+        text.assign((const wchar_t*)(raw.data() + 2), (raw.size() - 2) / sizeof(wchar_t));
+    } else if (!raw.empty()) {  // an older file in the ANSI code page (or UTF-8): written back as UTF-16
+        const bool utf8 = raw.size() >= 3 && (BYTE)raw[0] == 0xEF && (BYTE)raw[1] == 0xBB && (BYTE)raw[2] == 0xBF;
+        const UINT cp = utf8 ? CP_UTF8 : CP_ACP;
+        const int skip = utf8 ? 3 : 0, n = MultiByteToWideChar(cp, 0, raw.data() + skip, (int)raw.size() - skip, nullptr, 0);
+        text.resize(n);
+        if (n > 0) MultiByteToWideChar(cp, 0, raw.data() + skip, (int)raw.size() - skip, text.data(), n);
+        changed_ = true;  // rewrite it as UTF-16 even if no value changes
+    }
+    for (size_t at = 0; at < text.size();) {
+        size_t end = text.find(L'\n', at);
+        if (end == std::wstring::npos) end = text.size();
+        std::wstring line = text.substr(at, end - at);
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        lines_.push_back(std::move(line));
+        at = end + 1;
+    }
+    return true;
+}
+
+void IniBatch::Set(const wchar_t* sec, const std::wstring& key, const wchar_t* value) {
+    ops_.push_back({sec, key, value ? value : L"", value == nullptr});
+    std::wstring name;
+    size_t i = 0;
+    while (i < lines_.size() && !(IsSection(lines_[i], &name) && !_wcsicmp(name.c_str(), sec))) i++;
+    if (i == lines_.size()) {  // a new section, at the end
+        if (!value) return;
+        lines_.push_back(L"[" + std::wstring(sec) + L"]");
+        lines_.push_back(key + L"=" + value);
+        changed_ = true;
+        return;
+    }
+    size_t last = i;  // the section's last line that isn't blank
+    for (size_t j = i + 1; j < lines_.size() && !IsSection(lines_[j], nullptr); j++) {
+        const size_t eq = lines_[j].find(L'=');
+        if (eq != std::wstring::npos && !_wcsicmp(Trim(lines_[j].substr(0, eq)).c_str(), key.c_str())) {
+            if (!value) {
+                lines_.erase(lines_.begin() + (ptrdiff_t)j);
+                changed_ = true;
+            } else if (lines_[j] != key + L"=" + value) {
+                lines_[j] = key + L"=" + value;
+                changed_ = true;
+            }
+            return;
+        }
+        if (!Trim(lines_[j]).empty()) last = j;
+    }
+    if (!value) return;
+    lines_.insert(lines_.begin() + (ptrdiff_t)last + 1, key + L"=" + value);
+    changed_ = true;
+}
+
+void IniBatch::Commit() {
+    if (done_) return;
+    done_ = true;
+    if (loaded_ && !changed_) return;  // nothing new: no write at all
+    bool ok = false;
+    if (loaded_) {
+        std::wstring text(1, (wchar_t)0xFEFF);  // UTF-16, as the file starts out (see Utf16Ini)
+        for (const auto& l : lines_) text += l + L"\r\n";
+        const std::wstring tmp = path_ + L".new";
+        HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            const DWORD bytes = (DWORD)(text.size() * sizeof(wchar_t));
+            DWORD w = 0;
+            ok = WriteFile(f, text.data(), bytes, &w, nullptr) && w == bytes && FlushFileBuffers(f);
+            CloseHandle(f);
+            // Another process reading the file right then can hold up the swap for a moment.
+            bool moved = false;
+            for (int i = 0; ok && !moved && i < 20; i++) {
+                moved = MoveFileExW(tmp.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+                if (!moved) Sleep(10);
+            }
+            ok = ok && moved;
+            if (!ok) DeleteFileW(tmp.c_str());
+        }
+        if (!ok) Log(L"settings: couldn't replace %ls (error %lu), saving key by key", path_.c_str(), GetLastError());
+    }
+    if (!ok)
+        for (const auto& o : ops_)
+            WritePrivateProfileStringW(o.sec.c_str(), o.key.c_str(), o.remove ? nullptr : o.value.c_str(), path_.c_str());
+    WritePrivateProfileStringW(nullptr, nullptr, nullptr, path_.c_str());  // Windows forgets what it cached of the old file
+}
+
 static std::wstring CropKey(const std::wstring& video) {
     // FNV-1a over the lower-cased path: a stable INI key that avoids '=' / ']' in paths.
     unsigned long long h = 1469598103934665603ULL;
@@ -182,10 +338,10 @@ std::wstring FeedbackUrl() {
     return v.empty() ? FEEDBACK_URL : v;
 }
 
-static void WriteInt(const wchar_t* ini, const wchar_t* key, int v) {
+static void WriteInt(IniBatch& ini, const wchar_t* key, int v) {
     wchar_t buf[16];
     swprintf(buf, 16, L"%d", v);
-    WritePrivateProfileStringW(L"General", key, buf, ini);
+    ini.Set(L"General", key, buf);
 }
 
 std::wstring ReadState(const wchar_t* section, const std::wstring& key) {
@@ -193,6 +349,7 @@ std::wstring ReadState(const wchar_t* section, const std::wstring& key) {
 }
 
 void WriteState(const wchar_t* section, const std::wstring& key, const wchar_t* value) {
+    IniLock lock;
     std::wstring ini = IniPath();
     WritePrivateProfileStringW(section, key.c_str(), value, ini.c_str());
     WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());
@@ -215,6 +372,7 @@ static std::wstring VRead(const std::wstring& id, const wchar_t* key) {
 }
 
 static void VWrite(const std::wstring& id, const wchar_t* key, const wchar_t* value) {
+    IniLock lock;
     WritePrivateProfileStringW(id.c_str(), key, value, VideosIni().c_str());
 }
 
@@ -363,30 +521,30 @@ static ClockLook ReadLook(const wchar_t* ini, const wchar_t* sec, const std::wst
     return l;
 }
 
-static void WriteLook(const wchar_t* ini, const wchar_t* sec, const std::wstring& prefix, const ClockLook* l) {
+static void WriteLook(IniBatch& ini, const wchar_t* sec, const std::wstring& prefix, const ClockLook* l) {
     wchar_t buf[32];
     swprintf(buf, 32, L"%.5f", l ? l->x : 0.f);
-    WritePrivateProfileStringW(sec, (prefix + L"X").c_str(), l ? buf : nullptr, ini);
+    ini.Set(sec, prefix + L"X", l ? buf : nullptr);
     swprintf(buf, 32, L"%.5f", l ? l->y : 0.f);
-    WritePrivateProfileStringW(sec, (prefix + L"Y").c_str(), l ? buf : nullptr, ini);
-    WritePrivateProfileStringW(sec, (prefix + L"Color").c_str(), l ? l->color.c_str() : nullptr, ini);
+    ini.Set(sec, prefix + L"Y", l ? buf : nullptr);
+    ini.Set(sec, prefix + L"Color", l ? l->color.c_str() : nullptr);
     swprintf(buf, 32, L"%.3f", l ? l->size : 0.f);
-    WritePrivateProfileStringW(sec, (prefix + L"Size").c_str(), l ? buf : nullptr, ini);
+    ini.Set(sec, prefix + L"Size", l ? buf : nullptr);
     // Opacity and glow are only written when they differ from the defaults, so a plain look stays short.
     swprintf(buf, 32, L"%.2f", l ? l->opacity : 1.f);
-    WritePrivateProfileStringW(sec, (prefix + L"Opacity").c_str(), l && l->opacity < 1 ? buf : nullptr, ini);
+    ini.Set(sec, prefix + L"Opacity", l && l->opacity < 1 ? buf : nullptr);
     swprintf(buf, 32, L"%.2f", l ? l->glow : 0.f);
-    WritePrivateProfileStringW(sec, (prefix + L"Glow").c_str(), l && l->glow > 0 ? buf : nullptr, ini);
+    ini.Set(sec, prefix + L"Glow", l && l->glow > 0 ? buf : nullptr);
     swprintf(buf, 32, L"%.0f", l ? l->glowSize : 0.f);
-    WritePrivateProfileStringW(sec, (prefix + L"GlowSize").c_str(), l && l->glowSize != 12 ? buf : nullptr, ini);
-    WritePrivateProfileStringW(sec, (prefix + L"GlowColor").c_str(), l && !l->glowColor.empty() ? l->glowColor.c_str() : nullptr, ini);
-    WritePrivateProfileStringW(sec, (prefix + L"Show").c_str(), l && !l->show ? L"0" : nullptr, ini);
-    WritePrivateProfileStringW(sec, (prefix + L"Hours").c_str(), l ? (l->h24 ? L"24" : L"12") : nullptr, ini);
+    ini.Set(sec, prefix + L"GlowSize", l && l->glowSize != 12 ? buf : nullptr);
+    ini.Set(sec, prefix + L"GlowColor", l && !l->glowColor.empty() ? l->glowColor.c_str() : nullptr);
+    ini.Set(sec, prefix + L"Show", l && !l->show ? L"0" : nullptr);
+    ini.Set(sec, prefix + L"Hours", l ? (l->h24 ? L"24" : L"12") : nullptr);
     swprintf(buf, 32, L"%d", l ? l->date : 0);
-    WritePrivateProfileStringW(sec, (prefix + L"Date").c_str(), l && l->date ? buf : nullptr, ini);
-    WritePrivateProfileStringW(sec, (prefix + L"Language").c_str(), l && !l->lang.empty() ? l->lang.c_str() : nullptr, ini);
-    WritePrivateProfileStringW(sec, (prefix + L"NativeDigits").c_str(), l && l->nativeDigits ? L"1" : nullptr, ini);
-    WritePrivateProfileStringW(sec, (prefix + L"Font").c_str(), l && l->font != ClockLook{}.font ? l->font.c_str() : nullptr, ini);
+    ini.Set(sec, prefix + L"Date", l && l->date ? buf : nullptr);
+    ini.Set(sec, prefix + L"Language", l && !l->lang.empty() ? l->lang.c_str() : nullptr);
+    ini.Set(sec, prefix + L"NativeDigits", l && l->nativeDigits ? L"1" : nullptr);
+    ini.Set(sec, prefix + L"Font", l && l->font != ClockLook{}.font ? l->font.c_str() : nullptr);
 }
 
 // Clock presets: [Presets] Preset1Name, Preset1X, Preset1Color... (a look's keys); an empty one has none.
@@ -403,14 +561,13 @@ static void LoadPresets(const wchar_t* ini, Settings& s) {
 }
 
 void SavePresets(const Settings& s) {
-    std::wstring ini = IniPath();
+    IniBatch ini(IniPath());
     for (int i = 0; i < kClockPresets; i++) {
         const std::wstring prefix = L"Preset" + std::to_wstring(i + 1);
         const ClockPreset& p = s.presets[i];
-        WriteLook(ini.c_str(), L"Presets", prefix, p.used ? &p.look : nullptr);
-        WritePrivateProfileStringW(L"Presets", (prefix + L"Name").c_str(), p.used && !p.name.empty() ? p.name.c_str() : nullptr, ini.c_str());
+        WriteLook(ini, L"Presets", prefix, p.used ? &p.look : nullptr);
+        ini.Set(L"Presets", prefix + L"Name", p.used && !p.name.empty() ? p.name.c_str() : nullptr);
     }
-    WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());
 }
 
 // The colour dialog's saved colours: [Clock] MyColors=RRGGBB,,RRGGBB,... (16 boxes, empty ones blank).
@@ -431,8 +588,8 @@ static void LoadMyColors(const wchar_t* ini, Settings& s) {
     }
 }
 
-void SaveMyColors(const Settings& s) {
-    std::wstring v, ini = IniPath();
+static void PutMyColors(IniBatch& ini, const Settings& s) {
+    std::wstring v;
     bool any = false;
     for (int i = 0; i < 16; i++) {
         BYTE r, g, b;
@@ -444,8 +601,12 @@ void SaveMyColors(const Settings& s) {
             any = true;
         }
     }
-    WritePrivateProfileStringW(L"Clock", L"MyColors", any ? v.c_str() : nullptr, ini.c_str());
-    WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());
+    ini.Set(L"Clock", L"MyColors", any ? v.c_str() : nullptr);
+}
+
+void SaveMyColors(const Settings& s) {
+    IniBatch ini(IniPath());
+    PutMyColors(ini, s);
 }
 
 void LoadSettings(Settings& s) {
@@ -521,23 +682,22 @@ void LoadVideoProfile(Settings& s) {
 }
 
 void SaveSettings(const Settings& s) {
-    std::wstring iniS = IniPath();
-    const wchar_t* ini = iniS.c_str();
-    WritePrivateProfileStringW(L"General", L"Video", s.video.c_str(), ini);
+    IniBatch ini(IniPath());
+    ini.Set(L"General", L"Video", s.video.c_str());
     WriteInt(ini, L"HotkeyMods", (int)s.hkMods);
     WriteInt(ini, L"HotkeyKey", (int)s.hkVk);
     WriteInt(ini, L"MusicHotkeyMods", (int)s.musicHkMods);
     WriteInt(ini, L"MusicHotkeyKey", (int)s.musicHkVk);
-    WritePrivateProfileStringW(L"General", L"Scale", nullptr, ini);  // Fill / Fit / Stretch: the crop decides now
+    ini.Set(L"General", L"Scale", nullptr);  // Fill / Fit / Stretch: the crop decides now
     WriteInt(ini, L"Monitors", s.monitors);
     WriteInt(ini, L"Gpu", s.gpu);
     WriteInt(ini, L"Speed", s.speed);
     WriteInt(ini, L"Volume", s.volume);
     WriteInt(ini, L"Sound", s.sound);
-    WritePrivateProfileStringW(L"General", L"Shuffle", nullptr, ini);  // older: now the play order
+    ini.Set(L"General", L"Shuffle", nullptr);  // older: now the play order
     std::wstring order;
     for (int i : s.musicOrder) order += (order.empty() ? L"" : L",") + std::to_wstring(i);
-    WritePrivateProfileStringW(L"General", L"MusicOrder", order.empty() ? nullptr : order.c_str(), ini);
+    ini.Set(L"General", L"MusicOrder", order.empty() ? nullptr : order.c_str());
     WriteInt(ini, L"MusicRepeat", s.musicRepeat);
     WriteInt(ini, L"MusicPlaying", s.musicPlaying ? 1 : 0);
     WriteInt(ini, L"MusicTrack", s.musicTrack + 1);
@@ -551,26 +711,26 @@ void SaveSettings(const Settings& s) {
     WriteInt(ini, L"LaunchState", s.launch);
     WriteInt(ini, L"LastOn", s.lastOn ? 1 : 0);
     WriteInt(ini, L"LockScreenFollows", s.lockFollow ? 1 : 0);
-    WritePrivateProfileStringW(L"General", L"PreviewTime", nullptr, ini);  // per video now
+    ini.Set(L"General", L"PreviewTime", nullptr);  // per video now
     wchar_t buf[64];
 
     for (const wchar_t* old : {L"Skin", L"Variable", L"RainmeterExe", L"Size", L"Enabled", L"Hours"})  // from older versions
-        WritePrivateProfileStringW(L"Clock", old, nullptr, ini);
+        ini.Set(L"Clock", old, nullptr);
     WriteLook(ini, L"Clock", L"Still", &s.clockStill);
     WriteLook(ini, L"Clock", L"Live", &s.clockLive);
-    SaveMyColors(s);  // also flushes the cache
+    PutMyColors(ini, s);
+    ini.Commit();
 
     std::wstring id = VideoId(s.video), pid = VideoProfileId(s.video);
     if (!id.empty() && !pid.empty()) {
-        std::wstring vini = VideosIni();
-        WritePrivateProfileStringW(id.c_str(), L"Path", s.video.c_str(), vini.c_str());
+        IniBatch vini(VideosIni());
+        vini.Set(id.c_str(), L"Path", s.video.c_str());
         swprintf(buf, 64, s.crop.stretch ? L"%.5f,%.5f,%.5f,%.5f,1" : L"%.5f,%.5f,%.5f,%.5f", s.crop.l, s.crop.t, s.crop.r, s.crop.b);
-        WritePrivateProfileStringW(pid.c_str(), L"Crop", s.crop.IsFull() && !s.crop.stretch ? nullptr : buf, vini.c_str());
+        vini.Set(pid.c_str(), L"Crop", s.crop.IsFull() && !s.crop.stretch ? nullptr : buf);
         swprintf(buf, 64, L"%.3f", s.previewTime);
-        WritePrivateProfileStringW(pid.c_str(), L"PreviewTime", s.previewTime >= 0 ? buf : nullptr, vini.c_str());
-        WritePrivateProfileStringW(pid.c_str(), L"ClockOwn", s.clockVideoOwn ? L"1" : nullptr, vini.c_str());
-        if (s.clockVideoOwn) WriteLook(vini.c_str(), pid.c_str(), L"Clock", &s.clockVideo);
-        WritePrivateProfileStringW(nullptr, nullptr, nullptr, vini.c_str());
+        vini.Set(pid.c_str(), L"PreviewTime", s.previewTime >= 0 ? buf : nullptr);
+        vini.Set(pid.c_str(), L"ClockOwn", s.clockVideoOwn ? L"1" : nullptr);
+        if (s.clockVideoOwn) WriteLook(vini, pid.c_str(), L"Clock", &s.clockVideo);
     }
 }
 

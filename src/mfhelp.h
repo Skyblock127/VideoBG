@@ -57,7 +57,8 @@ bool ProbeVideo(const std::wstring& path, VideoInfo& vi);
 // Why a file that failed to open or decode can't be played (a VideoFault); vi is what the attempt found.
 VideoFault DiagnoseVideo(const std::wstring& path, const VideoInfo& vi);
 
-// Decodes single frames to 32-bit BGRX pixels. Keeps the reader open for fast scrubbing.
+// Decodes single frames to 32-bit BGRX pixels. Keeps the reader open for fast scrubbing: a frame a
+// little ahead of the last one is decoded onwards from there, without jumping back to a key frame.
 class FrameGrabber {
 public:
     ~FrameGrabber() { Close(); }
@@ -69,12 +70,20 @@ public:
     VideoInfo info;
 
 private:
+    bool OpenReader(bool nv12);
     bool ReadFormat();
+    IMFSample* Decode(LONGLONG target, LONGLONG half);
+    bool ToPixels(IMFSample* s, std::vector<uint32_t>& px, int& w, int& h);
     IMFSourceReader* rd_ = nullptr;
     std::wstring path_;
     UINT32 fw_ = 0, fh_ = 0;
     LONG stride_ = 0;
     RECT ap_{};
+    bool yuv_ = false;           // frames come as NV12 and are converted here, else as RGB32
+    bool hdr_ = false;           // PQ / HLG video: left to Media Foundation's converter
+    bool fullRange_ = false;     // NV12 levels 0-255 instead of 16-235
+    double kr_ = 0.2126, kb_ = 0.0722;  // the YUV matrix (BT.709 unless the video says otherwise)
+    LONGLONG lastTs_ = -1;       // the last frame decoded (100 ns), -1 = after a jump nothing yet
 };
 
 // Halves the image until it fits in maxDim (cheap box filter).

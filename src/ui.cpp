@@ -25,6 +25,7 @@ constexpr UINT WM_UI_FRAME = WM_APP + 100, WM_UI_INFO = WM_APP + 101, WM_UI_OPT_
                WM_UI_OPT_DONE = WM_APP + 104, WM_UI_STILL = WM_APP + 106, WM_UI_FEEDBACK = WM_APP + 107, WM_UI_FB_CLOSE = WM_APP + 108;
 constexpr UINT_PTR TIMER_STATUS = 1;
 constexpr UINT_PTR TIMER_SCROLL = 2;  // the font list gliding to where the wheel sent it
+constexpr UINT_PTR TIMER_SHARPEN = 4;  // a picture drawn quickly while it kept changing: sharpen it now it's settled
 constexpr UINT_PTR TIMER_SONGS = 3;   // the playlist gliding, or scrolling by itself while a song is moved near its edge
 constexpr float kSongRowH = 34;       // a song's row in the playlist
 
@@ -373,6 +374,14 @@ struct UI {
     D2D1_RECT_F imgRc{};
     DWORD lastPreview = 0;
     DWORD lastSeek = 0;               // the wallpaper last moved with the Preview slider (tick)
+    struct Scaled {                   // a picture already scaled to where it's drawn (see DrawScaled)
+        ID2D1Bitmap* from = nullptr;  // not held: ForgetScaled() runs before a picture is let go
+        D2D1_RECT_F src{};
+        UINT32 w = 0, h = 0;
+        ID2D1Bitmap* bmp = nullptr;
+    } scaled[3];
+    int scaledNext = 0;
+    DWORD scaledMissAt = 0;           // when a picture last had to be scaled anew (tick)
 } u;
 
 // ---------------------------------------------------------------------------------------
@@ -480,9 +489,12 @@ bool InitFactories() {
 void ReleaseFontSamples();
 void ReleasePresetSamples();
 
+void ForgetScaled();
+
 void ReleaseTarget() {
     ReleaseFontSamples();  // the font picker's, if it's open
     ReleasePresetSamples();
+    ForgetScaled();
     SafeRelease(u.frame);
     SafeRelease(u.clockBmp);
     SafeRelease(u.still);
@@ -512,6 +524,72 @@ void EnsureFrameBitmap() {
     if (u.frame || u.framePx.empty() || !u.rt) return;
     D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
     u.rt->CreateBitmap(D2D1::SizeU((UINT32)u.fw, (UINT32)u.fh), u.framePx.data(), (UINT32)u.fw * 4, &bp, &u.frame);
+}
+
+// High-quality scaling of a 1080p frame takes ~9 ms on this (software) target, on every paint, so a
+// picture shown smaller is scaled once and then copied 1:1 until it, the part of it shown or the
+// size changes. While that keeps changing (a window being resized), quick linear scaling stands in
+// and the sharp copy follows once it settles. Pictures shown larger are drawn as before.
+void ForgetScaled() {
+    for (auto& c : u.scaled) {
+        SafeRelease(c.bmp);
+        c = UI::Scaled{};
+    }
+}
+
+void DrawScaled(ID2D1Bitmap* bm, const D2D1_RECT_F& dst, const D2D1_RECT_F& src) {
+    if (!u.dc) {
+        u.rt->DrawBitmap(bm, &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &src);
+        return;
+    }
+    const float k = u.dpi / 96;
+    const long x = lroundf(dst.left * k), y = lroundf(dst.top * k);
+    const long pw = lroundf(dst.right * k) - x, ph = lroundf(dst.bottom * k) - y;
+    const bool smaller = pw > 0 && ph > 0 && pw <= lroundf(src.right - src.left) && ph <= lroundf(src.bottom - src.top);
+    if (!smaller) {
+        u.dc->DrawBitmap(bm, &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
+        return;
+    }
+    const UINT32 w = (UINT32)pw, h = (UINT32)ph;
+    const D2D1_RECT_F at = D2D1::RectF(x / k, y / k, (x + pw) / k, (y + ph) / k);  // on whole pixels, so the copy lands 1:1
+    auto same = [](const D2D1_RECT_F& a, const D2D1_RECT_F& b) {
+        return fabsf(a.left - b.left) < 0.01f && fabsf(a.top - b.top) < 0.01f && fabsf(a.right - b.right) < 0.01f &&
+               fabsf(a.bottom - b.bottom) < 0.01f;
+    };
+    for (auto& c : u.scaled)
+        if (c.bmp && c.from == bm && c.w == w && c.h == h && same(c.src, src)) {
+            u.dc->DrawBitmap(c.bmp, &at, 1.0f, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr, nullptr);
+            return;
+        }
+    const DWORD now = GetTickCount();
+    const bool settling = now - u.scaledMissAt < 250;
+    u.scaledMissAt = now;
+    ID2D1BitmapRenderTarget* brt = nullptr;
+    if (settling || FAILED(u.rt->CreateCompatibleRenderTarget(D2D1::SizeF(pw / k, ph / k), D2D1::SizeU(w, h), &brt))) {
+        u.dc->DrawBitmap(bm, &dst, 1.0f, D2D1_INTERPOLATION_MODE_LINEAR, &src, nullptr);
+        SetTimer(u.hwnd, TIMER_SHARPEN, 300, nullptr);
+        return;
+    }
+    ID2D1DeviceContext* bdc = nullptr;
+    brt->QueryInterface(__uuidof(ID2D1DeviceContext), (void**)&bdc);
+    const D2D1_RECT_F all = D2D1::RectF(0, 0, pw / k, ph / k);
+    brt->BeginDraw();
+    brt->Clear(D2D1::ColorF(0, 0, 0));
+    if (bdc) bdc->DrawBitmap(bm, &all, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
+    else brt->DrawBitmap(bm, &all, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &src);
+    HRESULT hr = brt->EndDraw();
+    ID2D1Bitmap* out = nullptr;
+    if (SUCCEEDED(hr)) brt->GetBitmap(&out);
+    SafeRelease(bdc);
+    SafeRelease(brt);
+    if (!out) {
+        u.dc->DrawBitmap(bm, &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
+        return;
+    }
+    UI::Scaled& c = u.scaled[u.scaledNext++ % 3];
+    SafeRelease(c.bmp);
+    c = UI::Scaled{bm, src, w, h, out};
+    u.dc->DrawBitmap(out, &at, 1.0f, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr, nullptr);
 }
 
 // The app icon's largest image, for the header (drawn smaller with a high-quality filter).
@@ -947,8 +1025,7 @@ void DrawComposed(const D2D1_RECT_F& box, const Crop& crop, int mode) {
         u.d2d->CreateRoundedRectangleGeometry(&rr, &clip);
         D2D1_LAYER_PARAMETERS lp = D2D1::LayerParameters(D2D1::InfiniteRect(), clip);
         u.rt->PushLayer(&lp, nullptr);
-        if (u.dc) u.dc->DrawBitmap(u.frame, &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
-        else u.rt->DrawBitmap(u.frame, &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &src);
+        DrawScaled(u.frame, dst, src);
         u.rt->PopLayer();
         SafeRelease(clip);
     } else {
@@ -1807,8 +1884,7 @@ void DrawStill(const D2D1_RECT_F& box) {
         dst = R(box.left + f.dl, box.top + f.dt, box.left + f.dr, box.top + f.db);
     }
     ID2D1RoundedRectangleGeometry* clip = PushRounded(box, 6);
-    if (u.dc) u.dc->DrawBitmap(u.still, &dst, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
-    else u.rt->DrawBitmap(u.still, &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &src);
+    DrawScaled(u.still, dst, src);
     PopRounded(clip);
 }
 
@@ -3289,8 +3365,7 @@ void PaintCrop() {
     EnsureFrameBitmap();
     if (u.frame) {
         D2D1_RECT_F src = R(0, 0, (float)u.fw, (float)u.fh);
-        if (u.dc) u.dc->DrawBitmap(u.frame, &u.imgRc, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
-        else u.rt->DrawBitmap(u.frame, &u.imgRc, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &src);
+        DrawScaled(u.frame, u.imgRc, src);
     } else {
         Fill(u.imgRc, D2D1::ColorF(0, 0, 0));
         Text(u.frameFailed ? L"No preview for this file" : L"Loading\u2026", u.imgRc, u.fBody, D2D1::ColorF(0.8f, 0.8f, 0.8f),
@@ -5151,6 +5226,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_TIMER:
             if (w == TIMER_STATUS) InvalidateRect(h, nullptr, FALSE);  // status, memory, the clock's minute
             if (w == TIMER_SONGS) SongTick();
+            if (w == TIMER_SHARPEN) {
+                KillTimer(h, TIMER_SHARPEN);
+                InvalidateRect(h, nullptr, FALSE);
+            }
             if (w == TIMER_SCROLL) {  // ease towards the target: a third of the way each frame
                 fnt.scroll += (fnt.target - fnt.scroll) * 0.3f;
                 if (!fnt.open || std::abs(fnt.target - fnt.scroll) < 0.5f) {
@@ -5163,6 +5242,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_UI_STILL: {
             auto* sm = (StillMsg*)l;
             u.stillLoading = false;
+            ForgetScaled();
             SafeRelease(u.still);
             u.stillPx.swap(sm->px);
             u.stillW = sm->w;
@@ -5195,6 +5275,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (fm->serial == u.serial) u.frameBusy = false;
             if (_wcsicmp(fm->path.c_str(), g_settings.video.c_str()) == 0) {
                 if (!fm->px.empty()) {
+                    ForgetScaled();
                     SafeRelease(u.frame);
                     u.framePx.swap(fm->px);
                     u.fw = fm->w;
@@ -5436,6 +5517,7 @@ void UI_Refresh() {
     if (!u.hwnd) return;
     // A different video was chosen elsewhere (tray menu): fetch its preview.
     if (!g_settings.video.empty() && _wcsicmp(u.framePath.c_str(), g_settings.video.c_str()) != 0 && !u.frameBusy) {
+        ForgetScaled();
         SafeRelease(u.frame);
         u.framePx.clear();
         u.frameFailed = false;
