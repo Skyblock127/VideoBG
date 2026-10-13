@@ -1295,7 +1295,7 @@ void PaintPlaybackPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const bool twoGpus = !u.gpuLow.empty() && !u.gpuHigh.empty() && u.gpuLow != u.gpuHigh;  // laptops with a dedicated chip
-    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 3 * kRowH + 48 + (twoGpus ? kRowH + 44 : 0));
+    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 4 * kRowH + 92);
     Card(card, L"\uE768", L"Playback");
     float yy = y + kCardHead;
     Row(lx, yy, kLabelW, L"Speed");
@@ -1314,16 +1314,16 @@ void PaintPlaybackPage(float x, float w) {
     Text(L"The video is decoded once and every display shows it at its own size, so more displays hardly add memory. "
          L"Versions are sized for the largest display it plays on.",
          R(lx, yy, x + w - kPad, yy + 38), u.fWrap, t.text2);
-    if (twoGpus) {  // which chip decodes and draws the video
-        yy += 44;
-        Row(lx, yy, kLabelW, L"Graphics chip");
-        Seg(ID_GPU, SegRect(cx, yy, cw), {L"Power saving", L"High performance"},
-            g_settings.gpu ? g_settings.gpu - 1 : (u.gpuAutoHigh ? 1 : 0));
-        yy += kRowH;
-        Text(L"Uses " + u.gpu + L". High performance keeps the video in the dedicated chip's own memory instead of your RAM, "
-             L"but uses more power, which matters on battery.",
-             R(lx, yy, x + w - kPad, yy + 38), u.fWrap, t.text2);
-    }
+    // Which chip decodes and draws the video: a choice only on PCs with two (laptops with a dedicated one).
+    yy += 44;
+    Row(lx, yy, kLabelW, L"Graphics chip", kRowH, twoGpus);
+    Seg(ID_GPU, SegRect(cx, yy, cw), {L"Power saving", L"High performance"},
+        !twoGpus ? -1 : g_settings.gpu ? g_settings.gpu - 1 : (u.gpuAutoHigh ? 1 : 0), twoGpus);
+    yy += kRowH;
+    Text(!twoGpus ? L"Uses " + u.gpu + L". This PC has one graphics chip, so there's nothing to switch."
+                  : L"Uses " + u.gpu + L". High performance keeps the video in the dedicated chip's own memory instead of your RAM, "
+                                       L"but uses more power, which matters on battery.",
+         R(lx, yy, x + w - kPad, yy + 38), u.fWrap, t.text2);
     PaintPowerCard(x, card.bottom + 12, w);
 }
 
@@ -1339,7 +1339,7 @@ void PaintPowerCard(float x, float y, float w) {
     Seg(ID_COVER, SegRect(cx, yy, cw), {L"Nothing", L"Fullscreen apps", L"Maximized apps"}, g_settings.pauseCover);
     yy += kRowH;
     Row(lx, yy, kLabelW, L"On battery");
-    Seg(ID_BATTERY, SegRect(cx, yy, cw), {L"Keep playing", L"Pause", L"Turn off"}, g_settings.onBattery);
+    Seg(ID_BATTERY, SegRect(cx, yy, cw), {L"Keep playing", L"Pause", L"Still wallpaper"}, g_settings.onBattery);
 }
 
 // ---- Feedback (General page) -----------------------------------------------------------------
@@ -1412,7 +1412,7 @@ void PaintGeneralPage(float x, float w) {
         yy += msgH;
     }
     Row(lx, yy, kLabelW, L"When app starts");
-    Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Turn on", L"As I left it", L"Stay off"}, g_settings.launch);
+    Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Video", L"As I left it", L"Still"}, g_settings.launch);
     yy += kRowH;
     Row(lx, yy, kLabelW, L"Start with Windows");
     bool enabled = false;
