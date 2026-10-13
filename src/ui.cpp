@@ -1356,7 +1356,8 @@ struct FeedbackUI {
     bool withLog = true;
     bool sending = false;
     std::wstring note;                     // the bottom bar: why it wasn't sent
-    std::wstring sent;                     // on the page once sent
+    std::wstring sent;                     // on the page for a few seconds once sent
+    DWORD sentAt = 0;
     std::wstring idea, what, doing, mail;  // drafts, kept while VideoBG runs (Cancel doesn't lose them)
     D2D1_RECT_F boxText{}, boxSteps{}, boxEmail{};
     WNDPROC editProc = nullptr;
@@ -1432,7 +1433,8 @@ void PaintGeneralPage(float x, float w) {
     const float by0 = gc.bottom + 12;
     const D2D1_RECT_F fc = R(x, by0, x + w, by0 + kCardHead + 74);
     Card(fc, L"\uE939", L"Feedback");
-    // Once something's sent, the line above the buttons says so.
+    // Once something's sent, the line above the buttons says so for 3 seconds.
+    if (!fb.sent.empty() && GetTickCount() - fb.sentAt > 3000) fb.sent.clear();
     Text(fb.sent.empty() ? std::wstring(L"Ideas and problem reports go straight to the developer. No account or personal details needed.")
                          : fb.sent,
          R(lx, by0 + kCardHead - 6, x + w - kPad, by0 + kCardHead + 14), u.fSmall, fb.sent.empty() ? t.text2 : t.good);
@@ -4843,6 +4845,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 if (bug) fb.what.clear(), fb.doing.clear();
                 else fb.idea.clear();
                 fb.sent = L"Thanks, it's sent!";
+                fb.sentAt = GetTickCount();
             } else {
                 fb.note = L"Couldn't send it: " + *error + L" Your text is kept; try again.";
             }
