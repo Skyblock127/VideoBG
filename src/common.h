@@ -106,6 +106,8 @@ struct Settings {
     std::wstring video;
     UINT hkMods = MOD_CONTROL | MOD_ALT;
     UINT hkVk = 'B';
+    UINT musicHkMods = 0;       // the shortcut that plays / pauses My music (Pause/Break); key 0 = none
+    UINT musicHkVk = VK_PAUSE;
     int monitors = 0;     // 0 all, 1 primary only
     int gpu = 0;          // graphics chip: 0 the one driving the main display, 1 power saving, 2 high performance
     int speed = 100;      // playback speed in percent
@@ -215,6 +217,7 @@ extern Settings g_settings;
 bool Host_IsOn();
 void Host_SetOn(bool on);
 bool Host_SetHotkey(UINT mods, UINT vk);
+bool Host_SetMusicHotkey(UINT mods, UINT vk);  // vk 0 = none; false if another app has it
 void Host_SettingsChanged();                 // save + tell renderer to reload
 void Host_SetVideo(const std::wstring& path, const Crop* keepCrop = nullptr);
 void Host_PreviewCrop(const Crop* c);        // nullptr = end preview
@@ -237,7 +240,7 @@ struct MusicState {
 };
 MusicState Host_MusicState();
 int Host_CurrentTrack();                     // playlist index playing, -1 none, -2 couldn't play
-void Host_SuspendHotkey(bool suspend);       // while the settings UI records a new shortcut
+void Host_SuspendHotkey(bool suspend);       // while the settings UI records a new shortcut (both shortcuts)
 bool Host_ClockLive();                       // true while the clock should use the video wallpaper look
 void Host_ClockMove(const ClockLook& look);  // move the clock right now without saving (while dragging)
 void Host_ClockPreview(const ClockLook* look);  // show this look instead of the saved ones (a preset being edited); nullptr ends it

@@ -30,7 +30,7 @@ constexpr float kSongRowH = 34;       // a song's row in the playlist
 
 enum Id {
     ID_NONE, ID_POWER, ID_CHOOSE, ID_CROP, ID_LOCK, ID_TIMELINE, ID_SPEED, ID_VOLUME, ID_FPS,
-    ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
+    ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_MUSIC_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_MUSIC_PLAY, ID_MUSIC_PREV, ID_MUSIC_NEXT, ID_MUSIC_SHUFFLE, ID_MUSIC_REPEAT, ID_MUSIC_SEEK,
     ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
@@ -321,8 +321,9 @@ struct UI {
     int songShown = -1;        // the song the player shows (clicking its name finds it in the playlist)
     D2D1_RECT_F memInfo{};  // the sidebar's memory numbers (hovering them explains them)  // the largest display the video plays on, and how many it plays on
 
-    bool recording = false;
+    int recording = 0;  // a shortcut being recorded: ID_HOTKEY or ID_MUSIC_HOTKEY
     std::wstring hotkeyMsg;
+    int hotkeyMsgFor = 0;  // the shortcut box it's about
     std::vector<std::wstring> playlist;
 
     bool optBusy = false;
@@ -1567,23 +1568,29 @@ void PaintGeneralPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const float msgH = u.hotkeyMsg.empty() ? 0 : 18;
-    D2D1_RECT_F gc = R(x, y, x + w, y + kCardHead + 3 * kRowH + msgH + 10);
+    D2D1_RECT_F gc = R(x, y, x + w, y + kCardHead + 4 * kRowH + msgH + 10);
     Card(gc, L"\uE713", L"General");
     float yy = y + kCardHead;
-    Row(lx, yy, kLabelW, L"Toggle hotkey");
-    D2D1_RECT_F hk = SegRect(cx, yy, cw);
-    Fill(hk, u.recording ? t.card : (IsHot(ID_HOTKEY) ? t.ctrlHover : t.ctrl), 4);
-    Stroke(hk, u.recording ? t.accent : t.ctrlStroke, 4, u.recording ? 2 : 1);
-    std::wstring hkText = u.recording ? L"Press the new shortcut (Esc cancels)"
-                                      : HotkeyToString(g_settings.hkMods, g_settings.hkVk);
-    Text(hkText, hk, u.recording ? u.fBody : u.fStrong, u.recording ? t.text2 : t.text, DWRITE_TEXT_ALIGNMENT_CENTER);
-    if (!u.recording) Text(L"\uE765", R(hk.left + 12, hk.top, hk.left + 28, hk.bottom), u.fIconSmall, t.text3);
-    AddHit(ID_HOTKEY, K_BUTTON, hk);
-    yy += kRowH;
-    if (msgH) {
-        Text(u.hotkeyMsg, R(cx, yy - 6, cx + cw, yy + 12), u.fSmall, t.warn);
-        yy += msgH;
-    }
+    // A shortcut box: click it, then press the keys (its message, if any, under it).
+    auto shortcut = [&](int id, const wchar_t* label, UINT mods, UINT vk, const wchar_t* recordingText) {
+        Row(lx, yy, kLabelW, label);
+        const bool rec = u.recording == id;
+        D2D1_RECT_F hk = SegRect(cx, yy, cw);
+        Fill(hk, rec ? t.card : (IsHot(id) ? t.ctrlHover : t.ctrl), 4);
+        Stroke(hk, rec ? t.accent : t.ctrlStroke, 4, rec ? 2 : 1);
+        Text(rec ? std::wstring(recordingText) : HotkeyToString(mods, vk), hk, rec ? u.fBody : u.fStrong, rec || !vk ? t.text2 : t.text,
+             DWRITE_TEXT_ALIGNMENT_CENTER);
+        if (!rec) Text(L"\uE765", R(hk.left + 12, hk.top, hk.left + 28, hk.bottom), u.fIconSmall, t.text3);
+        AddHit(id, K_BUTTON, hk);
+        yy += kRowH;
+        if (msgH && u.hotkeyMsgFor == id) {
+            Text(u.hotkeyMsg, R(cx, yy - 6, cx + cw, yy + 12), u.fSmall, t.warn);
+            yy += msgH;
+        }
+    };
+    shortcut(ID_HOTKEY, L"Toggle hotkey", g_settings.hkMods, g_settings.hkVk, L"Press the new shortcut (Esc cancels)");
+    shortcut(ID_MUSIC_HOTKEY, L"Music play/pause", g_settings.musicHkMods, g_settings.musicHkVk,
+             L"Press a key (Esc cancels, Backspace: none)");
     Row(lx, yy, kLabelW, L"When app starts");
     Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Video wallpaper", L"As I left it", L"Still wallpaper"}, g_settings.launch);
     yy += kRowH;
@@ -4486,9 +4493,13 @@ void OnClick(int id) {
         case ID_VER_USE: VerApply(); break;
         case ID_LOCK: Host_SetLockFollow(!g_settings.lockFollow); break;
         case ID_HOTKEY:
-            u.recording = !u.recording;
+        case ID_MUSIC_HOTKEY:
+            if (u.recording) StopRecording();
+            else {
+                u.recording = id;
+                Host_SuspendHotkey(true);  // so pressing the current shortcut reaches this window
+            }
             u.hotkeyMsg.clear();
-            Host_SuspendHotkey(u.recording);
             SetFocus(u.hwnd);
             break;
         case ID_STARTUP_LINK: ShellExecuteW(u.hwnd, L"open", L"ms-settings:startupapps", nullptr, nullptr, SW_SHOWNORMAL); break;
@@ -4513,7 +4524,7 @@ void OnClick(int id) {
 
 void StopRecording() {
     if (!u.recording) return;
-    u.recording = false;
+    u.recording = 0;
     Host_SuspendHotkey(false);
 }
 
@@ -4705,11 +4716,25 @@ bool OnKeyInner(UINT vk) {
         UINT mods = (GetKeyState(VK_CONTROL) < 0 ? MOD_CONTROL : 0) | (GetKeyState(VK_MENU) < 0 ? MOD_ALT : 0) |
                     (GetKeyState(VK_SHIFT) < 0 ? MOD_SHIFT : 0) |
                     ((GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0) ? MOD_WIN : 0);
-        if (!(mods & (MOD_CONTROL | MOD_ALT | MOD_WIN))) {
-            u.hotkeyMsg = L"Use Ctrl, Alt or Win together with a key";
+        const int which = u.recording;
+        u.hotkeyMsgFor = which;
+        // The music shortcut may be a key no app uses on its own (Pause, Scroll Lock, F13-F24, the
+        // media Play/Pause key); Backspace leaves it without one.
+        const bool music = which == ID_MUSIC_HOTKEY;
+        const bool alone = music && (vk == VK_PAUSE || vk == VK_SCROLL || (vk >= VK_F13 && vk <= VK_F24) || vk == VK_MEDIA_PLAY_PAUSE);
+        if (music && !mods && vk == VK_BACK) {
+            u.recording = 0;
+            Host_SetMusicHotkey(0, 0);
+            Host_SuspendHotkey(false);
+            u.hotkeyMsg.clear();
+        } else if (!(mods & (MOD_CONTROL | MOD_ALT | MOD_WIN)) && !alone) {
+            u.hotkeyMsg = music ? L"Use Ctrl, Alt or Win with a key, or Pause, Scroll Lock or F13-F24 alone"
+                                : L"Use Ctrl, Alt or Win together with a key";
         } else {
-            u.recording = false;  // Host_SetHotkey registers the new combination itself
-            if (Host_SetHotkey(mods, vk)) u.hotkeyMsg.clear();
+            u.recording = 0;  // Host_Set... registers the new combination itself
+            const bool ok = music ? Host_SetMusicHotkey(mods, vk) : Host_SetHotkey(mods, vk);
+            Host_SuspendHotkey(false);
+            if (ok) u.hotkeyMsg.clear();
             else u.hotkeyMsg = L"That shortcut is already used by another app";
         }
         InvalidateRect(u.hwnd, nullptr, FALSE);
@@ -4955,7 +4980,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             float x = Dip(GET_X_LPARAM(l)), y = Dip(GET_Y_LPARAM(l));
             SetFocus(h);
             const Hit* ht = HitAt(x, y);
-            if (u.recording && (!ht || ht->id != ID_HOTKEY)) StopRecording();
+            if (u.recording && (!ht || ht->id != u.recording)) StopRecording();
             if (prs.rename >= 0 && (!ht || ht->id != ID_PRS_NAME)) PresetRenameDone(true);  // clicking elsewhere keeps the name
             FinishStep();
             u.keySlider = ht && ht->kind == K_SLIDER && ht->enabled ? ht->id : 0;

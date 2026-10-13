@@ -23,6 +23,8 @@ Install (no admin rights needed)
 
 Using it
   - Ctrl+Alt+B: wallpaper on/off (change the keys on the General page).
+  - Pause/Break: plays or pauses My music (change it, or set none with
+    Backspace, on the General page).
   - VideoBG starts the way you left it (on or off); change that on the
     General page ("When app starts").
   - Video page: "Crop" (on the preview) picks the part of the video shown.

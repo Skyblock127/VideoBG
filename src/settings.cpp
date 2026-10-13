@@ -456,6 +456,8 @@ void LoadSettings(Settings& s) {
     s.hkMods = (UINT)ReadInt(ini, L"HotkeyMods", MOD_CONTROL | MOD_ALT, 0, 0xF);
     s.hkVk = (UINT)ReadInt(ini, L"HotkeyKey", 'B', 0, 0xFE);
     if (s.hkVk == 0 || s.hkMods == 0) { s.hkMods = MOD_CONTROL | MOD_ALT; s.hkVk = 'B'; }
+    s.musicHkMods = (UINT)ReadInt(ini, L"MusicHotkeyMods", 0, 0, 0xF);
+    s.musicHkVk = (UINT)ReadInt(ini, L"MusicHotkeyKey", VK_PAUSE, 0, 0xFE);
     s.monitors = ReadInt(ini, L"Monitors", 0, 0, 1);
     s.gpu = ReadInt(ini, L"Gpu", 0, 0, 2);
     s.speed = ReadInt(ini, L"Speed", 100, 25, 200);
@@ -523,6 +525,8 @@ void SaveSettings(const Settings& s) {
     WritePrivateProfileStringW(L"General", L"Video", s.video.c_str(), ini);
     WriteInt(ini, L"HotkeyMods", (int)s.hkMods);
     WriteInt(ini, L"HotkeyKey", (int)s.hkVk);
+    WriteInt(ini, L"MusicHotkeyMods", (int)s.musicHkMods);
+    WriteInt(ini, L"MusicHotkeyKey", (int)s.musicHkVk);
     WritePrivateProfileStringW(L"General", L"Scale", nullptr, ini);  // Fill / Fit / Stretch: the crop decides now
     WriteInt(ini, L"Monitors", s.monitors);
     WriteInt(ini, L"Gpu", s.gpu);
@@ -570,12 +574,15 @@ void SaveSettings(const Settings& s) {
 
 std::wstring HotkeyToString(UINT mods, UINT vk) {
     std::wstring s;
+    if (!vk) return L"None";
     if (mods & MOD_WIN) s += L"Win + ";
     if (mods & MOD_CONTROL) s += L"Ctrl + ";
     if (mods & MOD_ALT) s += L"Alt + ";
     if (mods & MOD_SHIFT) s += L"Shift + ";
     if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
         s += (wchar_t)vk;
+    } else if (vk == VK_PAUSE || vk == VK_SCROLL || vk == VK_MEDIA_PLAY_PAUSE) {  // Windows names these wrongly or not at all
+        s += vk == VK_PAUSE ? L"Pause" : vk == VK_SCROLL ? L"Scroll Lock" : L"Play/Pause media key";
     } else if (vk >= VK_F1 && vk <= VK_F24) {
         wchar_t b[8];
         swprintf(b, 8, L"F%u", vk - VK_F1 + 1);

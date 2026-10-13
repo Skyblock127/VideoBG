@@ -15,7 +15,7 @@ Settings g_settings;
 namespace {
 
 constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4;
-constexpr int HOTKEY_ID = 1;
+constexpr int HOTKEY_ID = 1, HOTKEY_MUSIC = 2;
 enum { CMD_TOGGLE = 100, CMD_SETTINGS, CMD_CHOOSE, CMD_EXIT };
 
 HINSTANCE g_inst;
@@ -427,10 +427,29 @@ bool RegisterToggleHotkey(UINT mods, UINT vk) {
     return RegisterHotKey(g_wnd, HOTKEY_ID, mods | MOD_NOREPEAT, vk) != 0;
 }
 
+bool RegisterMusicHotkey(UINT mods, UINT vk) {
+    UnregisterHotKey(g_wnd, HOTKEY_MUSIC);
+    return !vk || RegisterHotKey(g_wnd, HOTKEY_MUSIC, mods | MOD_NOREPEAT, vk) != 0;
+}
+
+// The music shortcut: plays or pauses My music, as the player's button does (also while the video
+// wallpaper is off: it decides whether the music starts when it's back). With other sound, nothing.
+void ToggleMusic() {
+    if (g_settings.sound != 2 || LoadPlaylist().empty()) {
+        Log(L"tray: music shortcut pressed, but My music isn't on");
+        return;
+    }
+    g_settings.musicPlaying = !g_settings.musicPlaying;
+    Log(L"tray: music %ls by the shortcut", g_settings.musicPlaying ? L"played" : L"paused");
+    Host_SettingsChanged();
+    UI_Refresh();
+}
+
 LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
         case WM_HOTKEY:
             if (w == HOTKEY_ID) Host_SetOn(!Host_IsOn());
+            else if (w == HOTKEY_MUSIC) ToggleMusic();
             return 0;
         case WM_VBG_TRAY:
             switch (LOWORD(l)) {
@@ -591,6 +610,18 @@ bool Host_SetHotkey(UINT mods, UINT vk) {
     return true;
 }
 
+bool Host_SetMusicHotkey(UINT mods, UINT vk) {
+    if (!RegisterMusicHotkey(mods, vk)) {
+        RegisterMusicHotkey(g_settings.musicHkMods, g_settings.musicHkVk);
+        return false;
+    }
+    g_settings.musicHkMods = mods;
+    g_settings.musicHkVk = vk;
+    Log(L"tray: music shortcut changed to %ls", HotkeyToString(mods, vk).c_str());
+    SaveSettings(g_settings);
+    return true;
+}
+
 void Host_SettingsChanged() {
     SaveSettings(g_settings);
     if (g_ctl) PostMessageW(g_ctl, WM_VBG_RELOAD, 0, 0);
@@ -692,8 +723,13 @@ bool Host_RendererMemory(SIZE_T* privateWs, SIZE_T* graphics) {
 bool Host_BatteryOff() { return g_batteryOff; }
 
 void Host_SuspendHotkey(bool suspend) {
-    if (suspend) UnregisterHotKey(g_wnd, HOTKEY_ID);
-    else RegisterToggleHotkey(g_settings.hkMods, g_settings.hkVk);
+    if (suspend) {
+        UnregisterHotKey(g_wnd, HOTKEY_ID);
+        UnregisterHotKey(g_wnd, HOTKEY_MUSIC);
+    } else {
+        RegisterToggleHotkey(g_settings.hkMods, g_settings.hkVk);
+        RegisterMusicHotkey(g_settings.musicHkMods, g_settings.musicHkVk);
+    }
 }
 
 SIZE_T Host_SelfMemory() { return PrivateWorkingSet(GetCurrentProcess()); }
@@ -805,6 +841,8 @@ int HostMain(HINSTANCE inst, bool openSettings) {
         Balloon(L"VideoBG's hotkey isn't available",
                 HotkeyToString(g_settings.hkMods, g_settings.hkVk) + L" is used by another app. Pick a different one in Settings.");
     }
+    if (!RegisterMusicHotkey(g_settings.musicHkMods, g_settings.musicHkVk))  // quietly: it's only for My music
+        Log(L"tray: the music shortcut %ls is taken by another app", HotkeyToString(g_settings.musicHkMods, g_settings.musicHkVk).c_str());
 
     SYSTEM_POWER_STATUS ps{};
     if (GetSystemPowerStatus(&ps)) g_onBattery = ps.ACLineStatus == 0;
