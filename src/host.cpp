@@ -183,6 +183,14 @@ void StartRenderer() {
     g_rmask = 0;
 }
 
+// The song and spot the music was at when the wallpaper stops, to carry on from there next time.
+void KeepMusicPlace() {
+    if (g_music.track < 0) return;
+    g_settings.musicTrack = g_music.track;
+    g_settings.musicPosMs = g_music.posMs;
+    SaveSettings(g_settings);
+}
+
 void StopRenderer() {
     KillTimer(g_wnd, TIMER_RESTART);
     if (!Running()) return;
@@ -196,6 +204,7 @@ void StopRenderer() {
     g_rstate = RS_LOADING;
     g_rmask = 0;
     g_track = -1;
+    KeepMusicPlace();
     g_music = MusicState{};
     RefreshStaticWallpaper();
 }
@@ -259,6 +268,7 @@ void OnRendererExit() {
     g_rstate = RS_LOADING;
     g_rmask = 0;
     g_track = -1;
+    KeepMusicPlace();
     g_music = MusicState{};
     Log(L"tray: video renderer exited with code 0x%lx", code);
     if (code == EXIT_RENDER_ERROR) {
@@ -731,6 +741,8 @@ bool Host_PickMusic(HWND owner) {
     g_settings.sound = 2;
     g_settings.musicOrder.clear();  // new songs: in the order chosen, waiting for Play
     g_settings.musicPlaying = false;
+    g_settings.musicTrack = -1;
+    g_settings.musicPosMs = 0;
     if (g_settings.volume == 0) g_settings.volume = 60;
     Host_SettingsChanged();
     return true;

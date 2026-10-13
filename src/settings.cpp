@@ -475,6 +475,8 @@ void LoadSettings(Settings& s) {
     }
     s.musicRepeat = ReadInt(ini, L"MusicRepeat", 1, 1, 2);  // the playlist always repeats; 2: just the song
     s.musicPlaying = ReadInt(ini, L"MusicPlaying", 1, 0, 1) != 0;
+    s.musicTrack = ReadInt(ini, L"MusicTrack", 0, 0, 1 << 20) - 1;  // stored + 1: 0 = none
+    s.musicPosMs = (UINT)ReadInt(ini, L"MusicPosition", 0, 0, 0x7FFFFFFF);
     s.keepSound = ReadInt(ini, L"KeepSoundWhenPaused", 1, 0, 1) != 0;
     s.fpsCap = ReadInt(ini, L"FpsCap", 0, 0, 240);
     s.pauseCover = ReadInt(ini, L"PauseWhenCovered", 2, 0, 2);
@@ -532,6 +534,8 @@ void SaveSettings(const Settings& s) {
     WritePrivateProfileStringW(L"General", L"MusicOrder", order.empty() ? nullptr : order.c_str(), ini);
     WriteInt(ini, L"MusicRepeat", s.musicRepeat);
     WriteInt(ini, L"MusicPlaying", s.musicPlaying ? 1 : 0);
+    WriteInt(ini, L"MusicTrack", s.musicTrack + 1);
+    WriteInt(ini, L"MusicPosition", (int)s.musicPosMs);
     WriteInt(ini, L"KeepSoundWhenPaused", s.keepSound ? 1 : 0);
     WriteInt(ini, L"FpsCap", s.fpsCap);
     WriteInt(ini, L"PauseWhenCovered", s.pauseCover);

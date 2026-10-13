@@ -1247,6 +1247,21 @@ void PaintVideoPage(float x, float w) {
             help.empty() ? t.text3 : t.text2);
 }
 
+// A tip in two lines of about the same length (split at the space nearest the middle).
+std::wstring TwoLines(const std::wstring& s, IDWriteTextFormat* f) {
+    const float half = TextWidth(s, f) / 2;
+    size_t best = std::wstring::npos;
+    float bestDiff = 1e9f;
+    for (size_t i = s.find(L' '); i != std::wstring::npos; i = s.find(L' ', i + 1)) {
+        const float d = fabsf(TextWidth(s.substr(0, i), f) - half);
+        if (d < bestDiff) {
+            bestDiff = d;
+            best = i;
+        }
+    }
+    return best == std::wstring::npos ? s : s.substr(0, best) + L"\n" + s.substr(best + 1);
+}
+
 // An icon button for the music player: a round hover, the icon in the accent colour while it's on.
 void IconButton(int id, float cx, float cy, float r, const wchar_t* icon, bool on, bool enabled) {
     const Theme& t = u.th;
@@ -1272,7 +1287,8 @@ void PaintPlayer(float x, float w, float yy) {
     const MusicState ms = Host_MusicState();
     const std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
     const bool have = !u.playlist.empty(), live = have && Host_IsOn() && ms.track >= 0;
-    const int track = ms.track >= 0 && ms.track < (int)u.playlist.size() ? ms.track : have ? order[0] : -1;
+    const int kept = g_settings.musicTrack >= 0 && g_settings.musicTrack < (int)u.playlist.size() ? g_settings.musicTrack : -1;
+    const int track = ms.track >= 0 && ms.track < (int)u.playlist.size() ? ms.track : kept >= 0 ? kept : have ? order[0] : -1;
     std::wstring title = track >= 0 ? SongName(u.playlist[track]) : L"No songs chosen yet";
     std::wstring note;
     D2D1_COLOR_F noteColor = t.text2;
@@ -1297,19 +1313,19 @@ void PaintPlayer(float x, float w, float yy) {
     yy += 34;
     // The buttons, centred: shuffle, previous, play / pause, next, repeat.
     const float cy = yy + 22, mid = (lx + right) / 2;
-    const bool shuffled = MusicShuffled(order);
-    IconButton(ID_MUSIC_SHUFFLE, mid - 118, cy, 18, L"\uE8B1", shuffled, have && u.playlist.size() > 1);
+    const bool shuffled = MusicShuffled(order), on = have && Host_IsOn();  // off: all greyed out, as it was
+    IconButton(ID_MUSIC_SHUFFLE, mid - 118, cy, 18, L"\uE8B1", shuffled, on && u.playlist.size() > 1);
     IconButton(ID_MUSIC_PREV, mid - 62, cy, 18, L"\uE892", false, live);
     {
-        const bool hot = have && IsHot(ID_MUSIC_PLAY), pressed = hot && u.press == ID_MUSIC_PLAY;
-        Circle(mid, cy, 22, !have ? Mix(t.accent, t.card, 0.6f) : pressed ? Mix(t.accent, t.card, 0.2f) : hot ? t.accentHover : t.accent);
+        const bool hot = on && IsHot(ID_MUSIC_PLAY), pressed = hot && u.press == ID_MUSIC_PLAY;
+        Circle(mid, cy, 22, !on ? Mix(t.accent, t.card, 0.6f) : pressed ? Mix(t.accent, t.card, 0.2f) : hot ? t.accentHover : t.accent);
         Text(g_settings.musicPlaying ? L"\uE769" : L"\uE768", R(mid - 22, cy - 22, mid + 22, cy + 22), u.fIcon, t.onAccent,
              DWRITE_TEXT_ALIGNMENT_CENTER);
-        AddHit(ID_MUSIC_PLAY, K_BUTTON, R(mid - 22, cy - 22, mid + 22, cy + 22), have);
+        AddHit(ID_MUSIC_PLAY, K_BUTTON, R(mid - 22, cy - 22, mid + 22, cy + 22), on);
     }
     IconButton(ID_MUSIC_NEXT, mid + 62, cy, 18, L"\uE893", false, live);
     IconButton(ID_MUSIC_REPEAT, mid + 118, cy, 18, g_settings.musicRepeat == 2 ? L"\uE8ED" : L"\uE8EE", g_settings.musicRepeat == 2,
-               have);  // lit: repeats this song; else the playlist goes round
+               on);  // lit: repeats this song; else the playlist goes round
 }
 
 // The playlist, in play order: click a song to play it, drag it to scroll the list, or drag it by
@@ -1320,11 +1336,12 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
     Card(card, L"\uE8FD", L"Playlist");
     Button(ID_MUSIC_PICK, R(x + w - kPad - 148, top + 12, x + w - kPad, top + 44), L"Choose songs", L"\uE8D6", true);
     const size_t n = u.playlist.size();
-    if (IsHot(ID_MUSIC_PICK) || u.focus == ID_MUSIC_PICK)  // the tip, while pointing at it
-        Text(L"Tip: in the picker, Ctrl+A picks every song in the folder", R(x + kPad + 110, top + 13, x + w - kPad - 160, top + 47),
-             u.fWrap, t.text2, DWRITE_TEXT_ALIGNMENT_TRAILING);
-    else if (n)
-        Text(Fmt(L"%zu song%ls", n, n == 1 ? L"" : L"s"), R(x + kPad + 120, top + 16, x + w - kPad - 160, top + 40), u.fSmall, t.text2);
+    const std::wstring count = n ? Fmt(L"%zu song%ls", n, n == 1 ? L"" : L"s") : L"";
+    Text(count, R(x + kPad + 120, top + 16, x + w - kPad - 160, top + 40), u.fSmall, t.text2);
+    if (IsHot(ID_MUSIC_PICK) || u.focus == ID_MUSIC_PICK)  // the tip, while pointing at it, beside the count
+        Text(TwoLines(L"Tip: in the picker, Ctrl+A picks every song in the folder", u.fSmall),
+             R(x + kPad + 120 + TextWidth(count, u.fSmall) + 16, top + 12, x + w - kPad - 160, top + 44), u.fSmall, t.text2,
+             DWRITE_TEXT_ALIGNMENT_TRAILING);
     const D2D1_RECT_F view = R(x + 8, top + kCardHead + 8, x + w - 8, bottom - 8);
     u.songView = view;
     AddHit(ID_MUSIC_LIST, K_AREA, view);  // the wheel scrolls it
@@ -1335,6 +1352,8 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
     }
     const std::vector<int> order = MusicOrderFor(g_settings, n);
     const MusicState ms = Host_MusicState();
+    const bool on = Host_IsOn();  // with the video wallpaper off, the songs can't be played or moved
+    const int current = ms.track >= 0 ? ms.track : on ? -1 : std::clamp(g_settings.musicTrack, -1, (int)n - 1);
     const float rowH = kSongRowH, viewH = view.bottom - view.top;
     u.songMax = std::max(0.f, n * rowH - viewH);
     u.songScroll = std::clamp(u.songScroll, 0.f, u.songMax);
@@ -1350,26 +1369,26 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
         shown.insert(shown.begin() + u.songIns, -1);
     }
     auto row = [&](int song, size_t p, const D2D1_RECT_F& r, bool lifted) {
-        const bool current = song == ms.track;
+        const bool isCurrent = song == current;
         const bool hot = !moving && (IsHot(ID_SONG_ROW0 + song) || IsHot(ID_SONG_GRIP0 + song) || (u.drag == ID_MUSIC_LIST && u.songPress == song));
         if (lifted) {
             Fill(R(r.left, r.top + 2, r.right, r.bottom + 3), D2D1::ColorF(0, 0, 0, 0.25f), 5);  // shadow
             Fill(r, Mix(t.card, t.accent, current ? 0.22f : 0.1f), 5);
             Stroke(r, t.accent, 5);
-        } else if (current) {
-            Fill(r, Mix(t.card, t.accent, 0.16f), 5);
-        } else if (hot) {
+        } else if (isCurrent) {
+            Fill(r, Mix(t.card, t.accent, on ? 0.16f : 0.07f), 5);
+        } else if (hot && on) {
             Fill(r, Mix(t.card, t.text, 0.05f), 5);
         }
-        if (current) Text(L"\uE767", R(r.left + 6, r.top, r.left + 34, r.bottom), u.fIconSmall, t.accent, DWRITE_TEXT_ALIGNMENT_CENTER);
+        if (isCurrent) Text(L"\uE767", R(r.left + 6, r.top, r.left + 34, r.bottom), u.fIconSmall, on ? t.accent : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
         else Text(std::to_wstring(p + 1), R(r.left + 6, r.top, r.left + 34, r.bottom), u.fSmall, t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
-        Text(SongName(u.playlist[song]), R(r.left + 42, r.top, r.right - 48, r.bottom), current ? u.fStrong : u.fBody,
-             current || lifted ? t.text : t.text2);
-        const bool gripHot = IsHot(ID_SONG_GRIP0 + song) || lifted;
+        Text(SongName(u.playlist[song]), R(r.left + 42, r.top, r.right - 48, r.bottom), isCurrent ? u.fStrong : u.fBody,
+             !on ? t.text3 : isCurrent || lifted ? t.text : t.text2);
+        const bool gripHot = on && (IsHot(ID_SONG_GRIP0 + song) || lifted);
         Text(L"\uE76F", R(r.right - 40, r.top, r.right - 8, r.bottom), u.fIconSmall, gripHot ? t.text : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
         if (!moving) {
-            AddHit(ID_SONG_ROW0 + song, K_BUTTON, R(r.left, r.top, r.right - 44, r.bottom));
-            AddHit(ID_SONG_GRIP0 + song, K_AREA, R(r.right - 44, r.top, r.right, r.bottom));
+            AddHit(ID_SONG_ROW0 + song, K_BUTTON, R(r.left, r.top, r.right - 44, r.bottom), on);
+            AddHit(ID_SONG_GRIP0 + song, K_AREA, R(r.right - 44, r.top, r.right, r.bottom), on);
         }
     };
     const size_t firstHit = u.hits.size();
@@ -1940,8 +1959,8 @@ void PaintClockPage(float x, float w) {
     } else {
         Button(ID_PRS, R(x + w - kPad - 120, y + 12, x + w - kPad, y + 44), L"Presets", L"\uE728", true);
         if (IsHot(ID_PRS) || u.focus == ID_PRS)  // the tip, while pointing at it
-            Text(L"Tip: save your clock as a preset before changing it, so you can get it back later",
-                 R(x + kPad + 190, y + 13, x + w - kPad - 132, y + 47), u.fWrap, t.text2, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            Text(TwoLines(L"Tip: save your clock as a preset before changing it, so you can get it back later", u.fSmall),
+                 R(x + kPad + 190, y + 12, x + w - kPad - 132, y + 44), u.fSmall, t.text2, DWRITE_TEXT_ALIGNMENT_TRAILING);
     }
     const bool on = ClockUsable();
     const std::wstring& video = g_settings.video;

@@ -766,6 +766,7 @@ struct Music {
     int pos = 0, failures = 0;
     int repeat = 1;          // 0 off, 1 the playlist, 2 the song
     bool held = false;       // stopped at the end of the playlist (repeat off) until the user plays again
+    double resumeAt = 0;     // seconds into the first song: where it was when the wallpaper last stopped
 } mu;
 
 void ReportTrack(int idx) { PostMessageW(g.host, WM_VBG_TRACK, (WPARAM)(INT_PTR)idx, 0); }
@@ -809,6 +810,7 @@ void MusicNext(bool asked = false) {
 
 void OnMusicCommand(WPARAM cmd, LPARAM value) {
     if (!mu.eng || mu.order.empty()) return;
+    mu.resumeAt = 0;
     const int n = (int)mu.order.size();
     switch (cmd) {
         case MC_NEXT:
@@ -872,6 +874,12 @@ void StartMusic() {
     mu.repeat = g.s.musicRepeat;
     MusicLoop();
     mu.pos = 0;
+    mu.resumeAt = 0;
+    for (int i = 0; i < (int)mu.order.size(); i++)  // carry on where it was
+        if (mu.order[i] == g.s.musicTrack) {
+            mu.pos = i;
+            mu.resumeAt = g.s.musicPosMs / 1000.0;
+        }
     mu.failures = 0;
     mu.held = false;
     Log(L"music: %zu song(s)%ls%ls", mu.list.size(), MusicShuffled(mu.order) ? L", own order" : L"",
@@ -882,7 +890,10 @@ void StartMusic() {
 
 void OnMusicEvent(DWORD ev, UINT gen, LPARAM info) {
     if (!mu.eng || gen != (mu.gen & 0xFFFF)) return;
-    if (ev == MF_MEDIA_ENGINE_EVENT_PLAYING) {
+    if (ev == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA && mu.resumeAt > 0) {
+        mu.eng->SetCurrentTime(mu.resumeAt);
+        mu.resumeAt = 0;
+    } else if (ev == MF_MEDIA_ENGINE_EVENT_PLAYING) {
         mu.failures = 0;
     } else if (ev == MF_MEDIA_ENGINE_EVENT_ENDED) {
         MusicNext();

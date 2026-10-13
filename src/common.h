@@ -114,6 +114,8 @@ struct Settings {
     std::vector<int> musicOrder;  // my music: the play order (playlist indices); empty = as chosen
     int musicRepeat = 1;      // my music: 1 repeats the playlist, 2 repeats the song
     bool musicPlaying = true; // my music: playing (else paused by the user)
+    int musicTrack = -1;      // my music: the song it was at when the wallpaper stopped (-1 = the first)
+    UINT musicPosMs = 0;      // ...and how far into it
     bool keepSound = true;    // sound keeps playing while the wallpaper is paused (covered / locked)
     int fpsCap = 0;       // 0 = native frame rate
     int pauseCover = 2;   // 0 never, 1 when fullscreen app, 2 when maximized or fullscreen app
