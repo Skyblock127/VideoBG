@@ -1432,12 +1432,13 @@ void PaintGeneralPage(float x, float w) {
     const float by0 = gc.bottom + 12;
     const D2D1_RECT_F fc = R(x, by0, x + w, by0 + kCardHead + 74);
     Card(fc, L"\uE939", L"Feedback");
-    Text(L"Ideas and problem reports go straight to the developer. No account or personal details needed.",
-         R(lx, by0 + kCardHead - 6, x + w - kPad, by0 + kCardHead + 14), u.fSmall, t.text2);
-    const float fby = by0 + kCardHead + 24;
-    Button(ID_FB_IDEA, R(lx, fby, lx + 186, fby + 32), L"Suggest a feature", L"\uE82F");
-    Button(ID_FB_BUG, R(lx + 198, fby, lx + 384, fby + 32), L"Report a problem", L"\uE7BA");
-    if (!fb.sent.empty()) Text(fb.sent, R(lx + 400, fby, x + w - kPad, fby + 32), u.fSmall, t.good);
+    // Once something's sent, the line above the buttons says so.
+    Text(fb.sent.empty() ? std::wstring(L"Ideas and problem reports go straight to the developer. No account or personal details needed.")
+                         : fb.sent,
+         R(lx, by0 + kCardHead - 6, x + w - kPad, by0 + kCardHead + 14), u.fSmall, fb.sent.empty() ? t.text2 : t.good);
+    const float fby = by0 + kCardHead + 24, half = (x + w - kPad - lx - 12) / 2;  // two buttons across the card
+    Button(ID_FB_IDEA, R(lx, fby, lx + half, fby + 32), L"Suggest a feature", L"\uE82F");
+    Button(ID_FB_BUG, R(lx + half + 12, fby, x + w - kPad, fby + 32), L"Report a problem", L"\uE7BA");
 
     // Where things are kept.
     float fy = fc.bottom + 12;
