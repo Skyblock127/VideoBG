@@ -188,6 +188,7 @@ void KeepMusicPlace() {
     if (g_music.track < 0) return;
     g_settings.musicTrack = g_music.track;
     g_settings.musicPosMs = g_music.posMs;
+    g_settings.musicDurMs = g_music.durMs;
     SaveSettings(g_settings);
 }
 
@@ -742,7 +743,7 @@ bool Host_PickMusic(HWND owner) {
     g_settings.musicOrder.clear();  // new songs: in the order chosen, waiting for Play
     g_settings.musicPlaying = false;
     g_settings.musicTrack = -1;
-    g_settings.musicPosMs = 0;
+    g_settings.musicPosMs = g_settings.musicDurMs = 0;
     if (g_settings.volume == 0) g_settings.volume = 60;
     Host_SettingsChanged();
     return true;

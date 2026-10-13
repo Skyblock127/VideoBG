@@ -1296,7 +1296,7 @@ void PaintPlayer(float x, float w, float yy) {
         note = L"Windows couldn't play these songs";
         noteColor = t.warn;
     } else if (have && !Host_IsOn()) {
-        note = L"Plays while the video wallpaper is on";
+        note = g_settings.musicPlaying ? L"Plays when the video wallpaper is back on" : L"Stays paused when the video wallpaper is back on";
     } else if (live && g_settings.musicPlaying && !ms.playing) {
         note = L"Paused with the wallpaper";
     } else if (live) {
@@ -1308,7 +1308,8 @@ void PaintPlayer(float x, float w, float yy) {
     Text(title, R(lx + 24, yy, right - noteW, yy + 22), u.fStrong, have ? t.text : t.text2);
     Text(note, R(right - noteW, yy, right, yy + 22), u.fSmall, noteColor, DWRITE_TEXT_ALIGNMENT_TRAILING);
     yy += 26;
-    const float frac = u.drag == ID_MUSIC_SEEK && u.seekFrac >= 0 ? u.seekFrac : ms.durMs ? (float)ms.posMs / ms.durMs : 0;
+    float frac = u.drag == ID_MUSIC_SEEK && u.seekFrac >= 0 ? u.seekFrac : ms.durMs ? (float)ms.posMs / ms.durMs : 0;
+    if (!live && track == kept && g_settings.musicDurMs) frac = (float)g_settings.musicPosMs / g_settings.musicDurMs;  // where it'll carry on
     Slider(ID_MUSIC_SEEK, R(lx - 10, yy, right + 10, yy + 28), frac, live && ms.durMs > 0);
     yy += 34;
     // The buttons, centred: shuffle, previous, play / pause, next, repeat.
@@ -1317,11 +1318,12 @@ void PaintPlayer(float x, float w, float yy) {
     IconButton(ID_MUSIC_SHUFFLE, mid - 118, cy, 18, L"\uE8B1", shuffled, on && u.playlist.size() > 1);
     IconButton(ID_MUSIC_PREV, mid - 62, cy, 18, L"\uE892", false, live);
     {
-        const bool hot = on && IsHot(ID_MUSIC_PLAY), pressed = hot && u.press == ID_MUSIC_PLAY;
-        Circle(mid, cy, 22, !on ? Mix(t.accent, t.card, 0.6f) : pressed ? Mix(t.accent, t.card, 0.2f) : hot ? t.accentHover : t.accent);
+        // Usable with the wallpaper off too: it decides whether the music starts when the wallpaper's back.
+        const bool hot = have && IsHot(ID_MUSIC_PLAY), pressed = hot && u.press == ID_MUSIC_PLAY;
+        Circle(mid, cy, 22, !have ? Mix(t.accent, t.card, 0.6f) : pressed ? Mix(t.accent, t.card, 0.2f) : hot ? t.accentHover : t.accent);
         Text(g_settings.musicPlaying ? L"\uE769" : L"\uE768", R(mid - 22, cy - 22, mid + 22, cy + 22), u.fIcon, t.onAccent,
              DWRITE_TEXT_ALIGNMENT_CENTER);
-        AddHit(ID_MUSIC_PLAY, K_BUTTON, R(mid - 22, cy - 22, mid + 22, cy + 22), on);
+        AddHit(ID_MUSIC_PLAY, K_BUTTON, R(mid - 22, cy - 22, mid + 22, cy + 22), have);
     }
     IconButton(ID_MUSIC_NEXT, mid + 62, cy, 18, L"\uE893", false, live);
     IconButton(ID_MUSIC_REPEAT, mid + 118, cy, 18, g_settings.musicRepeat == 2 ? L"\uE8ED" : L"\uE8EE", g_settings.musicRepeat == 2,
