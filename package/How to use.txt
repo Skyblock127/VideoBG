@@ -1,5 +1,5 @@
-VideoBG 1.10 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
-===========================================================================
+VideoBG 1.10.1 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+==============================================================================
 
 What it does
   - Plays a video behind your desktop icons. Ctrl+Alt+B turns it on and off;
@@ -23,8 +23,9 @@ Install (no admin rights needed)
 
 Using it
   - Ctrl+Alt+B: wallpaper on/off (change the keys on the General page).
-  - Pause/Break: plays or pauses My music (change it, or set none with
-    Backspace, on the General page).
+  - Pause/Break: plays or pauses My music, or mutes the video's audio (the
+    video plays on, so the sound comes back in sync). Change it, or set
+    none with Backspace, on the General page.
   - VideoBG starts the way you left it (on or off); change that on the
     General page ("When app starts").
   - Video page: "Crop" (on the preview) picks the part of the video shown.

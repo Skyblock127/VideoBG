@@ -432,11 +432,19 @@ bool RegisterMusicHotkey(UINT mods, UINT vk) {
     return !vk || RegisterHotKey(g_wnd, HOTKEY_MUSIC, mods | MOD_NOREPEAT, vk) != 0;
 }
 
-// The music shortcut: plays or pauses My music, as the player's button does (also while the video
-// wallpaper is off: it decides whether the music starts when it's back). With other sound, nothing.
+// The sound shortcut: plays or pauses My music, as the player's button does (also while the video
+// wallpaper is off: it decides whether the music starts when it's back); mutes or unmutes the
+// video's audio (the video plays on, so the sound comes back in sync). With no sound, nothing.
 void ToggleMusic() {
+    if (g_settings.sound == 1) {
+        g_settings.videoMuted = !g_settings.videoMuted;
+        Log(L"tray: video's audio %ls by the shortcut", g_settings.videoMuted ? L"muted" : L"unmuted");
+        Host_SettingsChanged();
+        UI_Refresh();
+        return;
+    }
     if (g_settings.sound != 2 || LoadPlaylist().empty()) {
-        Log(L"tray: music shortcut pressed, but My music isn't on");
+        Log(L"tray: sound shortcut pressed, but there's no sound to pause");
         return;
     }
     g_settings.musicPlaying = !g_settings.musicPlaying;

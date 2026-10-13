@@ -481,6 +481,7 @@ void LoadSettings(Settings& s) {
     s.musicPosMs = (UINT)ReadInt(ini, L"MusicPosition", 0, 0, 0x7FFFFFFF);
     s.musicDurMs = (UINT)ReadInt(ini, L"MusicLength", 0, 0, 0x7FFFFFFF);
     s.keepSound = ReadInt(ini, L"KeepSoundWhenPaused", 1, 0, 1) != 0;
+    s.videoMuted = ReadInt(ini, L"VideoMuted", 0, 0, 1) != 0;
     s.fpsCap = ReadInt(ini, L"FpsCap", 0, 0, 240);
     s.pauseCover = ReadInt(ini, L"PauseWhenCovered", 2, 0, 2);
     s.onBattery = ReadInt(ini, L"OnBattery", 0, 0, 2);
@@ -543,6 +544,7 @@ void SaveSettings(const Settings& s) {
     WriteInt(ini, L"MusicPosition", (int)s.musicPosMs);
     WriteInt(ini, L"MusicLength", (int)s.musicDurMs);
     WriteInt(ini, L"KeepSoundWhenPaused", s.keepSound ? 1 : 0);
+    WriteInt(ini, L"VideoMuted", s.videoMuted ? 1 : 0);
     WriteInt(ini, L"FpsCap", s.fpsCap);
     WriteInt(ini, L"PauseWhenCovered", s.pauseCover);
     WriteInt(ini, L"OnBattery", s.onBattery);

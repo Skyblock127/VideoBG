@@ -33,7 +33,7 @@ enum Id {
     ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_MUSIC_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_MUSIC_PLAY, ID_MUSIC_PREV, ID_MUSIC_NEXT, ID_MUSIC_SHUFFLE, ID_MUSIC_REPEAT, ID_MUSIC_SEEK,
-    ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
+    ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_UNMUTE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
     ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO,
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
@@ -1443,7 +1443,8 @@ void PaintSoundPage(float x, float w) {
     yy += kRowH;
     Row(lx, yy, kLabelW, L"Volume", kRowH, mode != 0);
     Slider(ID_VOLUME, SliderRect(cx, yy, cw), g_settings.volume / 100.f, mode != 0);
-    SliderValue(g_settings.volume ? Fmt(L"%d%%", g_settings.volume) : std::wstring(L"Muted"), cx, yy, cw, mode != 0);
+    const bool muted = mode == 1 && g_settings.videoMuted;  // by the sound shortcut
+    SliderValue(g_settings.volume && !muted ? Fmt(L"%d%%", g_settings.volume) : std::wstring(L"Muted"), cx, yy, cw, mode != 0);
     yy += kRowH;
     if (mode == 2) {
         PaintPlayer(x, w, yy + 4);
@@ -1451,9 +1452,12 @@ void PaintSoundPage(float x, float w) {
         bool noAudio = mode == 1 && u.infoOk && u.info.audioStreams.empty();
         std::wstring info = mode == 0 ? L"Silent: the video's audio isn't even decoded, which saves power"
                           : noAudio   ? L"This video has no sound; try My music instead"
+                          : muted     ? L"Muted by " + HotkeyToString(g_settings.musicHkMods, g_settings.musicHkVk) +
+                                            L"; the video plays on, so the sound comes back in sync"
                                       : L"Plays the video's own soundtrack, in sync with the picture";
-        Text(L"\uE946", R(lx, yy, lx + 16, yy + kRowH), u.fIconSmall, noAudio ? t.warn : t.text3);
-        Text(info, R(lx + 22, yy, x + w - kPad, yy + kRowH), u.fSmall, noAudio ? t.warn : t.text2);
+        Text(muted ? L"\uE74F" : L"\uE946", R(lx, yy, lx + 16, yy + kRowH), u.fIconSmall, noAudio || muted ? t.warn : t.text3);
+        Text(info, R(lx + 22, yy, x + w - kPad - (muted ? 70 : 0), yy + kRowH), u.fSmall, noAudio || muted ? t.warn : t.text2);
+        if (muted) Link(ID_UNMUTE, R(x + w - kPad - 60, yy + 11, x + w - kPad, yy + 29), L"Unmute");
     }
     if (mode == 2) PaintPlaylist(x, w, card.bottom + 12, kH - 24);
 }
@@ -1589,7 +1593,7 @@ void PaintGeneralPage(float x, float w) {
         }
     };
     shortcut(ID_HOTKEY, L"Toggle hotkey", g_settings.hkMods, g_settings.hkVk, L"Press the new shortcut (Esc cancels)");
-    shortcut(ID_MUSIC_HOTKEY, L"Music play/pause", g_settings.musicHkMods, g_settings.musicHkVk,
+    shortcut(ID_MUSIC_HOTKEY, L"Pause / mute sound", g_settings.musicHkMods, g_settings.musicHkVk,
              L"Press a key (Esc cancels, Backspace: none)");
     Row(lx, yy, kLabelW, L"When app starts");
     Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Video wallpaper", L"As I left it", L"Still wallpaper"}, g_settings.launch);
@@ -3840,6 +3844,7 @@ void OnSlider(int id, float frac, bool final) {
         }
         case ID_VOLUME:
             g_settings.volume = (int)lround(frac * 100);
+            g_settings.videoMuted = false;  // turning the volume up or down means listening
             Host_LiveVolume(g_settings.volume);  // heard while dragging; saved when let go
             if (final) Host_SettingsChanged();
             break;
@@ -3878,6 +3883,7 @@ bool StepSlider(int dir) {
         case ID_VOLUME:
             if (g_settings.sound == 0) return false;
             g_settings.volume = std::clamp(g_settings.volume + dir, 0, 100);
+            g_settings.videoMuted = false;
             Host_LiveVolume(g_settings.volume);
             break;
         case ID_MUSIC_SEEK: {  // five seconds a step
@@ -4437,6 +4443,10 @@ void OnClick(int id) {
             }
             break;
         case ID_MUSIC_SHUFFLE: MusicShuffle(); break;
+        case ID_UNMUTE:
+            g_settings.videoMuted = false;
+            Host_SettingsChanged();
+            break;
         case ID_MUSIC_TITLE: {  // glide the playlist to the song, in the middle of the list
             const std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
             for (size_t p = 0; p < order.size(); p++)

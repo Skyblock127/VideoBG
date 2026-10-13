@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"1.10.0"
+#define APP_VERSION  L"1.10.1"
 #define FEEDBACK_URL L"https://videobg-feedback.vercel.app/api/feedback"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
@@ -106,7 +106,7 @@ struct Settings {
     std::wstring video;
     UINT hkMods = MOD_CONTROL | MOD_ALT;
     UINT hkVk = 'B';
-    UINT musicHkMods = 0;       // the shortcut that plays / pauses My music (Pause/Break); key 0 = none
+    UINT musicHkMods = 0;       // the sound shortcut (Pause/Break): plays / pauses My music, mutes the video's audio; key 0 = none
     UINT musicHkVk = VK_PAUSE;
     int monitors = 0;     // 0 all, 1 primary only
     int gpu = 0;          // graphics chip: 0 the one driving the main display, 1 power saving, 2 high performance
@@ -119,6 +119,7 @@ struct Settings {
     int musicTrack = -1;      // my music: the song it was at when the wallpaper stopped (-1 = the first)
     UINT musicPosMs = 0, musicDurMs = 0;  // ...how far into it, and how long it is
     bool keepSound = true;    // sound keeps playing while the wallpaper is paused (covered / locked)
+    bool videoMuted = false;  // the video's audio muted by the sound shortcut (the video plays on, in sync)
     int fpsCap = 0;       // 0 = native frame rate
     int pauseCover = 2;   // 0 never, 1 when fullscreen app, 2 when maximized or fullscreen app
     int onBattery = 0;    // 0 keep playing, 1 pause, 2 turn off

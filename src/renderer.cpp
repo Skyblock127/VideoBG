@@ -639,7 +639,7 @@ bool StartEngine(const std::wstring& path) {
     g.eng->SetAutoPlay(FALSE);
     g.eng->SetPreload(MF_MEDIA_ENGINE_PRELOAD_AUTOMATIC);
     g.eng->SetMuted(g.videoAudio ? FALSE : TRUE);
-    g.eng->SetVolume(g.s.volume / 100.0);
+    g.eng->SetVolume(g.s.videoMuted ? 0 : g.s.volume / 100.0);
     g.eng->SetDefaultPlaybackRate(g.rate);
     g.eng->SetPlaybackRate(g.rate);
     BSTR b = SysAllocString(path.c_str());
@@ -1300,7 +1300,7 @@ void Reload() {
     if (g.eng) {
         g.eng->SetDefaultPlaybackRate(r);
         g.eng->SetPlaybackRate(r);
-        g.eng->SetVolume(g.s.volume / 100.0);
+        g.eng->SetVolume(g.s.videoMuted ? 0 : g.s.volume / 100.0);
     }
     if (ns.sound != 2) {
         StopMusic();
