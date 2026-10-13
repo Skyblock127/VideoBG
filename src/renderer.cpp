@@ -941,12 +941,8 @@ void ArmPark() {
     else KillTimer(g.ctl, TIMER_PARK);
 }
 
-void Park() {
-    if (!CanPark()) return;
-    g.parkedPos = CurrentPos();
-    StopPipeline();
-    g.parked = true;
-    // The driver's scratch memory too, then give the now unused pages back.
+// After a pipeline is stopped: the driver's scratch memory too, then give the now unused pages back.
+void ReleaseFreedMemory() {
     g.ctx->ClearState();
     g.ctx->Flush();
     IDXGIDevice3* d3 = nullptr;
@@ -956,6 +952,14 @@ void Park() {
     }
     HeapCompact(GetProcessHeap(), 0);
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+}
+
+void Park() {
+    if (!CanPark()) return;
+    g.parkedPos = CurrentPos();
+    StopPipeline();
+    g.parked = true;
+    ReleaseFreedMemory();
     Log(L"paused a while: video decoder released (at %.2fs)", g.parkedPos);
 }
 
@@ -1290,7 +1294,9 @@ void Reload() {
         if (videoChanged) g.simWanted = 0;
         Log(L"switching video pipeline in place (%ls, at %.2fs)", videoChanged ? L"new video" : L"sound changed", pos);
         StopPipeline();
+        ReleaseFreedMemory();  // the old pipeline's memory goes back before the new one takes its own
         if (!StartPlayback(pos)) return;
+        SetTimer(g.ctl, TIMER_TRIM, 4000, nullptr);  // and what getting the new one going needed, once it's settled
     }
     // A parked pipeline has no frame to show a new crop or fit with.
     if (g.parked && ns.crop != old.crop) Unpark();
@@ -1377,6 +1383,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (w == TIMER_MUSIC) ReportMusic();
             else if (w == TIMER_TRIM) {
                 KillTimer(h, TIMER_TRIM);
+                HeapCompact(GetProcessHeap(), 0);
                 SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
             } else if (w == TIMER_DISPLAY) {
                 KillTimer(h, TIMER_DISPLAY);
