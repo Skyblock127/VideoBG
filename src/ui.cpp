@@ -1412,7 +1412,7 @@ void PaintGeneralPage(float x, float w) {
         yy += msgH;
     }
     Row(lx, yy, kLabelW, L"When app starts");
-    Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Video", L"As I left it", L"Still"}, g_settings.launch);
+    Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Video wallpaper", L"As I left it", L"Still wallpaper"}, g_settings.launch);
     yy += kRowH;
     Row(lx, yy, kLabelW, L"Start with Windows");
     bool enabled = false;
