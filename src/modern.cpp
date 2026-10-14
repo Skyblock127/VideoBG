@@ -1684,13 +1684,12 @@ bool Step(double now) {
                 SafeRelease(P.cards[P.chosen].image);  // drawn again, with the badge
                 P.applied = P.chosen;  // its card shows "Current" now (it becomes the wallpaper a moment later)
             }
-            if (t > 0.62f && !P.used) {  // the picture is opening out: it becomes the wallpaper now
+            if (t > 1.1f) {  // the chosen picture fills the screen: it becomes the wallpaper, back to the apps
+                // (Saving and the rest take a moment: done now, under a still picture, not mid-animation.)
                 P.used = true;
                 Card& c = P.cards[P.chosen];
                 Log(L"picker: %ls is the wallpaper now", c.path.c_str());
                 Host_SetVideo(c.path);  // the renderer keeps playing it if it's the preview
-            }
-            if (t > 1.1f) {  // the chosen picture fills the screen: back to the apps
                 P.stills[0] = Still{};
                 P.stills[1] = Still{P.chosen, 1};
                 P.chosen = -1;

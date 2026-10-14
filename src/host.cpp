@@ -919,7 +919,7 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker) {
     Reconcile();
 
     if (g_settings.video.empty()) {
-        UI_Show();
+        if (g_settings.look != 1 || !Modern_Open(0)) UI_Show();  // the modern look: its picker, to add videos
         Balloon(L"VideoBG is in your tray", L"Choose a video to use as your wallpaper.");
     } else if (openSettings) {
         UI_Show();
