@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <memory>
 
 namespace {
 
@@ -27,6 +29,8 @@ constexpr UINT WM_WALL_LOST = WM_APP + 62;
 constexpr UINT WM_DEVICE_LOST = WM_APP + 63;
 constexpr UINT WM_READER_FAILED = WM_APP + 64;
 constexpr UINT WM_MUSIC_EVENT = WM_APP + 65;
+constexpr UINT WM_PREVIEW_VIDEO = WM_APP + 66;  // lParam = PreviewAsk*
+constexpr UINT WM_PREVIEW_FAILED = WM_APP + 67;
 constexpr UINT_PTR TIMER_HEALTH = 1, TIMER_DISPLAY = 2, TIMER_TRIM = 3, TIMER_RECHECK = 4, TIMER_PARK = 5, TIMER_MUSIC = 6;
 
 struct Target {
@@ -36,7 +40,8 @@ struct Target {
     IDXGISwapChain1* sc = nullptr;
     ID3D11Texture2D* bb = nullptr;
     ID3D11RenderTargetView* rtv = nullptr;
-    ID3D11VideoProcessorOutputView* out = nullptr;  // silent pipeline
+    ID3D11VideoProcessorOutputView* out = nullptr;  // silent pipeline (made by the render thread when missing)
+    bool showcase = false;  // the modern look's picker: a window above the apps, not the desktop's
     MFVideoNormalizedRect src{0, 0, 1, 1};
     RECT dst{};
     bool letterbox = false;
@@ -74,6 +79,17 @@ struct State {
     std::atomic<double> readerPos{0};    // silent pipeline: position of the frame on screen (s)
     double skipTo = 0;                   // silent pipeline: resuming mid-video, frames before this (s) aren't shown
     std::atomic<UINT> simWanted{0};      // silent pipeline: (h << 16) | w of a lighter version to preview, 0 = off
+
+    // The modern look's picker: while it's open the wallpaper also shows full screen just under it
+    // (the showcase, the last target), above the apps; and it can play another video in place of
+    // the wallpaper's own while the user looks at it (the preview).
+    HWND showcaseUnder = nullptr;        // the picker window; nullptr = no showcase
+    std::atomic<bool> showcaseUp{false}; // the showcase has had its first frame (told the host)
+    std::wstring preview;                // the video being previewed, "" = the wallpaper's own
+    Crop previewVideoCrop;               // its crop
+    double returnPos = 0;                // where the wallpaper's own video was when previewing began
+    bool announce = false;               // tell the host when the next first frame is up
+    UINT previewSeq = 0;                 // the host's number for the last preview request
     std::atomic<LONGLONG> seekTo{-1};    // silent pipeline: jump here (100 ns units), -1 = no jump asked for
     std::atomic<bool> seekExact{true};   // ... to that exact frame, or just the key frame before it (quicker)
 
@@ -143,6 +159,8 @@ public:
     }
 };
 
+const std::wstring& ActiveVideo() { return g.preview.empty() ? g.s.video : g.preview; }
+
 void ReportState() {
     WPARAM st = g.pauseMask ? RS_PAUSED : (g.playing ? RS_PLAYING : RS_LOADING);
     PostMessageW(g.host, WM_VBG_STATE, st, g.pauseMask);
@@ -158,6 +176,11 @@ void Exit(DWORD code) {
 
 // fault: a VideoFault, or -1 to work out what's wrong with the video.
 void Fail(HRESULT hr, int fault = -1) {
+    if (!g.preview.empty()) {  // only the preview: back to the wallpaper's own video
+        Log(L"preview of %ls failed 0x%08lx", g.preview.c_str(), (unsigned long)hr);
+        PostMessageW(g.ctl, WM_PREVIEW_FAILED, 0, 0);
+        return;
+    }
     if (fault < 0) fault = DiagnoseVideo(g.s.video, g.vi);
     Log(L"renderer failure 0x%08lx (fault %d, codec %ls)", (unsigned long)hr, fault, g.vi.codec.c_str());
     PostMessageW(g.host, WM_VBG_FAULT, (WPARAM)fault, (LPARAM)g.vi.subtype.Data1);
@@ -171,7 +194,7 @@ void RequestRedraw() {
 }
 
 void UpdateRects() {
-    const Crop& c = g.previewing ? g.previewCrop : g.s.crop;
+    const Crop& c = !g.preview.empty() ? g.previewVideoCrop : g.previewing ? g.previewCrop : g.s.crop;
     AcquireSRWLockExclusive(&g.lock);
     for (auto& t : g.targets) {
         FitRect f = ComputeFit(g.aspect, c, CropMode(c), t.w, t.h);
@@ -406,14 +429,20 @@ bool BlitAll(ID3D11VideoProcessorInputView* view) {
     st.Enable = TRUE;
     st.pInputSurface = view;
     UINT want = g.simWanted;
-    if (want != ((sim.h << 16) | sim.w)) {
+    AcquireSRWLockShared(&g.lock);
+    if (want != ((sim.h << 16) | sim.w) || (sim.vp && sim.outs.size() != g.targets.size())) {
         FreeSim();
         if (want && !BuildSim(want & 0xFFFF, want >> 16)) {
             Log(L"preview of a %ux%u version isn't supported here", want & 0xFFFF, want >> 16);
             g.simWanted = 0;
         }
     }
-    AcquireSRWLockShared(&g.lock);
+    for (auto& t : g.targets) {
+        if (t.out) continue;
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{};
+        od.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+        g.vdev->CreateVideoProcessorOutputView(t.bb, g.venum, &od, &t.out);
+    }
     if (sim.vp) {
         // The whole visible frame at the lighter version's size, then from that to each screen.
         RECT src = g.ap, dst{0, 0, (LONG)sim.w, (LONG)sim.h};
@@ -434,6 +463,7 @@ bool BlitAll(ID3D11VideoProcessorInputView* view) {
             g.vctx->VideoProcessorSetOutputTargetRect(sim.vp, TRUE, &full);
             if (FAILED(g.vctx->VideoProcessorBlt(sim.vp, sim.outs[i], 0, 1, &st2))) continue;
             if (DeviceLost(t.sc->Present(1, 0))) ok = false;
+            else if (t.showcase && !g.showcaseUp.exchange(true)) PostMessageW(g.host, WM_VBG_SHOWCASE_UP, 0, 0);
         }
         ReleaseSRWLockShared(&g.lock);
         return ok;
@@ -445,8 +475,9 @@ bool BlitAll(ID3D11VideoProcessorInputView* view) {
         g.vctx->VideoProcessorSetStreamSourceRect(g.vp, 0, TRUE, &src);
         g.vctx->VideoProcessorSetStreamDestRect(g.vp, 0, TRUE, &t.dst);
         g.vctx->VideoProcessorSetOutputTargetRect(g.vp, TRUE, &full);  // outside dst = black background
-        if (FAILED(g.vctx->VideoProcessorBlt(g.vp, t.out, 0, 1, &st))) continue;
+        if (!t.out || FAILED(g.vctx->VideoProcessorBlt(g.vp, t.out, 0, 1, &st))) continue;
         if (DeviceLost(t.sc->Present(1, 0))) ok = false;
+        else if (t.showcase && !g.showcaseUp.exchange(true)) PostMessageW(g.host, WM_VBG_SHOWCASE_UP, 0, 0);
     }
     ReleaseSRWLockShared(&g.lock);
     return ok;
@@ -576,6 +607,7 @@ bool PresentEngineFrame(bool* transferred) {
         if (FAILED(g.eng->TransferVideoFrame(t.bb, &t.src, &t.dst, &black))) continue;
         *transferred = true;
         if (DeviceLost(t.sc->Present(1, 0))) ok = false;
+        else if (t.showcase && !g.showcaseUp.exchange(true)) PostMessageW(g.host, WM_VBG_SHOWCASE_UP, 0, 0);
     }
     ReleaseSRWLockShared(&g.lock);
     return ok;
@@ -733,7 +765,7 @@ double CurrentPos() {
 }
 
 bool StartPlayback(double startPos = 0) {
-    const std::wstring& path = g.s.video;
+    const std::wstring path = ActiveVideo();
     if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) { Fail(HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)); return false; }
     ProbeVideo(path, g.vi);
     Log(L"source %ls: %ux%u %.2ffps %ls, %zu audio track(s)", path.c_str(), g.vi.w, g.vi.h, g.vi.fps, g.vi.codec.c_str(),
@@ -1110,21 +1142,22 @@ void PlaceTarget(Target& t, bool show) {
                  SWP_NOACTIVATE | (show ? SWP_SHOWWINDOW : 0));
 }
 
-bool CreateTargets(IDXGIFactory2* fac) {
-    WNDCLASSW wc{};
-    wc.lpfnWndProc = WallProc;
-    wc.hInstance = g.inst;
-    wc.lpszClassName = WALL_CLASS;
-    RegisterClassW(&wc);
-
-    for (const RECT& mon : WantedMonitors()) {
-        Target t;
-        t.mon = mon;
-        t.w = mon.right - mon.left;
-        t.h = mon.bottom - mon.top;
+// A window for one screen and its swap chain: in the desktop (behind the icons), or for the
+// showcase a plain window above the apps.
+bool MakeTarget(IDXGIFactory2* fac, const RECT& mon, bool showcase, Target* out) {
+    Target t;
+    t.mon = mon;
+    t.w = mon.right - mon.left;
+    t.h = mon.bottom - mon.top;
+    t.showcase = showcase;
+    if (showcase) {
+        t.hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, WALL_CLASS, L"VideoBG wallpaper", WS_POPUP | WS_DISABLED,
+                                 mon.left, mon.top, t.w, t.h, nullptr, nullptr, g.inst, nullptr);
+        if (!t.hwnd) return false;
+    } else {
         DWORD ex = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | (g.raised ? WS_EX_LAYERED : 0);
         t.hwnd = CreateWindowExW(ex, WALL_CLASS, L"VideoBG wallpaper", WS_POPUP, 0, 0, t.w, t.h, nullptr, nullptr, g.inst, nullptr);
-        if (!t.hwnd) continue;
+        if (!t.hwnd) return false;
         if (g.raised) SetLayeredWindowAttributes(t.hwnd, 0, 255, LWA_ALPHA);
         SetParent(t.hwnd, g.parent);
         LONG_PTR st = GetWindowLongPtrW(t.hwnd, GWL_STYLE);
@@ -1132,7 +1165,8 @@ bool CreateTargets(IDXGIFactory2* fac) {
         SetWindowLongPtrW(t.hwnd, GWL_STYLE, st);
         SetWindowPos(t.hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         PlaceTarget(t, false);
-
+    }
+    {
         DXGI_SWAP_CHAIN_DESC1 sd{};
         sd.Width = (UINT)t.w;
         sd.Height = (UINT)t.h;
@@ -1148,20 +1182,57 @@ bool CreateTargets(IDXGIFactory2* fac) {
             sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
             hr = fac->CreateSwapChainForHwnd(g.dev, t.hwnd, &sd, nullptr, nullptr, &t.sc);
         }
-        if (FAILED(hr)) { DestroyWindow(t.hwnd); continue; }
+        if (FAILED(hr)) { DestroyWindow(t.hwnd); return false; }
         fac->MakeWindowAssociation(t.hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
         t.sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&t.bb);
         g.dev->CreateRenderTargetView(t.bb, nullptr, &t.rtv);
-        SetWindowLongPtrW(t.hwnd, GWLP_USERDATA, 1);
-        g.targets.push_back(t);
+    }
+    if (!showcase) SetWindowLongPtrW(t.hwnd, GWLP_USERDATA, 1);  // its loss means Explorer restarted
+    *out = t;
+    return true;
+}
+
+bool CreateTargets(IDXGIFactory2* fac) {
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = WallProc;
+    wc.hInstance = g.inst;
+    wc.lpszClassName = WALL_CLASS;
+    RegisterClassW(&wc);
+    for (const RECT& mon : WantedMonitors()) {
+        Target t;
+        if (MakeTarget(fac, mon, false, &t)) g.targets.push_back(t);
     }
     return !g.targets.empty();
+}
+
+void FreeTarget(Target& t) {
+    if (t.hwnd) ShowWindow(t.hwnd, SW_HIDE);
+    SafeRelease(t.out);
+    SafeRelease(t.rtv);
+    SafeRelease(t.bb);
+    SafeRelease(t.sc);
+    if (t.hwnd) DestroyWindow(t.hwnd);
+    t.hwnd = nullptr;
+}
+
+// Swap chains must come from the factory that owns the device's adapter.
+IDXGIFactory2* DeviceFactory() {
+    IDXGIDevice* dd = nullptr;
+    IDXGIAdapter* da = nullptr;
+    IDXGIFactory2* f2 = nullptr;
+    g.dev->QueryInterface(__uuidof(IDXGIDevice), (void**)&dd);
+    if (dd) dd->GetAdapter(&da);
+    if (da) da->GetParent(__uuidof(IDXGIFactory2), (void**)&f2);
+    SafeRelease(da);
+    SafeRelease(dd);
+    return f2;
 }
 
 void ShowTargets() {
     if (g.shown) return;
     g.shown = true;
-    for (auto& t : g.targets) PlaceTarget(t, true);
+    for (auto& t : g.targets)
+        if (!t.showcase) PlaceTarget(t, true);
     RequestRedraw();
     SetTimer(g.ctl, TIMER_TRIM, 4000, nullptr);
 }
@@ -1194,17 +1265,9 @@ bool CreateDevice() {
         f1->Release();
         return false;
     }
-    // Swap chains must come from the factory that owns the device's adapter.
-    IDXGIDevice* dd = nullptr;
-    IDXGIAdapter* da = nullptr;
-    IDXGIFactory2* f2 = nullptr;
-    g.dev->QueryInterface(__uuidof(IDXGIDevice), (void**)&dd);
-    if (dd) dd->GetAdapter(&da);
-    if (da) da->GetParent(__uuidof(IDXGIFactory2), (void**)&f2);
+    IDXGIFactory2* f2 = DeviceFactory();
     bool ok = f2 && CreateTargets(f2);
     SafeRelease(f2);
-    SafeRelease(da);
-    SafeRelease(dd);
     f1->Release();
     return ok;
 }
@@ -1260,7 +1323,7 @@ BOOL CALLBACK CoverEnum(HWND h, LPARAM lp) {
 
 void CheckCovered() {
     bool covered = false;
-    if (g.s.pauseCover != 0 && !g.targets.empty()) {
+    if (g.s.pauseCover != 0 && !g.targets.empty() && !g.showcaseUnder) {  // the picker shows it: it plays
         CoverScan c;
         for (auto& t : g.targets) c.mons.push_back(t.mon);
         c.covered.assign(c.mons.size(), false);
@@ -1278,7 +1341,12 @@ void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD, HWND, LONG idObject, LONG, DWOR
     SetTimer(g.ctl, TIMER_RECHECK, 150, nullptr);  // coalesce bursts into one scan
 }
 
-void ApplyBatteryPolicy() { SetPause(PR_BATTERY, g.s.onBattery == 1 && g.onBattery); }
+// On battery: pause (the modern look has no still wallpaper to turn off to, so "off" pauses too),
+// except while the picker is showing it.
+void ApplyBatteryPolicy() {
+    const bool pause = g.s.onBattery == 1 || (g.s.onBattery == 2 && g.s.look == 1);
+    SetPause(PR_BATTERY, pause && g.onBattery && !g.showcaseUnder);
+}
 
 // Low on memory (Windows says so, or under 10% of RAM is free): the wallpaper pauses and lets go of
 // its frames at once, giving the memory to whatever needs it. It plays again once over 15% has
@@ -1313,17 +1381,106 @@ void HealthCheck() {
     if (!IsWindow(g.host)) { Exit(0); return; }
     if (!IsWindow(g.progman)) { Exit(EXIT_RENDER_RESTART); return; }
     for (auto& t : g.targets) {
-        if (!IsWindow(t.hwnd) || GetParent(t.hwnd) != g.parent) { Exit(EXIT_RENDER_RESTART); return; }
+        if (!t.showcase && (!IsWindow(t.hwnd) || GetParent(t.hwnd) != g.parent)) { Exit(EXIT_RENDER_RESTART); return; }
     }
     if (g.raised && g.shown) {
         // Explorer may re-stack its WorkerW above us (e.g. after a static wallpaper change).
         HWND expectedPrev = g.defview;
         for (auto& t : g.targets) {
+            if (t.showcase) continue;
             if (GetWindow(t.hwnd, GW_HWNDPREV) != expectedPrev)
                 SetWindowPos(t.hwnd, expectedPrev, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             expectedPrev = t.hwnd;
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// The modern look's picker
+
+void PlaceShowcase() {
+    for (auto& t : g.targets)
+        if (t.showcase)
+            SetWindowPos(t.hwnd, g.showcaseUnder, t.mon.left, t.mon.top, t.w, t.h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+// The wallpaper full screen on the picker's screen, just under the picker: above the apps, so the
+// picker shows it while it's open. Everything else (pausing when covered, on battery) gives way.
+void ShowcaseOn(HWND under) {
+    if (!g.dev || g.targets.empty()) return;
+    const bool had = g.showcaseUnder != nullptr;
+    g.showcaseUnder = under;
+    if (had) { PlaceShowcase(); return; }
+    MONITORINFO mi{sizeof mi};
+    GetMonitorInfoW(MonitorFromWindow(under, MONITOR_DEFAULTTOPRIMARY), &mi);
+    IDXGIFactory2* f2 = DeviceFactory();
+    Target t;
+    bool ok = f2 && MakeTarget(f2, mi.rcMonitor, true, &t);
+    SafeRelease(f2);
+    if (!ok) { g.showcaseUnder = nullptr; Log(L"picker: no showcase window"); return; }
+    g.showcaseUp = false;
+    AcquireSRWLockExclusive(&g.lock);
+    g.targets.push_back(t);
+    ReleaseSRWLockExclusive(&g.lock);
+    UpdateRects();
+    PlaceShowcase();
+    CheckCovered();
+    ApplyBatteryPolicy();
+    ApplyPauseState();  // unparks it if it had let go of its frames
+    RequestRedraw();
+    Log(L"picker: showcase on %ldx%ld", (long)t.w, (long)t.h);
+}
+
+void PreviewVideo(const std::wstring& path, double time, UINT seq);
+
+void ShowcaseOff() {
+    if (!g.showcaseUnder) return;
+    g.showcaseUnder = nullptr;
+    if (!g.preview.empty()) PreviewVideo(L"", 0, g.previewSeq);  // the picker's gone: never leave its preview playing
+    Target t;
+    AcquireSRWLockExclusive(&g.lock);
+    for (size_t i = 0; i < g.targets.size(); i++)
+        if (g.targets[i].showcase) {
+            t = g.targets[i];
+            g.targets.erase(g.targets.begin() + (ptrdiff_t)i);
+            break;
+        }
+    ReleaseSRWLockExclusive(&g.lock);
+    FreeTarget(t);
+    CheckCovered();
+    ApplyBatteryPolicy();
+    ApplyPauseState();
+    Log(L"picker: showcase off");
+}
+
+struct PreviewAsk {
+    std::wstring path;
+    double time;
+    UINT seq;
+};
+
+// Plays `path` in place of the wallpaper's own video from `time` (its preview frame, so the
+// picture the picker showed comes to life); "" (or the wallpaper's own) goes back to it, where it was.
+void PreviewVideo(const std::wstring& path, double time, UINT seq) {
+    g.previewSeq = seq;
+    const bool own = path.empty() || _wcsicmp(path.c_str(), g.s.video.c_str()) == 0;
+    if (own ? g.preview.empty() : _wcsicmp(path.c_str(), g.preview.c_str()) == 0) {
+        g.announce = false;
+        PostMessageW(g.host, WM_VBG_PREVIEW_UP, 1, seq);  // already showing it
+        return;
+    }
+    if (g.preview.empty()) g.returnPos = CurrentPos();
+    g.preview = own ? L"" : path;
+    if (!own) g.previewVideoCrop = LoadCropFor(path);
+    const double pos = own ? g.returnPos : time;
+    Log(L"picker: %ls %ls at %.2fs", own ? L"back to" : L"previewing", ActiveVideo().c_str(), pos);
+    g.simWanted = 0;
+    g.announce = true;
+    StopPipeline();
+    ReleaseFreedMemory();
+    UpdateRects();
+    if (!StartPlayback(pos)) return;
+    ArmPark();
 }
 
 void Reload() {
@@ -1335,6 +1492,13 @@ void Reload() {
     // A new video, or the video's own sound switching on/off, needs the other pipeline. It is
     // swapped in place: the windows and the current frame stay, playback resumes at the same spot.
     bool videoChanged = _wcsicmp(ns.video.c_str(), old.video.c_str()) != 0;
+    if (videoChanged && !g.preview.empty() && _wcsicmp(ns.video.c_str(), g.preview.c_str()) == 0) {
+        Log(L"picker: the previewed video is the wallpaper now, it plays on");
+        g.preview.clear();  // already playing, from where the preview got to
+        videoChanged = false;
+    } else if (videoChanged) {
+        g.preview.clear();
+    }
     if (videoChanged || WantVideoAudio(ns) != WantVideoAudio(old)) {
         double pos = videoChanged ? 0 : CurrentPos();
         if (videoChanged) g.simWanted = 0;
@@ -1392,6 +1556,37 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             Log(L"first frame presented on %zu display(s)", g.targets.size());
             ShowTargets();
             ReportState();
+            if (g.announce) {
+                g.announce = false;
+                PostMessageW(g.host, WM_VBG_PREVIEW_UP, 1, g.previewSeq);
+            }
+            return 0;
+        case WM_VBG_SHOWCASE:
+            if (w) ShowcaseOn((HWND)l);
+            else ShowcaseOff();
+            return 0;
+        case WM_COPYDATA: {  // the picker previewing a video: copied, then done once this returns
+            auto* cd = (const COPYDATASTRUCT*)l;
+            if (!cd || cd->dwData != COPY_PREVIEW_VIDEO || cd->cbData < offsetof(PreviewVideoData, path) + sizeof(wchar_t)) return FALSE;
+            auto* pv = (const PreviewVideoData*)cd->lpData;
+            size_t chars = (cd->cbData - offsetof(PreviewVideoData, path)) / sizeof(wchar_t);
+            auto* ask = new PreviewAsk{std::wstring(pv->path, wcsnlen(pv->path, chars)), pv->time, pv->seq};
+            if (!PostMessageW(h, WM_PREVIEW_VIDEO, 0, (LPARAM)ask)) delete ask;
+            return TRUE;
+        }
+        case WM_PREVIEW_VIDEO: {
+            std::unique_ptr<PreviewAsk> ask((PreviewAsk*)l);
+            PreviewVideo(ask->path, ask->time, ask->seq);
+            return 0;
+        }
+        case WM_PREVIEW_FAILED:
+            PostMessageW(g.host, WM_VBG_PREVIEW_UP, 0, g.previewSeq);
+            g.announce = false;
+            g.preview.clear();
+            StopPipeline();
+            ReleaseFreedMemory();
+            UpdateRects();
+            StartPlayback(g.returnPos);
             return 0;
         case WM_WALL_LOST: Exit(EXIT_RENDER_RESTART); return 0;
         case WM_DEVICE_LOST: Log(L"graphics device lost"); Exit(EXIT_RENDER_RESTART); return 0;
@@ -1403,7 +1598,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             g.silent = false;
             g.playing = false;
             g.pendingSeek = g.readerPos;
-            StartEngine(g.s.video);
+            StartEngine(ActiveVideo());
             return 0;
         case WM_VBG_QUIT: Exit(0); return 0;
         case WM_VBG_MEMORY: PostMessageW(g.host, WM_VBG_MEMORY, 0, (LPARAM)(GraphicsMemory() / 1024)); return 0;
@@ -1435,6 +1630,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             } else if (w == TIMER_DISPLAY) {
                 KillTimer(h, TIMER_DISPLAY);
                 std::vector<RECT> now = WantedMonitors();
+                ShowcaseOff();  // the picker asks again for its screen
                 bool same = now.size() == g.targets.size();
                 for (size_t i = 0; same && i < now.size(); i++) same = EqualRect(&now[i], &g.targets[i].mon);
                 if (!same) Exit(EXIT_RENDER_RESTART);
@@ -1472,12 +1668,7 @@ void Shutdown() {
     if (g.eng) g.eng->Shutdown();
     SafeRelease(g.eng);
     CloseReader();
-    for (auto& t : g.targets) {
-        SafeRelease(t.rtv);
-        SafeRelease(t.bb);
-        SafeRelease(t.sc);
-        if (t.hwnd) DestroyWindow(t.hwnd);
-    }
+    for (auto& t : g.targets) FreeTarget(t);
     g.targets.clear();
     for (auto hk : g.hooks) if (hk) UnhookWinEvent(hk);
     if (g.powerDisplay) UnregisterPowerSettingNotification(g.powerDisplay);

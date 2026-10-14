@@ -8,6 +8,8 @@
 #include <psapi.h>
 #include <windowsx.h>
 #include <algorithm>
+#include <cstddef>
+#include <cstring>
 #include <cwchar>
 
 Settings g_settings;
@@ -16,7 +18,7 @@ namespace {
 
 constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4;
 constexpr int HOTKEY_ID = 1, HOTKEY_MUSIC = 2;
-enum { CMD_TOGGLE = 100, CMD_SETTINGS, CMD_CHOOSE, CMD_EXIT };
+enum { CMD_TOGGLE = 100, CMD_SETTINGS, CMD_CHOOSE, CMD_EXIT, CMD_PICKER };
 
 HINSTANCE g_inst;
 HWND g_wnd;
@@ -141,7 +143,8 @@ void UpdateTray() {
     bool on = g_on && !g_batteryOff;
     g_nid.hIcon = on ? g_icoOn : g_icoOff;
     std::wstring tip = std::wstring(L"VideoBG: ") + (on ? L"on" : (g_batteryOff ? L"off while on battery" : L"off")) +
-                       L"\n" + HotkeyToString(g_settings.hkMods, g_settings.hkVk) + L" turns it on or off";
+                       L"\n" + HotkeyToString(g_settings.hkMods, g_settings.hkVk) +
+                       (g_settings.look == 1 ? L" shows your wallpapers" : L" turns it on or off");
     wcsncpy(g_nid.szTip, tip.c_str(), std::size(g_nid.szTip) - 1);
     g_nid.uFlags = NIF_ICON | NIF_TIP | NIF_SHOWTIP | NIF_MESSAGE;
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
@@ -255,7 +258,8 @@ void Reconcile() {
 }
 
 void ApplyBatteryPolicy() {
-    bool off = g_settings.onBattery == 2 && g_onBattery && g_on && !g_override;
+    // The modern look has no still wallpaper to turn off to: the renderer pauses instead.
+    bool off = g_settings.onBattery == 2 && g_settings.look == 0 && g_onBattery && g_on && !g_override;
     if (off != g_batteryOff) {
         g_batteryOff = off;
         Reconcile();
@@ -313,14 +317,20 @@ void OnRendererExit() {
 void ShowTrayMenu(POINT pt) {
     HMENU m = CreatePopupMenu();
     bool on = Host_IsOn();
-    std::wstring t = std::wstring(L"Video wallpaper on\t") + HotkeyToString(g_settings.hkMods, g_settings.hkVk);
-    AppendMenuW(m, MF_STRING | (on ? MF_CHECKED : 0), CMD_TOGGLE, t.c_str());
+    const bool modern = g_settings.look == 1;
+    std::wstring keys = HotkeyToString(g_settings.hkMods, g_settings.hkVk);
+    if (modern) {
+        AppendMenuW(m, MF_STRING, CMD_PICKER, (L"Wallpapers\u2026\t" + keys).c_str());
+        AppendMenuW(m, MF_STRING | (on ? MF_CHECKED : 0), CMD_TOGGLE, L"Video wallpaper on");
+    } else {
+        AppendMenuW(m, MF_STRING | (on ? MF_CHECKED : 0), CMD_TOGGLE, (L"Video wallpaper on\t" + keys).c_str());
+    }
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, CMD_SETTINGS, L"Settings\u2026");
-    AppendMenuW(m, MF_STRING, CMD_CHOOSE, L"Choose video\u2026");
+    if (!modern) AppendMenuW(m, MF_STRING, CMD_CHOOSE, L"Choose video\u2026");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, CMD_EXIT, L"Exit");
-    SetMenuDefaultItem(m, CMD_SETTINGS, FALSE);
+    SetMenuDefaultItem(m, modern ? CMD_PICKER : CMD_SETTINGS, FALSE);
     SetForegroundWindow(g_wnd);
     TrackPopupMenuEx(m, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, g_wnd, nullptr);
     PostMessageW(g_wnd, WM_NULL, 0, 0);
@@ -458,14 +468,21 @@ void ToggleMusic() {
 LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
         case WM_HOTKEY:
-            if (w == HOTKEY_ID) Host_SetOn(!Host_IsOn());
-            else if (w == HOTKEY_MUSIC) ToggleMusic();
+            if (w == HOTKEY_ID) {
+                if (g_settings.look == 1) Modern_Toggle();  // the modern look: the shortcut brings up the wallpapers
+                else Host_SetOn(!Host_IsOn());
+            } else if (w == HOTKEY_MUSIC) {
+                ToggleMusic();
+            }
             return 0;
         case WM_VBG_TRAY:
             switch (LOWORD(l)) {
                 case NIN_SELECT:
                 case NIN_KEYSELECT:
-                case NIN_BALLOONUSERCLICK: UI_Show(); break;
+                case NIN_BALLOONUSERCLICK:
+                    if (g_settings.look == 1 && !g_settings.video.empty()) Modern_Open(0);
+                    else UI_Show();
+                    break;
                 case WM_CONTEXTMENU: ShowTrayMenu(POINT{GET_X_LPARAM(w), GET_Y_LPARAM(w)}); break;
             }
             return 0;
@@ -474,6 +491,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 case CMD_TOGGLE: Host_SetOn(!Host_IsOn()); break;
                 case CMD_SETTINGS: UI_Show(); break;
                 case CMD_CHOOSE: PickVideo(nullptr); break;
+                case CMD_PICKER: Modern_Open(0); break;
                 case CMD_EXIT: DestroyWindow(h); break;
             }
             return 0;
@@ -481,8 +499,13 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             DWORD pid = 0;
             GetWindowThreadProcessId((HWND)l, &pid);
             if (g_proc && pid == GetProcessId(g_proc)) g_ctl = (HWND)l;
+            Modern_RendererEvent(m, w, l);  // the picker's showcase and preview start over with it
             return 0;
         }
+        case WM_VBG_SHOWCASE_UP:
+        case WM_VBG_PREVIEW_UP:
+            Modern_RendererEvent(m, w, l);
+            return 0;
         case WM_VBG_STATE:
             g_rstate = (RendererState)w;
             if (w == RS_ERROR) g_lastError = (HRESULT)l;
@@ -513,6 +536,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             UI_Refresh();
             return 0;
         case WM_VBG_SHOW: UI_Show(); return 0;
+        case WM_VBG_PICKER: Modern_Open(0); return 0;
         case WM_VBG_TOGGLE: Host_SetOn(!Host_IsOn()); return 0;
         case WM_VBG_EXIT: DestroyWindow(h); return 0;
         case WM_TIMER:
@@ -691,6 +715,31 @@ bool Host_PlayFailed(FaultText* why) {
     return true;
 }
 
+void Host_SetLook(int look) {
+    if (look == g_settings.look) return;
+    g_settings.look = look;
+    Log(L"tray: the %ls look", look == 1 ? L"modern" : L"classic");
+    Host_SettingsChanged();  // the renderer's battery pause follows the look
+    UpdateTray();
+    if (look == 0) Modern_Close();
+}
+
+void Host_Showcase(HWND under) {
+    if (g_ctl) PostMessageW(g_ctl, WM_VBG_SHOWCASE, under ? 1 : 0, (LPARAM)under);
+}
+
+void Host_PreviewVideo(const std::wstring& path, double time, UINT seq) {
+    if (!g_ctl) return;
+    std::vector<BYTE> buf(offsetof(PreviewVideoData, path) + (path.size() + 1) * sizeof(wchar_t));
+    auto* pv = (PreviewVideoData*)buf.data();
+    pv->time = time;
+    pv->seq = seq;
+    memcpy(pv->path, path.c_str(), (path.size() + 1) * sizeof(wchar_t));
+    COPYDATASTRUCT cd{COPY_PREVIEW_VIDEO, (DWORD)buf.size(), buf.data()};
+    DWORD_PTR res = 0;
+    SendMessageTimeoutW(g_ctl, WM_COPYDATA, (WPARAM)g_wnd, (LPARAM)&cd, SMTO_ABORTIFHUNG, 500, &res);
+}
+
 void Host_PreviewSize(UINT w, UINT h) {
     if (g_ctl) PostMessageW(g_ctl, WM_VBG_PREVIEW_SIZE, 0, (LPARAM)(((UINT64)h << 16) | w));
 }
@@ -828,7 +877,7 @@ void Host_ClockMove(const ClockLook& look) {
 
 // ---------------------------------------------------------------------------------------
 
-int HostMain(HINSTANCE inst, bool openSettings) {
+int HostMain(HINSTANCE inst, bool openSettings, bool openPicker) {
     g_inst = inst;
     InstallCrashLog(L"tray app");
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -864,7 +913,8 @@ int HostMain(HINSTANCE inst, bool openSettings) {
     if (GetSystemPowerStatus(&ps)) g_onBattery = ps.ACLineStatus == 0;
     g_power = RegisterPowerSettingNotification(g_wnd, &GUID_ACDC_POWER_SOURCE, DEVICE_NOTIFY_WINDOW_HANDLE);
 
-    g_on = g_settings.launch == 0 || (g_settings.launch == 1 && g_settings.lastOn);
+    // The modern look has only the video wallpaper: it starts with it.
+    g_on = g_settings.look == 1 || g_settings.launch == 0 || (g_settings.launch == 1 && g_settings.lastOn);
     ApplyBatteryPolicy();
     Reconcile();
 
@@ -873,17 +923,25 @@ int HostMain(HINSTANCE inst, bool openSettings) {
         Balloon(L"VideoBG is in your tray", L"Choose a video to use as your wallpaper.");
     } else if (openSettings) {
         UI_Show();
+    } else if (openPicker) {
+        Modern_Open(0);
     }
     SetTimer(g_wnd, TIMER_TRIM, 3000, nullptr);
 
     MSG msg;
     for (;;) {
-        DWORD n = g_proc ? 1 : 0;
-        DWORD r = MsgWaitForMultipleObjectsEx(n, &g_proc, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        if (n && r == WAIT_OBJECT_0) {
+        // The renderer ending, the picker's next frame (only while something in it moves), or messages.
+        HANDLE waits[2];
+        DWORD n = 0;
+        if (g_proc) waits[n++] = g_proc;
+        HANDLE frame = Modern_FrameWait();
+        if (frame) waits[n++] = frame;
+        DWORD r = MsgWaitForMultipleObjectsEx(n, waits, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (g_proc && r == WAIT_OBJECT_0) {
             OnRendererExit();
             continue;
         }
+        if (frame && r == WAIT_OBJECT_0 + n - 1) Modern_Frame();  // then the messages, so input never waits behind frames
         bool quit = false;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) { quit = true; break; }

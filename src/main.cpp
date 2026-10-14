@@ -107,6 +107,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
 
     bool startup = has(L"--startup"), toggle = has(L"--toggle"), exitCmd = has(L"--exit"), outside = has(L"--outside");
     bool ownPictures = has(L"--restore-pictures");
+    bool picker = has(L"--wallpapers");  // the wallpaper picker (the modern look's), from a shortcut
     LocalFree(argv);
 
     // Uninstalling: put the user's own lock screen and background back if VideoBG's frame is still
@@ -145,11 +146,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             GetWindowThreadProcessId(existing, &pid);
             AllowSetForegroundWindow(pid);
             if (toggle) PostMessageW(existing, WM_VBG_TOGGLE, 0, 0);
+            else if (picker) PostMessageW(existing, WM_VBG_PICKER, 0, 0);
             else if (!startup) PostMessageW(existing, WM_VBG_SHOW, 0, 0);
         }
         return 0;
     }
-    int r = HostMain(inst, !startup && !toggle);
+    int r = HostMain(inst, !startup && !toggle && !picker, picker);
     if (mutex) CloseHandle(mutex);
     return r;
 }

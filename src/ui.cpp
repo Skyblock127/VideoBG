@@ -31,7 +31,7 @@ constexpr float kSongRowH = 34;       // a song's row in the playlist
 
 enum Id {
     ID_NONE, ID_POWER, ID_CHOOSE, ID_CROP, ID_LOCK, ID_TIMELINE, ID_SPEED, ID_VOLUME, ID_FPS,
-    ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_MUSIC_HOTKEY, ID_LAUNCH, ID_STARTUP_LINK, ID_STARTUP_REG,
+    ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_MUSIC_HOTKEY, ID_LAUNCH, ID_LOOK, ID_CLK_PLACE, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_MUSIC_PLAY, ID_MUSIC_PREV, ID_MUSIC_NEXT, ID_MUSIC_SHUFFLE, ID_MUSIC_REPEAT, ID_MUSIC_SEEK,
     ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_UNMUTE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
@@ -400,7 +400,8 @@ void LoadTheme() {
     RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
                  L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size);
     Theme& t = u.th;
-    t.dark = light == 0;
+    const bool modern = g_settings.look == 1;
+    t.dark = light == 0 || modern;  // the modern look is always dark
     // Accent palette: Light2 for dark mode, Dark1 for light mode (what Windows 11 controls use).
     BYTE pal[32] = {};
     size = sizeof pal;
@@ -410,7 +411,12 @@ void LoadTheme() {
         const BYTE* c = pal + (t.dark ? 1 : 4) * 4;
         accent = D2D1::ColorF(c[0] / 255.f, c[1] / 255.f, c[2] / 255.f);
     }
-    if (t.dark) {
+    if (modern) {  // deeper, cooler blacks, like the wallpaper picker
+        t.bg = Rgb(0x0E0F11); t.card = Rgb(0x18191C); t.stroke = Rgb(0x0A0A0C);
+        t.text = Rgb(0xFFFFFF); t.text2 = Rgb(0xC6C8CE); t.text3 = Rgb(0x8D9098);
+        t.ctrl = Rgb(0x232529); t.ctrlHover = Rgb(0x2B2D32); t.ctrlPress = Rgb(0x1F2124); t.ctrlStroke = Rgb(0x35383E);
+        t.track = Rgb(0x8A8D94); t.onAccent = Rgb(0x000000); t.good = Rgb(0x6CCB5F); t.warn = Rgb(0xFCE100);
+    } else if (t.dark) {
         t.bg = Rgb(0x202020); t.card = Rgb(0x2B2B2B); t.stroke = Rgb(0x1C1C1C);
         t.text = Rgb(0xFFFFFF); t.text2 = Rgb(0xCFCFCF); t.text3 = Rgb(0x9D9D9D);
         t.ctrl = Rgb(0x373737); t.ctrlHover = Rgb(0x3D3D3D); t.ctrlPress = Rgb(0x323232); t.ctrlStroke = Rgb(0x454545);
@@ -1089,9 +1095,11 @@ void PaintHeader() {
         Text(L"\uE768", logo, u.fIcon, Rgb(0xFFFFFF), DWRITE_TEXT_ALIGNMENT_CENTER);
     }
     Text(L"VideoBG", R(72, 16, 400, 42), u.fTitle, t.text);
-    Text(L"Video wallpaper and desktop clock  \u00B7  " + HotkeyToString(g_settings.hkMods, g_settings.hkVk) +
-             L" turns the wallpaper on or off",
-         R(72, 42, 640, 60), u.fSmall, t.text2);
+    const bool modern = g_settings.look == 1;
+    Text(HotkeyToString(g_settings.hkMods, g_settings.hkVk) + (modern ? L" brings up your wallpapers" : L" turns the wallpaper on or off"),
+         R(72, 42, 470, 60), u.fSmall, t.text2);
+    // The look: this window (classic), or the wallpaper picker with this window for settings (modern).
+    Seg(ID_LOOK, R(kW - 24 - 40 - 12 - 60 - 16 - 180, 24, kW - 24 - 40 - 12 - 60 - 16, 54), {L"Classic", L"Modern"}, modern ? 1 : 0);
     bool on = Host_IsOn();
     Text(on ? L"On" : L"Off", R(kW - 24 - 40 - 12 - 60, 22, kW - 24 - 40 - 12, 56), u.fStrong, t.text,
          DWRITE_TEXT_ALIGNMENT_TRAILING);
@@ -1595,7 +1603,8 @@ void PaintPowerCard(float x, float y, float w) {
     Seg(ID_COVER, SegRect(cx, yy, cw), {L"Nothing", L"Fullscreen apps", L"Maximized apps"}, g_settings.pauseCover);
     yy += kRowH;
     Row(lx, yy, kLabelW, L"On battery");
-    Seg(ID_BATTERY, SegRect(cx, yy, cw), {L"Keep playing", L"Pause", L"Still wallpaper"}, g_settings.onBattery);
+    if (g_settings.look == 1) Seg(ID_BATTERY, SegRect(cx, yy, cw), {L"Keep playing", L"Pause"}, std::min(g_settings.onBattery, 1));
+    else Seg(ID_BATTERY, SegRect(cx, yy, cw), {L"Keep playing", L"Pause", L"Still wallpaper"}, g_settings.onBattery);
 }
 
 // ---- Feedback (General page) -----------------------------------------------------------------
@@ -1650,7 +1659,8 @@ void PaintGeneralPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const float msgH = u.hotkeyMsg.empty() ? 0 : 18;
-    D2D1_RECT_F gc = R(x, y, x + w, y + kCardHead + 4 * kRowH + msgH + 10);
+    const bool modern = g_settings.look == 1;  // only the video wallpaper: it always starts with it
+    D2D1_RECT_F gc = R(x, y, x + w, y + kCardHead + (modern ? 3 : 4) * kRowH + msgH + 10);
     Card(gc, L"\uE713", L"General");
     float yy = y + kCardHead;
     // A shortcut box: click it, then press the keys (its message, if any, under it).
@@ -1670,12 +1680,15 @@ void PaintGeneralPage(float x, float w) {
             yy += msgH;
         }
     };
-    shortcut(ID_HOTKEY, L"Toggle hotkey", g_settings.hkMods, g_settings.hkVk, L"Press the new shortcut (Esc cancels)");
+    shortcut(ID_HOTKEY, modern ? L"Wallpapers shortcut" : L"Toggle hotkey", g_settings.hkMods, g_settings.hkVk,
+             L"Press the new shortcut (Esc cancels)");
     shortcut(ID_MUSIC_HOTKEY, L"Pause / mute sound", g_settings.musicHkMods, g_settings.musicHkVk,
              L"Press a key (Esc cancels, Backspace: none)");
-    Row(lx, yy, kLabelW, L"When app starts");
-    Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Video wallpaper", L"As I left it", L"Still wallpaper"}, g_settings.launch);
-    yy += kRowH;
+    if (!modern) {
+        Row(lx, yy, kLabelW, L"When app starts");
+        Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Video wallpaper", L"As I left it", L"Still wallpaper"}, g_settings.launch);
+        yy += kRowH;
+    }
     Row(lx, yy, kLabelW, L"Start with Windows");
     bool enabled = false;
     bool registered = Host_StartupRegistered(&enabled);
@@ -2067,7 +2080,8 @@ void PaintClockPage(float x, float w) {
     // look every video shares or this video's own; Show / Hide is part of the look picked.
     // One row of three equal parts: which wallpaper, which video's clock, shown or hidden.
     const float segW = (iw - 2 * 12) / 3, ry = y + kCardHead;
-    Seg(ID_CLK_MODE, R(lx, ry, lx + segW, ry + 32), {L"Video", L"Still"}, u.clockEdit, !editing);
+    if (g_settings.look == 1) Button(ID_CLK_PLACE, R(lx, ry, lx + segW, ry + 32), L"Place on desktop", L"\uE7C9", false, on && !editing);
+    else Seg(ID_CLK_MODE, R(lx, ry, lx + segW, ry + 32), {L"Video", L"Still"}, u.clockEdit, !editing);
     Seg(ID_CLK_SCOPE, R(lx + segW + 12, ry, lx + 2 * segW + 12, ry + 32), {L"This video", L"All videos"},
         g_settings.clockVideoOwn ? 0 : 1, u.clockEdit == 0 && !video.empty() && !editing);
     Seg(ID_CLK_SHOW, R(x + w - kPad - segW, ry, x + w - kPad, ry + 32), {L"Show", L"Hide"}, EditedLook()->show ? 0 : 1, !editing);
@@ -2132,6 +2146,7 @@ void PaintClockPage(float x, float w) {
                                               : L"Show or hide the clock on the video wallpaper, for every video using the shared look";
             break;
         case ID_CLK_MODE: help = L"Video wallpaper: the clock while a video plays. Still wallpaper: while the video wallpaper is off"; break;
+        case ID_CLK_PLACE: help = L"Drag the clock right on your desktop, over your wallpaper"; break;
         case ID_CLK_SCOPE:
             help = u.clockEdit == 1 ? L"Only for the video wallpaper: a clock just for this video, or the one every video shares"
                                     : L"This video's own clock, or the one every video shares (this video keeps its own)";
@@ -3433,7 +3448,7 @@ void LeaveCrop(bool apply) {
 
 void ShowClockPage() {
     u.nav = NAV_CLOCK;
-    if (prs.edit < 0) u.clockEdit = Host_ClockLive() ? 0 : 1;  // kept while a preset is edited
+    if (prs.edit < 0) u.clockEdit = Host_ClockLive() || g_settings.look == 1 ? 0 : 1;  // kept while a preset is edited
     if (u.stillPx.empty() && !u.stillLoading) {
         u.stillLoading = true;
         Job j;
@@ -4038,6 +4053,14 @@ void OnSeg(int id, int i) {
             break;
         case ID_BATTERY: g_settings.onBattery = i; break;
         case ID_LAUNCH: g_settings.launch = i; break;
+        case ID_LOOK:
+            if (i == g_settings.look) return;
+            Host_SetLook(i);
+            u.clockEdit = Host_ClockLive() || i == 1 ? 0 : 1;
+            LoadTheme();
+            ForgetScaled();
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return;
         case ID_CLK_MODE:
             u.clockEdit = i;
             return;
@@ -4559,6 +4582,7 @@ void OnClick(int id) {
         case ID_FB_LOG: fb.withLog = !fb.withLog; break;
         case ID_FB_PREVIEW: FeedbackPreview(); break;
         case ID_PRS: OpenPresets(); break;
+        case ID_CLK_PLACE: Modern_Open(1); break;
         case ID_PRS_CLOSE: ClosePresets(); break;
         case ID_PRS_NO: prs.confirm = -1; break;
         case ID_PRS_YES: PresetConfirmed(); break;

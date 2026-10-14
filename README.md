@@ -84,6 +84,25 @@ and asks whether to delete your settings too. Then delete the folder.
 | **Playback** | Speed, a frame-rate cap, and which displays to use. Every display shows the same video, so more displays hardly add memory; versions are sized for the largest one. On laptops with two graphics chips, **Graphics chip** picks power saving or high performance. Under **Power saving**: pause when apps cover the desktop, and what to do on battery. |
 | **General** | Change the hotkey and the **pause / mute sound** shortcut (Pause/Break by default: plays or pauses My music, mutes the video's audio), choose whether the wallpaper starts on, find your data folders, and send **Feedback**: suggest a feature or report a problem (no account needed; a report can include the app's log, with your user name and file names taken out). |
 
+### Modern look
+
+Switch the look at the top of the settings (**Classic** / **Modern**). In the modern look,
+`Ctrl + Alt + B` (or the tray icon) brings your wallpapers up as a deck of cards that rises from
+the bottom of the screen, over a full-screen view of the wallpaper:
+
+- Scroll, drag the deck or use the arrow keys. The wallpaper shows each one's picture at once, and
+  its video starts after a moment on it.
+- **Enter**, a click on the middle card or **Set as wallpaper** makes it your wallpaper. **Esc**
+  closes and keeps the one you had.
+- **Add videos** adds as many as you like; **Delete** takes one off the list (the file isn't
+  touched). The first time, the list has the videos you've used before.
+- **Clock** lets you drag the desktop clock right on your desktop.
+- **Settings** opens all the settings (in a darker style), or goes back to the classic look.
+
+The modern look is all about the video wallpaper: it always starts with it, and *on battery* pauses
+instead of switching to your still wallpaper. `VideoBG.exe --wallpapers` opens the picker from a
+shortcut.
+
 No mouse needed: **Tab** moves between controls, **Enter** or **Space** uses one, the **arrow keys**
 move sliders, the clock and the crop box, and **Esc** lets go (press it again to close).
 

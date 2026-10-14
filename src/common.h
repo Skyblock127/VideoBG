@@ -48,6 +48,18 @@ enum : UINT {
     WM_VBG_MUSIC_END,                    // renderer -> host   the playlist ended (repeat off): the music stops
     WM_VBG_VOLUME,                       // host -> renderer   wParam = volume (0-100) while the slider moves (saved when let go)
     WM_VBG_SEEK,                         // host -> renderer   wParam = position (ms); lParam 1 = that exact frame, 0 = the key frame before (dragging)
+    WM_VBG_SHOWCASE,                     // host -> renderer   wParam 1 = show the wallpaper full screen just under window lParam (the picker), 0 = stop
+    WM_VBG_SHOWCASE_UP,                  // renderer -> host   the showcase has its first frame on screen
+    WM_VBG_PREVIEW_UP,                   // renderer -> host   after a preview switch: wParam 1 = its first frame is up, 0 = it couldn't play
+    WM_VBG_PICKER,                       // 2nd instance -> host: open the wallpaper picker (--wallpapers)
+};
+// WM_COPYDATA host -> renderer (the one message that's sent): play this video in place of the
+// wallpaper's own (the picker previewing it), from `time` seconds; an empty path goes back.
+constexpr ULONG_PTR COPY_PREVIEW_VIDEO = 0x56424731;
+struct PreviewVideoData {
+    double time;
+    UINT seq;         // the host's number for this request: WM_VBG_PREVIEW_UP answers with it in lParam
+    wchar_t path[1];  // null-terminated, as long as needed
 };
 enum MusicCommand : WPARAM { MC_NEXT = 1, MC_PREV, MC_SEEK /* lParam = ms */, MC_PLAY_INDEX /* lParam = playlist index */ };
 inline LPARAM MusicPack(UINT durMs, int track, bool playing) {
@@ -129,6 +141,7 @@ struct Settings {
     double previewTime = -1;  // seconds; the video's frame for previews and the lock screen (-1 = auto; stored per video)
     bool lockFollow = true;   // the lock screen shows the video's frame while the wallpaper shows, the user's own picture otherwise
     int pipeline = 0;         // 0 auto, 1 always media engine, 2 always silent reader (INI only)
+    int look = 0;             // 0 native (the classic settings window), 1 modern (the wallpaper picker; video only)
     Crop crop;                // crop for the current video (stored per video)
 
     // Desktop clock: one look while the video wallpaper shows, one for the still wallpaper. A video
@@ -161,6 +174,9 @@ bool Feedback_Send(const FeedbackReport& r, std::wstring* error);  // blocking: 
 void InstallCrashLog(const wchar_t* role);  // logs module+offset of any crash before Windows' crash report
 std::vector<std::wstring> LoadPlaylist();   // %APPDATA%\VideoBG\music.m3u8
 void SavePlaylist(const std::vector<std::wstring>& files);
+// A list of files, one per line in UTF-8 (the playlist, the modern look's wallpapers). Missing: false.
+bool ReadFileList(const std::wstring& path, std::vector<std::wstring>* out);
+bool WriteFileList(const std::wstring& path, const std::vector<std::wstring>& files);
 inline bool WantVideoAudio(const Settings& s) { return s.sound == 1 && s.volume > 0; }
 // The play order for a playlist of n songs: the saved one if it fits, else the songs as chosen.
 inline std::vector<int> MusicOrderFor(const Settings& s, size_t n) {
@@ -191,6 +207,7 @@ std::wstring VideoProfileId(const std::wstring& path);  // VideoId, or the origi
 void LinkLightCopy(const std::wstring& copy, const std::wstring& original);
 std::wstring LightCopyOriginalPath(const std::wstring& copy);  // "" if unknown or no longer there
 bool IsLightCopyOf(const std::wstring& copy, const std::wstring& original);
+std::vector<std::wstring> KnownVideos();  // videos used before (videos.ini), still there, light copies left out
 // Extra settings.ini sections that aren't part of Settings ([LockScreen], [Clock]).
 std::wstring ReadState(const wchar_t* section, const std::wstring& key);
 void WriteState(const wchar_t* section, const std::wstring& key, const wchar_t* value);  // nullptr deletes
@@ -211,7 +228,7 @@ FitRect ComputeFit(double videoAspect, const Crop& c, int scaleMode, double tw, 
 inline int CropMode(const Crop& c) { return c.stretch ? 2 : 0; }
 
 // Entry points
-int HostMain(HINSTANCE inst, bool openSettings);
+int HostMain(HINSTANCE inst, bool openSettings, bool openPicker = false);
 int RendererMain(HINSTANCE inst, HWND host);
 
 // Host services used by the settings UI (host.cpp)
@@ -253,6 +270,11 @@ void Host_FrameChanged();                    // the video's frame (preview time)
 bool Host_LockScreen(HRESULT* lastResult, int* lsf);  // true while it's being updated; lsf: what shows the frame
 
 void Host_VideoPlayable(const std::wstring& path);  // the UI could read it: resume if it had failed to play
+// The modern look's picker: the wallpaper full screen just under `under` (nullptr = stop), and another
+// video playing in its place ("" = the wallpaper's own again; seq comes back with WM_VBG_PREVIEW_UP).
+void Host_Showcase(HWND under);
+void Host_SetLook(int look);  // 0 classic, 1 modern
+void Host_PreviewVideo(const std::wstring& path, double time, UINT seq);
 struct FaultText;
 bool Host_PlayFailed(FaultText* why);               // the wallpaper was turned off because the video couldn't play
 
@@ -262,6 +284,15 @@ void UI_Refresh();
 bool UI_IsOpen();
 void UI_ConvertGif(const std::wstring& gif);  // opens the settings and turns the GIF into a video, then uses it
 void UI_VideoFailed();                        // the video couldn't play: look at the file again
+
+// modern.cpp - the modern look's wallpaper picker (the host's message loop runs its frames).
+bool Modern_Open(int mode);   // 0 picking a wallpaper, 1 placing the clock; false if it couldn't open
+void Modern_Close();
+void Modern_Toggle();
+bool Modern_IsOpen();
+HANDLE Modern_FrameWait();    // signalled when the picker can draw its next frame; nullptr while nothing moves
+void Modern_Frame();
+void Modern_RendererEvent(UINT msg, WPARAM w, LPARAM l);  // the renderer's showcase / preview news
 
 // formats.cpp - which files VideoBG takes, and why one can't be played.
 extern const wchar_t kVideoPatterns[];  // for the open dialog
@@ -290,6 +321,30 @@ VideoFault SniffFile(const std::wstring& path, std::wstring* kind);  // file-lev
 std::wstring CodecLabel(DWORD codec);  // "AV1", "HEVC"... from a Media Foundation subtype's Data1
 FaultText DescribeFault(int fault, DWORD codec, HRESULT hr, const std::wstring& path);
 void OpenFixLink(HWND owner, const std::wstring& link);
+
+// library.cpp - the modern look's wallpapers: the videos to pick from, and a picture of each.
+std::vector<std::wstring> LoadWallpapers(const std::wstring& current);  // the first time: the videos used before; current is always in it
+void SaveWallpapers(const std::vector<std::wstring>& files);           // %APPDATA%\VideoBG\wallpapers.m3u8
+struct WallpaperInfo {           // what the picker shows for one video (made off the UI thread, kept on disk)
+    std::wstring path;
+    bool ok = false;             // a picture could be made, else `fault` says why not
+    int fault = 0;               // a VideoFault
+    std::vector<uint32_t> thumb; // a small picture for its card (BGRX)
+    int tw = 0, th = 0;
+    std::vector<uint32_t> frame; // the whole frame, at most the screen's size (only when asked for)
+    int fw = 0, fh = 0;
+    double time = 0;             // the frame's time: the video's preview frame
+    UINT32 vw = 0, vh = 0;
+    double duration = 0, fps = 0;
+    std::wstring codec;
+    bool sound = false;
+    ULONGLONG bytes = 0;
+    UINT32 palette[5] = {};      // its main colours (0xRRGGBB), most used first
+};
+// Results are posted to `notify` as msg with lParam = WallpaperInfo* (the receiver deletes it).
+void Library_Start(HWND notify, UINT msg, int screenW, int screenH);
+void Library_Request(const std::wstring& path, bool frame, bool urgent);
+void Library_Stop();
 
 // lockscreen.cpp - the lock screen picture and the desktop background follow the wallpaper.
 struct LockScreenWant {

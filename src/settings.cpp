@@ -97,8 +97,17 @@ static std::wstring PlaylistPath() { return AppDataDir() + L"\\music.m3u8"; }
 
 std::vector<std::wstring> LoadPlaylist() {
     std::vector<std::wstring> out;
-    HANDLE f = CreateFileW(PlaylistPath().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return out;
+    ReadFileList(PlaylistPath(), &out);
+    return out;
+}
+
+void SavePlaylist(const std::vector<std::wstring>& files) { WriteFileList(PlaylistPath(), files); }
+
+bool ReadFileList(const std::wstring& path, std::vector<std::wstring>* outList) {
+    std::vector<std::wstring>& out = *outList;
+    out.clear();
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
     DWORD size = GetFileSize(f, nullptr), got = 0;
     std::string data(size, '\0');
     if (size && size < (16u << 20)) ReadFile(f, data.data(), size, &got, nullptr);
@@ -118,10 +127,10 @@ std::vector<std::wstring> LoadPlaylist() {
         MultiByteToWideChar(CP_UTF8, 0, line.data(), (int)line.size(), w.data(), n);
         out.push_back(w);
     }
-    return out;
+    return true;
 }
 
-void SavePlaylist(const std::vector<std::wstring>& files) {
+bool WriteFileList(const std::wstring& path, const std::vector<std::wstring>& files) {
     std::string data = "#EXTM3U\r\n";
     for (auto& w : files) {
         int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
@@ -129,11 +138,12 @@ void SavePlaylist(const std::vector<std::wstring>& files) {
         WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
         data += s + "\r\n";
     }
-    HANDLE f = CreateFileW(PlaylistPath().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return;
-    DWORD w;
-    WriteFile(f, data.data(), (DWORD)data.size(), &w, nullptr);
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD w = 0;
+    bool ok = WriteFile(f, data.data(), (DWORD)data.size(), &w, nullptr) && w == data.size();
     CloseHandle(f);
+    return ok;
 }
 
 static std::wstring Utf16Ini(const wchar_t* name) {
@@ -382,15 +392,21 @@ std::wstring VideoId(const std::wstring& path) {
         ULONGLONG size = 0;
         FILETIME mtime{};
     };
-    static Entry cache[4];
+    static Entry cache[16];
     static int next;
+    static SRWLOCK lock = SRWLOCK_INIT;  // the modern look's preview worker asks from its own thread
     WIN32_FILE_ATTRIBUTE_DATA fa;
     if (path.empty() || !GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa)) return L"";
     ULONGLONG size = ((ULONGLONG)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+    AcquireSRWLockShared(&lock);
     for (auto& e : cache)
         if (e.size == size && !e.id.empty() && _wcsicmp(e.path.c_str(), path.c_str()) == 0 &&
-            CompareFileTime(&e.mtime, &fa.ftLastWriteTime) == 0)
-            return e.id;
+            CompareFileTime(&e.mtime, &fa.ftLastWriteTime) == 0) {
+            std::wstring id = e.id;
+            ReleaseSRWLockShared(&lock);
+            return id;
+        }
+    ReleaseSRWLockShared(&lock);
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return L"";
@@ -416,7 +432,9 @@ std::wstring VideoId(const std::wstring& path) {
     CloseHandle(f);
     wchar_t id[48];
     swprintf(id, 48, L"%016llx-%llu", h, size);
-    cache[next++ % 4] = Entry{path, id, size, fa.ftLastWriteTime};
+    AcquireSRWLockExclusive(&lock);
+    cache[next++ % 16] = Entry{path, id, size, fa.ftLastWriteTime};
+    ReleaseSRWLockExclusive(&lock);
     return id;
 }
 
@@ -452,6 +470,22 @@ std::wstring LightCopyOriginalPath(const std::wstring& copy) {
     if (oid.empty() || oid == VideoId(copy)) return L"";
     std::wstring p = VRead(oid, L"Path");
     return !p.empty() && VideoId(p) == oid ? p : L"";
+}
+
+std::vector<std::wstring> KnownVideos() {
+    std::vector<std::wstring> out;
+    const std::wstring ini = VideosIni();
+    std::vector<wchar_t> names(1 << 16);
+    DWORD n = GetPrivateProfileSectionNamesW(names.data(), (DWORD)names.size(), ini.c_str());
+    for (const wchar_t* sec = names.data(); sec < names.data() + n && *sec; sec += wcslen(sec) + 1) {
+        if (!ReadStr(ini.c_str(), sec, L"CopyOf").empty()) continue;  // a lighter version of another
+        std::wstring p = ReadStr(ini.c_str(), sec, L"Path");
+        if (p.empty() || GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+        bool dup = false;
+        for (auto& o : out) dup = dup || _wcsicmp(o.c_str(), p.c_str()) == 0;
+        if (!dup) out.push_back(p);
+    }
+    return out;
 }
 
 bool IsLightCopyOf(const std::wstring& copy, const std::wstring& original) {
@@ -649,6 +683,7 @@ void LoadSettings(Settings& s) {
     s.launch = ReadInt(ini, L"LaunchState", 1, 0, 2);
     s.lastOn = ReadInt(ini, L"LastOn", 1, 0, 1) != 0;
     s.pipeline = ReadInt(ini, L"Pipeline", 0, 0, 2);
+    s.look = ReadInt(ini, L"Look", 0, 0, 1);
     s.lockFollow = ReadInt(ini, L"LockScreenFollows", 1, 0, 1) != 0;
     s.clockStill.size = s.clockLive.size = ReadFloat(ini, L"Clock", L"Size", 1.06f, 0.5f, 2.5f);  // older: one size for all
     // Older versions had one 12/24-hour setting for every look: it's where each look starts from.
@@ -711,6 +746,7 @@ void SaveSettings(const Settings& s) {
     WriteInt(ini, L"LaunchState", s.launch);
     WriteInt(ini, L"LastOn", s.lastOn ? 1 : 0);
     WriteInt(ini, L"LockScreenFollows", s.lockFollow ? 1 : 0);
+    WriteInt(ini, L"Look", s.look);
     ini.Set(L"General", L"PreviewTime", nullptr);  // per video now
     wchar_t buf[64];
 
