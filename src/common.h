@@ -216,6 +216,7 @@ void SaveSettings(const Settings& s);
 void SaveMyColors(const Settings& s);  // just the colour dialog's saved colours
 void SavePresets(const Settings& s);   // just the clock presets
 void LoadVideoProfile(Settings& s);  // crop, frame and clock look of s.video
+void SaveVideoClock(const std::wstring& video, const ClockLook& look);  // another video's own clock (not the wallpaper's)
 Crop LoadCropFor(const std::wstring& video);
 // Per-video data (videos.ini: crop, clock look) is keyed by the file's content, so renaming or
 // moving a video keeps it, and a light copy shares its original's entry.
@@ -412,7 +413,10 @@ struct ClockImage {
     int pad = 0;               // room for the glow on each side (the text box is w - 2 pad by h - 2 pad)
 };
 // pixelScale: pixels per 96-DPI unit. Loads DirectWrite on first use; Clock_ReleasePainter frees it.
-bool Clock_Paint(const ClockLook& look, float pixelScale, const SYSTEMTIME& t, ClockImage* out);
+// flip: a flip clock's flaps falling over to this minute, how far (0-1; 1: still).
+bool Clock_Paint(const ClockLook& look, float pixelScale, const SYSTEMTIME& t, ClockImage* out, float flip = 1);
+bool Clock_Flips(const ClockLook& look);  // its style flips over at each minute (Clock_Paint's flip)
+constexpr double kClockFlipSeconds = 0.6;
 void Clock_ReleasePainter();
 void Clock_Show(HWND host, const ClockLook& look);  // create / update / move
 void Clock_Hide();
@@ -425,9 +429,21 @@ void Player_Show(const std::vector<std::wstring>& songs, bool force);  // create
 void Player_Update();  // the song or its place changed: redrawn if it shows something new
 void Player_Hide();
 std::vector<std::wstring> Player_Styles();  // by name: Settings::musicPlayer is 0 for none, else 1 + one of these
+// A style's parts, where the pointer is (x, y in the style's DIPs, as Player_Size gives them).
+enum PlayerPart { PLAYER_NONE, PLAYER_PREV, PLAYER_PLAY, PLAYER_NEXT, PLAYER_VOLUME, PLAYER_SEEK, PLAYER_BODY };
+struct PlayerInput {  // the pointer on a preview: what it's over or holds, the place being dragged to
+    int hot = PLAYER_NONE, press = PLAYER_NONE;
+    bool sliding = false;
+    float seek = -1;
+};
 // A style's picture (style 1-based, scale: pixels per DIP) with the song as it is now, for the
 // settings windows; live: what turns, turned by the clock (a still one shows it mid-song).
-bool Player_Paint(int style, float scale, bool live, ClockImage* out);
+bool Player_Paint(int style, float scale, bool live, ClockImage* out, const PlayerInput* in = nullptr);
+int Player_PartAt(int style, float x, float y);    // PlayerPart (the place only while a song is there to move in)
+float Player_VolumeAt(int style, float x);         // the volume (0..1) at x on its slider
+float Player_SeekAt(int style, float x, float y);  // the place (0..1) at x, y, while it's held
+bool Player_HasVolume(int style);
+void Player_Seek(float frac);  // the song moves there (and shows there at once)
 void Player_Size(int style, float* w, float* h);  // DIPs
 std::wstring Player_About(int style);             // what it is, in a few words (0: none)
 bool Player_Turns();        // the music plays: a live preview moves

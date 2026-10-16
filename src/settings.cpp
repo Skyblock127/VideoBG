@@ -780,6 +780,15 @@ void SaveSettings(const Settings& s) {
     }
 }
 
+void SaveVideoClock(const std::wstring& video, const ClockLook& look) {
+    std::wstring id = VideoId(video), pid = VideoProfileId(video);
+    if (id.empty() || pid.empty()) return;
+    IniBatch vini(VideosIni());
+    if (id == pid) vini.Set(id.c_str(), L"Path", video.c_str());
+    vini.Set(pid.c_str(), L"ClockOwn", L"1");
+    WriteLook(vini, pid.c_str(), L"Clock", &look);
+}
+
 std::wstring HotkeyToString(UINT mods, UINT vk) {
     std::wstring s;
     if (!vk) return L"None";

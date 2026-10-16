@@ -1518,8 +1518,8 @@ void PaintSoundPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const int mode = g_settings.sound;
-    const float playerH = 110;
-    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 4 * kRowH + (mode == 2 ? playerH : kRowH) + 10);
+    const float playerH = 110, styleH = kRowH + 8;  // (the player's style: a full-size button)
+    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 3 * kRowH + styleH + (mode == 2 ? playerH : kRowH) + 10);
     Card(card, L"\uE767", L"Sound");
     float yy = y + kCardHead;
     Row(lx, yy, kLabelW, L"Play");
@@ -1539,13 +1539,11 @@ void PaintSoundPage(float x, float w) {
     {
         const std::vector<std::wstring> styles = Player_Styles();
         const int k = std::clamp(g_settings.musicPlayer, 0, (int)styles.size());
-        Row(lx, yy, kLabelW, L"On the desktop", kRowH, mode == 2);
-        FontButton(ID_PLAYER_STYLE, R(cx, yy + 8, cx + std::min(cw, 260.f), yy + kRowH - 8), k ? styles[k - 1] + L" player" : L"No player",
-                   mode == 2, L"\uE8D6");
-        if (mode == 2 && k)
-            Text(L"Drag it to move it", R(cx + std::min(cw, 260.f) + 14, yy, x + w - kPad, yy + kRowH), u.fSmall, t.text2);
+        Row(lx, yy, kLabelW, L"Player", styleH, mode == 2);
+        FontButton(ID_PLAYER_STYLE, SegRect(cx, yy, cw, styleH), k ? styles[k - 1] + L" player" : L"No player", mode == 2,
+                   L"\uE8D6");
     }
-    yy += kRowH;
+    yy += styleH;
     if (mode == 2) {
         PaintPlayer(x, w, yy + 4);
     } else {
@@ -2577,6 +2575,7 @@ struct FontDialog {
     std::vector<D2D1_SIZE_F> sizes;  // in DIPs
     std::vector<bool> tried;
     float boxW = 0;                  // the room the samples were drawn for
+    float nameW = 148;               // the clock styles' names (and what they are): as wide as the longest
     std::wstring note;
     float scroll = 0, target = 0, maxScroll = 0;  // the list, in DIPs: where it is, and where it's gliding to
     float trackTop = 0, trackH = 0, thumbH = 0, grab = 0;  // the scroll bar, for dragging it
@@ -2998,12 +2997,12 @@ void EnsureFontSample(int i, float maxW, float maxH) {
     GetLocalTime(&t);
     const float k = u.dpi / 96;
     ClockImage img;
-    for (float size = 0.8f, pass = 0; pass < 2; pass++) {
+    for (float size = 0.8f, pass = 0; pass < 3; pass++) {
         l.size = size;
         if (!Clock_Paint(l, k, t, &img) || img.w <= 0) return;
         float fit = std::min(maxW / (img.w / k), maxH / (img.h / k));
         if (fit >= 1) break;
-        size *= fit * 0.99f;  // once more, at the size that fits
+        size *= fit * 0.98f;  // again, at the size that fits (text doesn't shrink quite evenly)
     }
     D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
     u.rt->CreateBitmap(D2D1::SizeU((UINT32)img.w, (UINT32)img.h), img.px.data(), (UINT32)img.w * 4, &bp, &fnt.samples[i]);
@@ -3055,7 +3054,14 @@ void PaintFontDialog() {
     fnt.scroll = std::clamp(fnt.scroll, 0.f, fnt.maxScroll);
     fnt.target = std::clamp(fnt.target, 0.f, fnt.maxScroll);
     const float barW = fnt.maxScroll > 0 ? 14 : 0;
-    const float boxW = W - 32 - barW - 190 - 16, boxH = rowH - 20;  // room for a sample, right of the name
+    // The styles' names and what they are take the room their longest needs; a sample gets the rest.
+    float nameW = 120;
+    if (!fnt.dates && !fnt.langs && !fnt.players && !fnt.walls)
+        for (const ClockStyleInfo& st : fnt.list)
+            if (st.font.ready) nameW = std::max({nameW, TextWidth(st.name, u.fStrong), TextWidth(st.about, u.fSmall)});
+    nameW = std::min(nameW + 4, 230.f);
+    fnt.nameW = nameW;
+    const float boxW = W - 32 - barW - 42 - nameW - 24 - 16, boxH = rowH - 20;  // room for a sample, right of the name
     if (boxW != fnt.boxW) {
         ReleaseFontSamples();
         fnt.boxW = boxW;
@@ -3189,13 +3195,16 @@ void PaintFontDialog() {
         Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
         // The name and what it is (then Remove, for the user's copies), centred on the row.
         const float aboutH = f.ready ? 20.f : 38.f, blockH = 22 + aboutH + (f.removable ? 34 : 0), ny = cy - blockH / 2;
-        Text(st.name, R(r.left + 42, ny, r.left + 190, ny + 22), u.fStrong, f.ready ? t.text : t.text2);
-        Text(st.about, R(r.left + 42, ny + 22, r.left + (f.ready ? 190 : 290), ny + 22 + aboutH), f.ready ? u.fSmall : u.fWrap, t.text2);
+        const float nameR = r.left + 42 + fnt.nameW;
+        Text(st.name, R(r.left + 42, ny, nameR, ny + 22), u.fStrong, f.ready ? t.text : t.text2);
+        Text(st.about, R(r.left + 42, ny + 22, f.ready ? nameR : r.left + 290, ny + 22 + aboutH), f.ready ? u.fSmall : u.fWrap, t.text2);
         if (f.removable) Button(ID_FNT_DEL0 + i, R(r.left + 38, ny + 50, r.left + 134, ny + 78), L"Remove", L"\uE74D");
         if (f.ready) {
             EnsureFontSample(i, boxW, boxH);
-            if (fnt.samples[i]) {  // drawn 1:1 on whole pixels
-                const D2D1_SIZE_F sz = fnt.sizes[i];
+            if (fnt.samples[i]) {  // drawn 1:1 on whole pixels (smaller, if it came out bigger than its room)
+                D2D1_SIZE_F sz = fnt.sizes[i];
+                const float fit = std::min({1.f, boxW / sz.width, boxH / sz.height});
+                sz = D2D1::SizeF(sz.width * fit, sz.height * fit);
                 const float x0 = roundf((r.right - 16 - sz.width) * k) / k, y0 = roundf((cy - sz.height / 2) * k) / k;
                 D2D1_RECT_F dst = R(x0, y0, x0 + sz.width, y0 + sz.height);
                 u.rt->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr);
@@ -3446,6 +3455,24 @@ void PaintMemoryTip() {
     Text(text, R(r.left + 14, r.top + 12, r.right - 14, r.bottom - 10), u.fWrap, t.text);
 }
 
+// Hovering Classic / Modern: what each is, and what the modern one costs while it's open (measured
+// 2026-10-15 at 1920x1080: the classic window about 45 MB, the picker about 180 MB, RAM and graphics
+// memory together; both give it back when they close).
+void PaintLookTip() {
+    const Theme& t = u.th;
+    const float w = 360, right = kW - 24 - 40 - 12 - 60 - 16, top = 60;
+    const std::wstring text =
+        L"Classic is this window. Modern brings up your wallpapers full screen (the shortcut and the tray icon open them), "
+        L"with this window for the rest of the settings.\n\nWhile it's open, the modern look uses about 180 MB of memory (RAM "
+        L"and graphics memory together), about four times this window's 45 MB. Both give it back when they close, so in "
+        L"between, the two looks cost the same.";
+    const D2D1_RECT_F r = R(right - w, top, right, top + 152);
+    Fill(R(r.left - 1, r.top + 1, r.right + 1, r.bottom + 3), D2D1::ColorF(0, 0, 0, 0.18f), 8);  // shadow
+    Fill(r, t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), 8);
+    Stroke(r, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
+    Text(text, R(r.left + 14, r.top + 12, r.right - 14, r.bottom - 10), u.fWrap, t.text);
+}
+
 void PaintMain() {
     PaintHeader();
     PaintSidebar();
@@ -3458,6 +3485,7 @@ void PaintMain() {
         case NAV_GENERAL: PaintGeneralPage(x, w); break;
     }
     if (IsHot(ID_MEMINFO) && !(dlg.open || ver.open || fnt.open || prs.open || fb.open)) PaintMemoryTip();
+    if (IsHot(ID_LOOK) && !(dlg.open || ver.open || fnt.open || prs.open || fb.open)) PaintLookTip();
     if (dlg.open && !u.picking) PaintColorDialog();
     if (ver.open) PaintVersionsDialog();
     if (fnt.open) PaintFontDialog();

@@ -52,6 +52,10 @@ int g_lsf;                  // LSF_*: what shows the video's frame (lock screen,
 bool g_stopPending;         // the video waits for the background to be the user's picture again
 bool g_endingSession;       // Windows is signing out / shutting down
 UINT64 g_rendererGraphics;  // the renderer's graphics memory, as it last reported
+bool g_hotkeysOff;          // the shortcuts are off while one is being recorded
+bool g_musicKeyRaw;         // the sound shortcut's key is listened for as raw input too
+bool g_musicKeyHeld;        // and it's down now (seen that way)
+ULONGLONG g_musicKeyAt;     // when the sound shortcut last did something (either way)
 
 bool Running() { return g_proc != nullptr; }
 
@@ -449,8 +453,19 @@ bool RegisterToggleHotkey(UINT mods, UINT vk) {
     return RegisterHotKey(g_wnd, HOTKEY_ID, mods | MOD_NOREPEAT, vk) != 0;
 }
 
+// Many games switch other apps' hotkeys off while they're in front (they take the keyboard as raw
+// input with "no hotkeys"), so the sound shortcut is also listened for as raw input: it still
+// arrives that way then (and only then: a hotkey that works takes the key before raw input sees it).
+void ListenForMusicKey(bool on) {
+    if (on == g_musicKeyRaw) return;
+    RAWINPUTDEVICE d{1, 6, on ? (DWORD)RIDEV_INPUTSINK : (DWORD)RIDEV_REMOVE, on ? g_wnd : nullptr};  // generic desktop: keyboard
+    if (RegisterRawInputDevices(&d, 1, sizeof d)) g_musicKeyRaw = on;
+    g_musicKeyHeld = false;
+}
+
 bool RegisterMusicHotkey(UINT mods, UINT vk) {
     UnregisterHotKey(g_wnd, HOTKEY_MUSIC);
+    ListenForMusicKey(vk != 0);
     return !vk || RegisterHotKey(g_wnd, HOTKEY_MUSIC, mods | MOD_NOREPEAT, vk) != 0;
 }
 
@@ -472,6 +487,32 @@ void ToggleMusic() {
     Host_PlayMusic(!g_settings.musicPlaying);
 }
 
+// The sound shortcut, once per press, however it arrived (not twice if it came both ways).
+void MusicShortcut(bool raw) {
+    const ULONGLONG now = GetTickCount64();
+    if (now - g_musicKeyAt < 300) return;
+    g_musicKeyAt = now;
+    if (raw) Log(L"tray: sound shortcut seen as a key press (the app in front has hotkeys off)");
+    ToggleMusic();
+}
+
+// A key, as raw input: the sound shortcut's, with its modifiers held?
+void MusicKeyRaw(const RAWKEYBOARD& k) {
+    if (g_hotkeysOff || !g_settings.musicHkVk || k.VKey != g_settings.musicHkVk) return;
+    if (k.Flags & RI_KEY_BREAK) {
+        g_musicKeyHeld = false;
+        return;
+    }
+    if (g_musicKeyHeld) return;  // held down: it repeats
+    g_musicKeyHeld = true;
+    UINT mods = 0;
+    if (GetAsyncKeyState(VK_MENU) < 0) mods |= MOD_ALT;
+    if (GetAsyncKeyState(VK_CONTROL) < 0) mods |= MOD_CONTROL;
+    if (GetAsyncKeyState(VK_SHIFT) < 0) mods |= MOD_SHIFT;
+    if (GetAsyncKeyState(VK_LWIN) < 0 || GetAsyncKeyState(VK_RWIN) < 0) mods |= MOD_WIN;
+    if (mods == g_settings.musicHkMods) MusicShortcut(true);
+}
+
 LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
         case WM_HOTKEY:
@@ -479,9 +520,16 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 if (g_settings.look == 1) Modern_Toggle();  // the modern look: the shortcut brings up the wallpapers
                 else Host_SetOn(!Host_IsOn());
             } else if (w == HOTKEY_MUSIC) {
-                ToggleMusic();
+                MusicShortcut(false);
             }
             return 0;
+        case WM_INPUT: {
+            RAWINPUT ri;
+            UINT size = sizeof ri;
+            if (GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) != (UINT)-1 && ri.header.dwType == RIM_TYPEKEYBOARD)
+                MusicKeyRaw(ri.data.keyboard);
+            return DefWindowProcW(h, m, w, l);
+        }
         case WM_VBG_TRAY:
             switch (LOWORD(l)) {
                 case NIN_SELECT:
@@ -812,6 +860,7 @@ bool Host_RendererMemory(SIZE_T* privateWs, SIZE_T* graphics) {
 bool Host_BatteryOff() { return g_batteryOff; }
 
 void Host_SuspendHotkey(bool suspend) {
+    g_hotkeysOff = suspend;
     if (suspend) {
         UnregisterHotKey(g_wnd, HOTKEY_ID);
         UnregisterHotKey(g_wnd, HOTKEY_MUSIC);

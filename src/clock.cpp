@@ -29,7 +29,7 @@ const wchar_t* const kMonths[] = {L"JANUARY", L"FEBRUARY", L"MARCH",     L"APRIL
 struct Words {
     std::wstring lang;
     bool native = false;
-    std::wstring days[7], months[12], monthsAfterDay[12], shortMonths[12], am, pm, digits;
+    std::wstring days[7], shortDays[7], months[12], monthsAfterDay[12], shortMonths[12], am, pm, digits;
     bool amFirst = false;  // AM/PM goes before the time (Chinese, Korean, ...)
     bool joined = false;   // a script whose letters join up (Devanagari, Arabic, Thai...): no letter spacing
     bool rtl = false;      // written right to left (Arabic, Hebrew, Urdu...)
@@ -90,7 +90,10 @@ const Words& WordsFor(const std::wstring& lang, bool native) {
     w.lang = lang;
     w.native = native;
     made = true;
-    for (int i = 0; i < 7; i++) w.days[i] = kDays[i];
+    for (int i = 0; i < 7; i++) {
+        w.days[i] = kDays[i];
+        w.shortDays[i] = std::wstring(kDays[i]).substr(0, 3);
+    }
     for (int i = 0; i < 12; i++) {
         w.months[i] = w.monthsAfterDay[i] = kMonths[i];
         w.shortMonths[i] = std::wstring(kMonths[i]).substr(0, 3);
@@ -101,6 +104,8 @@ const Words& WordsFor(const std::wstring& lang, bool native) {
     for (int i = 0; i < 7; i++) {  // the first day name is Monday's
         std::wstring d = GregorianText(lang, i == 0 ? CAL_SDAYNAME7 : CAL_SDAYNAME1 + i - 1);
         if (!d.empty()) w.days[i] = Upper(lang, d);
+        d = GregorianText(lang, i == 0 ? CAL_SABBREVDAYNAME7 : CAL_SABBREVDAYNAME1 + i - 1);
+        if (!d.empty()) w.shortDays[i] = Upper(lang, d);
     }
     // The month after a day number comes from Windows' date formatting, which uses the language's
     // own calendar: only when that's the Gregorian one.
@@ -365,11 +370,14 @@ struct ClockWindow {
     HWND hwnd = nullptr, host = nullptr, desktop = nullptr;
     ClockLook look;
     std::wstring drawn;  // what the window shows now (style + minute), to skip identical redraws
+    std::wstring drawnStyle;  // its style alone
     int w = 0, h = 0;
     bool closing = false;
+    ULONGLONG flipAt = 0;  // a flip clock's flaps started falling (0: they don't)
+    SYSTEMTIME flipTo{};   // to this minute
 } W;
 
-constexpr UINT_PTR TIMER_MINUTE = 1;
+constexpr UINT_PTR TIMER_MINUTE = 1, TIMER_FLIP = 2;
 
 LRESULT CALLBACK ClockProc(HWND h, UINT m, WPARAM w, LPARAM l);
 
@@ -384,6 +392,7 @@ bool CreateClockWindow() {
     W.hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, CLOCK_CLASS,
                              L"VideoBG clock", WS_POPUP, 0, 0, 1, 1, W.desktop, nullptr, wc.hInstance, nullptr);
     W.drawn.clear();
+    W.drawnStyle.clear();
     return W.hwnd != nullptr;
 }
 
@@ -394,6 +403,7 @@ void DestroyClockWindow() {
     W.closing = false;
     W.hwnd = nullptr;
     W.drawn.clear();
+    W.drawnStyle.clear();
 }
 
 // Where the look puts the clock: its centre as a share of the main screen.
@@ -410,6 +420,47 @@ void PlaceClock() {
     SetWindowPos(W.hwnd, HWND_BOTTOM, p.x, p.y, W.w, W.h, SWP_NOACTIVATE | SWP_SHOWWINDOW);  // bottom = just above the desktop
 }
 
+// Puts the clock's picture in the window; false if it couldn't.
+bool ShowPicture(const ClockImage& img) {
+    bool ok = false;
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = img.w;
+    bi.bmiHeader.biHeight = -img.h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void* bits = nullptr;
+    HDC dc = CreateCompatibleDC(nullptr);
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (bmp) {
+        memcpy(bits, img.px.data(), img.px.size() * 4);
+        HGDIOBJ old = SelectObject(dc, bmp);
+        W.w = img.w;
+        W.h = img.h;
+        POINT dst = ClockOrigin(), zero{0, 0};
+        SIZE sz{img.w, img.h};
+        BLENDFUNCTION bf{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        ok = UpdateLayeredWindow(W.hwnd, nullptr, &dst, &sz, dc, &zero, 0, &bf, ULW_ALPHA);
+        if (!ok) Log(L"clock: couldn't update the window (error %lu)", GetLastError());
+        SelectObject(dc, old);
+        DeleteObject(bmp);
+    }
+    DeleteDC(dc);
+    return ok;
+}
+
+// A flip clock's flaps falling over: the next picture, about 30 a second for a moment.
+void FlipStep() {
+    const float p = W.flipAt ? (float)((GetTickCount64() - W.flipAt) / (kClockFlipSeconds * 1000)) : 1;
+    ClockImage img;
+    if (p >= 1 || !Clock_Paint(W.look, Clock_PixelScale(), W.flipTo, &img, p) || !ShowPicture(img)) {
+        KillTimer(W.hwnd, TIMER_FLIP);
+        if (W.flipAt && Clock_Paint(W.look, Clock_PixelScale(), W.flipTo, &img)) ShowPicture(img);
+        W.flipAt = 0;
+        if (!UI_IsOpen()) Clock_ReleasePainter();
+    }
+}
+
 void DrawClock() {
     if (!W.hwnd) return;
     // Explorer restarted: the desktop is a new window now.
@@ -422,35 +473,26 @@ void DrawClock() {
     float k = Clock_PixelScale();
     wchar_t when[64];
     swprintf(when, 64, L"|%.3f|%04d%02d%02d%02d%02d", k, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
-    std::wstring key = Clock_StyleKey(W.look) + when;
+    const std::wstring style = Clock_StyleKey(W.look) + std::to_wstring(k), key = Clock_StyleKey(W.look) + when;
     if (W.drawn != key) {
+        // Only the minute changed, on a flip clock that can be seen: its flaps fall over.
+        LPARAM mask = 0;
+        Host_RendererState(&mask);
+        const bool flip = Clock_Flips(W.look) && W.drawnStyle == style && !(mask & (PR_COVERED | PR_LOCKED | PR_DISPLAY_OFF));
         ClockImage img;
-        if (Clock_Paint(W.look, k, t, &img)) {
-            BITMAPINFO bi{};
-            bi.bmiHeader.biSize = sizeof bi.bmiHeader;
-            bi.bmiHeader.biWidth = img.w;
-            bi.bmiHeader.biHeight = -img.h;
-            bi.bmiHeader.biPlanes = 1;
-            bi.bmiHeader.biBitCount = 32;
-            void* bits = nullptr;
-            HDC dc = CreateCompatibleDC(nullptr);
-            HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-            if (bmp) {
-                memcpy(bits, img.px.data(), img.px.size() * 4);
-                HGDIOBJ old = SelectObject(dc, bmp);
-                W.w = img.w;
-                W.h = img.h;
-                POINT dst = ClockOrigin(), zero{0, 0};
-                SIZE sz{img.w, img.h};
-                BLENDFUNCTION bf{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-                if (UpdateLayeredWindow(W.hwnd, nullptr, &dst, &sz, dc, &zero, 0, &bf, ULW_ALPHA)) W.drawn = key;
-                else Log(L"clock: couldn't update the window (error %lu)", GetLastError());
-                SelectObject(dc, old);
-                DeleteObject(bmp);
-            }
-            DeleteDC(dc);
+        if (Clock_Paint(W.look, k, t, &img, flip ? 0 : 1) && ShowPicture(img)) {
+            W.drawn = key;
+            W.drawnStyle = style;
         }
-        if (!UI_IsOpen()) Clock_ReleasePainter();  // nothing stays loaded between minutes
+        if (flip) {
+            W.flipAt = GetTickCount64();
+            W.flipTo = t;
+            SetTimer(W.hwnd, TIMER_FLIP, 30, nullptr);
+        } else {
+            KillTimer(W.hwnd, TIMER_FLIP);
+            W.flipAt = 0;
+            if (!UI_IsOpen()) Clock_ReleasePainter();  // nothing stays loaded between minutes
+        }
     }
     PlaceClock();
     // Next redraw right after the minute changes.
@@ -464,11 +506,13 @@ LRESULT CALLBACK ClockProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
         case WM_TIMER:
             if (w == TIMER_MINUTE) DrawClock();
+            else if (w == TIMER_FLIP) FlipStep();
             return 0;
         case WM_DESTROY:
             if (!W.closing && h == W.hwnd) {  // destroyed with the desktop (Explorer restarting)
                 W.hwnd = nullptr;
                 W.drawn.clear();
+                W.drawnStyle.clear();
                 if (W.host) PostMessageW(W.host, WM_VBG_CLOCK_LOST, 0, 0);
             }
             return 0;
@@ -558,13 +602,16 @@ bool UseDesignFonts() {
 }
 
 struct Item {
-    enum Kind { TEXT, LINE, CIRCLE, RECT, ARC, TILE } kind = TEXT;
-    D2D1_POINT_2F p{}, q{};       // line: its ends; circle, arc: the centre (q.x: the radius); rect, tile: corners; text: top left
-    float width = 0;              // a stroke's width (0: filled)
-    float radius = 0;             // rect, tile: corners; arc: where it starts (degrees clockwise from 12 o'clock)
-    float sweep = 0;              // arc: degrees clockwise; tile: the split across its middle
+    enum Kind { TEXT, LINE, CIRCLE, RECT, ARC } kind = TEXT;
+    D2D1_POINT_2F p{}, q{};       // line: its ends; circle, arc: the centre (q.x: the radius); rect: corners; text: top left
+    float width = 0;              // a stroke's width (0: filled); text: added to its letters' strokes
+    float radius = 0;             // rect: corners; arc: where it starts (degrees clockwise from 12 o'clock)
+    float sweep = 0;              // arc: degrees clockwise
     float a = 1;                  // how strong the clock's colour is
     IDWriteTextLayout* text = nullptr;
+    bool clipped = false;         // only what's inside `clip` shows
+    D2D1_RECT_F clip{};
+    float squash = 1, hinge = 0;  // folded towards the line y = hinge: its height times squash (a flip clock's flap)
 };
 
 struct Canvas {
@@ -609,10 +656,10 @@ struct Canvas {
         items.push_back(i);
         Grow(rc.left, rc.top, rc.right, rc.bottom);
     }
-    void Tile(const D2D1_RECT_F& rc, float radius, float split, float a) {  // a flip tile: two halves
+    void Frame(const D2D1_RECT_F& rc, float radius, float w, float a) {  // a rect's outline
         Rect(rc, radius, a);
-        items.back().kind = Item::TILE;
-        items.back().sweep = split;
+        items.back().width = w;
+        Grow(rc.left - w, rc.top - w, rc.right + w, rc.bottom + w);
     }
     void Arc(float cx, float cy, float rad, float from, float sweep, float w, float a) {
         Item i;
@@ -626,7 +673,21 @@ struct Canvas {
         items.push_back(i);
         Grow(cx - rad - w, cy - rad - w, cx + rad + w, cy + rad + w);
     }
+    // The items from `from` on show only inside clip, folded towards hinge (see Item).
+    void Fold(size_t from, const D2D1_RECT_F& clip, float hinge, float squash) {
+        for (size_t k = from; k < items.size(); k++) {
+            items[k].clipped = true;
+            items[k].clip = clip;
+            items[k].hinge = hinge;
+            items[k].squash = squash;
+        }
+    }
 };
+
+// Weights. kThick: the font's own (regular) letters with their strokes made a little thicker, for
+// the days' names and AM/PM (the fonts are thin there, and have no bolder face of their own).
+constexpr int kRegular = 400, kThick = 1;
+constexpr float kThickening = 0.06f;  // per em, added across each stroke
 
 // A line of text in one of the designs' fonts, px pixels high, its letters `gap` pixels apart.
 struct Run {
@@ -634,10 +695,10 @@ struct Run {
     float w = 0, h = 0, base = 0, cap = 0;  // its width and height, its baseline (from its top), its capitals' height
 };
 
-bool Lay(const std::wstring& s, int face, float px, float gap, bool rtl, Run* r) {
+bool Lay(const std::wstring& s, int face, float px, float gap, bool rtl, Run* r, int weight = kRegular) {
     if (s.empty() || px <= 0) return false;
     IDWriteTextFormat* fmt = nullptr;
-    if (FAILED(P.f->CreateTextFormat(P.faces[face].family.c_str(), P.fonts, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    if (FAILED(P.f->CreateTextFormat(P.faces[face].family.c_str(), P.fonts, (DWRITE_FONT_WEIGHT)(weight == kThick ? kRegular : weight), DWRITE_FONT_STYLE_NORMAL,
                                      DWRITE_FONT_STRETCH_NORMAL, px, L"en-us", &fmt)))
         return false;
     fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -667,18 +728,18 @@ bool Lay(const std::wstring& s, int face, float px, float gap, bool rtl, Run* r)
     return true;
 }
 
-float Width(const std::wstring& s, int face, float px, float gap) {
+float Width(const std::wstring& s, int face, float px, float gap, int weight = kRegular) {
     Run r;
-    if (!Lay(s, face, px, gap, false, &r)) return 0;
+    if (!Lay(s, face, px, gap, false, &r, weight)) return 0;
     Rel(r.layout);
     return r.w;
 }
 
 // Where a text's ink starts and ends, from its layout's left (fonts leave room either side).
-bool Ink(const std::wstring& s, int face, float px, float* left, float* right) {
+bool Ink(const std::wstring& s, int face, float px, float* left, float* right, int weight = kRegular) {
     Run r;
     DWRITE_OVERHANG_METRICS o{};
-    if (!Lay(s, face, px, 0, false, &r)) return false;
+    if (!Lay(s, face, px, 0, false, &r, weight)) return false;
     const bool ok = SUCCEEDED(r.layout->GetOverhangMetrics(&o));
     *left = -o.left;
     *right = r.w + o.right;
@@ -689,21 +750,24 @@ bool Ink(const std::wstring& s, int face, float px, float* left, float* right) {
 // Puts a line of text with its capitals' top at capTop: centred on x (align 0), starting at x (1) or
 // ending at x (-1). Returns its width.
 float Put(Canvas& cv, const std::wstring& s, int face, float px, float gap, float x, float capTop, int align, float a,
-          bool rtl = false) {
+          bool rtl = false, int weight = kRegular) {
     Run r;
-    if (!Lay(s, face, px, gap, rtl, &r)) return 0;
+    if (!Lay(s, face, px, gap, rtl, &r, weight)) return 0;
     Item i;
     i.p = D2D1::Point2F(align == 0 ? x - r.w / 2 : align > 0 ? x : x - r.w, capTop - (r.base - r.cap));
     i.a = a;
     i.text = r.layout;
+    if (weight == kThick) i.width = kThickening * px;
     cv.items.push_back(i);
     cv.Grow(i.p.x, i.p.y, i.p.x + r.w, i.p.y + r.h);
     return r.w;
 }
 
-// What a design writes: the day, the date (in the look's date style; "" for none), the time's parts.
+// What a design writes: the day (and its short name), the date (in the look's date style; "" for
+// none), the time's parts; and the numbers, for the designs that draw them.
 struct Says {
-    std::wstring day, date, hh, mm, mark;  // mark: AM / PM (12-hour)
+    std::wstring day, shortDay, shortMonth, dayNumber, date, hh, mm, mark;  // mark: AM / PM (12-hour)
+    int hour = 0, minute = 0;              // 24-hour
     bool rtl = false, joined = false;      // its script reads right to left; its letters join (no spacing)
 };
 
@@ -711,17 +775,29 @@ Says SaysFor(const ClockLook& l, const SYSTEMTIME& t) {
     const Words& w = WordsFor(l.lang, l.nativeDigits);
     Says s;
     s.day = w.days[t.wDayOfWeek % 7];
+    s.shortDay = w.shortDays[t.wDayOfWeek % 7];
+    s.shortMonth = w.shortMonths[(t.wMonth + 11) % 12];
     s.date = Clock_DateText(l, l.date, t);
     wchar_t b[16];
+    swprintf(b, 16, L"%d", t.wDay);
+    s.dayNumber = WithDigits(w, b);
     swprintf(b, 16, l.h24 ? L"%02d" : L"%d", l.h24 ? t.wHour : (t.wHour + 11) % 12 + 1);
     s.hh = WithDigits(w, b);
     swprintf(b, 16, L"%02d", t.wMinute);
     s.mm = WithDigits(w, b);
     if (!l.h24) s.mark = t.wHour < 12 ? w.am : w.pm;
+    s.hour = t.wHour;
+    s.minute = t.wMinute;
     s.rtl = w.rtl;
     s.joined = w.joined;
     return s;
 }
+
+// A flip clock's flaps falling over at a new minute: how far (1: still) and what showed before.
+struct {
+    float p = 1;
+    Says before;
+} g_flip;
 
 constexpr float kPi = 3.14159265f;
 
@@ -732,7 +808,7 @@ D2D1_POINT_2F Polar(float rad, float deg) {  // from 0,0: degrees clockwise from
 // The day's name, then the date (if any), centred under y.
 float DayAndDate(Canvas& cv, const Says& s, float u, float y, bool day = true) {
     if (day) {
-        Put(cv, s.day, F_SYNCOPATE, 16 * u, s.joined ? 0 : 5 * u, 0, y, 0, 0.9f, s.rtl);
+        Put(cv, s.day, F_SYNCOPATE, 16 * u, s.joined ? 0 : 5 * u, 0, y, 0, 0.9f, s.rtl, kThick);
         y += 16 * u * 0.72f + 14 * u;
     }
     if (!s.date.empty()) {
@@ -740,6 +816,30 @@ float DayAndDate(Canvas& cv, const Says& s, float u, float y, bool day = true) {
         y += 20 * u * 0.72f + 14 * u;
     }
     return y;
+}
+
+// AM / PM, small (none in 24-hour time).
+void Mark(Canvas& cv, const Says& s, float px, float u, float x, float capTop, int align) {
+    if (!s.mark.empty()) Put(cv, s.mark, F_SYNCOPATE, px, s.joined ? 0 : 3 * u, x, capTop, align, 0.85f, s.rtl, kThick);
+}
+
+// The time in Quicksand, its colon set by its ink, evenly between the hours and minutes (the font
+// gives it room on one side only): centred on x (align 0) or starting at x (1). Returns its width;
+// with no canvas, only that.
+float RoundTime(Canvas* cv, const Says& s, float px, float x, float capTop, int align, float a = 1) {
+    const float gap = 0.1f * px;
+    const std::wstring part[3] = {s.hh, L":", s.mm};
+    float l[3], r[3], tw = 2 * gap;
+    for (int i = 0; i < 3; i++) {
+        if (!Ink(part[i], F_QUICKSAND, px, &l[i], &r[i])) return 0;
+        tw += r[i] - l[i];
+    }
+    float at = align == 0 ? x - tw / 2 : x;
+    for (int i = 0; cv && i < 3; i++) {
+        Put(*cv, part[i], F_QUICKSAND, px, 0, at - l[i], capTop, 1, a);
+        at += r[i] - l[i] + gap;
+    }
+    return tw;
 }
 
 // Dial: hands on a round face with its minutes marked; the date under it, if one is chosen.
@@ -758,6 +858,29 @@ void Dial(Canvas& cv, const ClockLook&, const SYSTEMTIME& t, const Says& s, floa
     DayAndDate(cv, s, u, R + 30 * u, false);
 }
 
+// Watch: a watch face with batons for the hours and slim hands, the day and date in a window at three.
+void Watch(Canvas& cv, const ClockLook&, const SYSTEMTIME& t, const Says& s, float u) {
+    const float R = 122 * u;
+    cv.Circle(0, 0, R, 2.4f * u, 0.6f);
+    for (int i = 0; i < 60; i++) {
+        if (i % 5) {
+            const D2D1_POINT_2F p = Polar(R - 13 * u, i * 6.f);
+            cv.Circle(p.x, p.y, 1.4f * u, 0, 0.55f);
+        } else if (i != 15) {  // (three: the date window)
+            const bool main = i % 15 == 0;
+            cv.Line(Polar(R - 13 * u, i * 6.f), Polar(R - (main ? 42 : 32) * u, i * 6.f), (main ? 7.5f : 5) * u, 1);
+        }
+    }
+    const std::wstring dd = s.shortDay + L"  " + s.dayNumber;
+    const float px = 13 * u, cap = P.faces[F_SYNCOPATE].cap * px, right = R - 20 * u;
+    const float tw = Put(cv, dd, F_SYNCOPATE, px, s.joined ? 0 : 2 * u, right - 9 * u, -cap / 2, -1, 1, false, kThick);
+    cv.Frame(D2D1::RectF(right - 18 * u - tw, -cap / 2 - 9 * u, right, cap / 2 + 9 * u), 5 * u, 1.6f * u, 0.7f);
+    const float hourDeg = ((t.wHour % 12) + t.wMinute / 60.f) * 30, minDeg = t.wMinute * 6.f;
+    cv.Line(Polar(-12 * u, hourDeg), Polar(R * 0.52f, hourDeg), 7.5f * u, 1);
+    cv.Line(Polar(-16 * u, minDeg), Polar(R * 0.84f, minDeg), 4.5f * u, 1);
+    cv.Circle(0, 0, 7.5f * u, 0, 1);
+}
+
 // Ring: the hour fills a ring around the time; the day above the time, the date under the ring.
 void RingDesign(Canvas& cv, const ClockLook&, const SYSTEMTIME& t, const Says& s, float u) {
     const float R = 118 * u, w = 7 * u;
@@ -768,21 +891,88 @@ void RingDesign(Canvas& cv, const ClockLook&, const SYSTEMTIME& t, const Says& s
     cv.Circle(end.x, end.y, 6.5f * u, 0, 1);
     const float px = 46 * u, cap = P.faces[F_MICHROMA].cap * px;
     Put(cv, s.hh + L":" + s.mm, F_MICHROMA, px, 0, 0, -cap / 2, 0, 1);
-    Put(cv, s.day, F_SYNCOPATE, 12 * u, s.joined ? 0 : 4 * u, 0, -cap / 2 - 30 * u, 0, 0.85f, s.rtl);
-    if (!s.mark.empty()) Put(cv, s.mark, F_SYNCOPATE, 12 * u, s.joined ? 0 : 3 * u, 0, cap / 2 + 20 * u, 0, 0.85f, s.rtl);
+    Put(cv, s.day, F_SYNCOPATE, 13 * u, s.joined ? 0 : 4 * u, 0, -cap / 2 - 30 * u, 0, 0.88f, s.rtl, kThick);
+    Mark(cv, s, 12 * u, u, 0, cap / 2 + 20 * u, 0);
     DayAndDate(cv, s, u, R + 34 * u, false);
 }
 
-// Flip: the hours and minutes on two split tiles; AM/PM in the corner; the day and date under them.
-void Flip(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
-    const float W = 148 * u, H = 168 * u, gap = 14 * u, px = 84 * u, cap = P.faces[F_ORBITRON].cap * px;
-    for (int i = 0; i < 2; i++) {
-        const float x0 = i ? gap / 2 : -gap / 2 - W;
-        cv.Tile(D2D1::RectF(x0, -H / 2, x0 + W, H / 2), 20 * u, 3 * u, 0.18f);
-        Put(cv, i ? s.mm : s.hh, F_ORBITRON, px, 0, x0 + W / 2, -cap / 2, 0, 1);
+// Orbit: the minutes and the hours on two rings around the time (no day); the date under them.
+void Orbit(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
+    const float R1 = 124 * u, R2 = 104 * u, w1 = 5 * u, w2 = 11 * u;
+    cv.Circle(0, 0, R1, w1, 0.16f);
+    cv.Circle(0, 0, R2, w2, 0.16f);
+    const float minutes = s.minute * 6.f, hours = ((s.hour % 12) + s.minute / 60.f) * 30;
+    if (hours > 0) cv.Arc(0, 0, R2, 0, hours, w2, 0.7f);
+    if (minutes > 0) cv.Arc(0, 0, R1, 0, minutes, w1, 1);
+    const D2D1_POINT_2F end = Polar(R1, minutes);
+    cv.Circle(end.x, end.y, 6 * u, 0, 1);
+    const float px = 58 * u, cap = P.faces[F_QUICKSAND].cap * px;
+    RoundTime(&cv, s, px, 0, -cap / 2, 0);
+    Mark(cv, s, 12 * u, u, 0, cap / 2 + 18 * u, 0);
+    DayAndDate(cv, s, u, R1 + 34 * u, false);
+}
+
+// Flip: the hours and minutes on split-flap tiles, each number cut across the middle with its halves
+// on the two flaps; at a new minute the top flap falls over (g_flip). AM/PM in the corner; the day
+// and date under them.
+void FlipTile(Canvas& cv, float x0, float W, float H, float u, const std::wstring& now, const std::wstring& was, float p) {
+    const float split = 3 * u, px = 84 * u, cap = P.faces[F_ORBITRON].cap * px, half = H / 2 - split / 2;
+    p *= p;  // it falls: faster as it goes
+    const D2D1_RECT_F upper = D2D1::RectF(x0 - u, -H / 2 - u, x0 + W + u, -split / 2), lower = D2D1::RectF(x0 - u, split / 2, x0 + W + u, H / 2 + u);
+    auto flap = [&](const std::wstring& digits, D2D1_RECT_F clip, float squash, float a) {
+        const size_t from = cv.items.size();
+        cv.Rect(D2D1::RectF(x0, -H / 2, x0 + W, H / 2), 20 * u, a);
+        Put(cv, digits, F_ORBITRON, px, 0, x0 + W / 2, -cap / 2, 0, 1);
+        cv.Fold(from, clip, 0, squash);
+    };
+    if (p >= 1 || now == was) {
+        flap(now, upper, 1, 0.18f);
+        flap(now, lower, 1, 0.18f);
+    } else if (p < 0.5f) {  // the top flap (the number before) folds down; the new number's top shows above it
+        const float s = cosf(p * kPi);
+        flap(now, D2D1::RectF(upper.left, upper.top, upper.right, -split / 2 - half * s), 1, 0.18f);
+        flap(was, upper, s, 0.18f + 0.1f * (1 - s));  // (lit as it turns towards you)
+        flap(was, lower, 1, 0.18f);
+    } else {  // and comes down over the bottom half: the new number's bottom
+        const float s = -cosf(p * kPi);
+        flap(now, upper, 1, 0.18f);
+        flap(was, D2D1::RectF(lower.left, split / 2 + half * s, lower.right, lower.bottom), 1, 0.18f);
+        flap(now, lower, s, 0.18f + 0.1f * (1 - s));
     }
-    if (!s.mark.empty()) Put(cv, s.mark, F_SYNCOPATE, 11 * u, s.joined ? 0 : 3 * u, -gap / 2 - W + 16 * u, -H / 2 + 16 * u, 1, 0.85f, s.rtl);
+}
+
+void Flip(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
+    const float W = 148 * u, H = 168 * u, gap = 14 * u;
+    const Says& was = g_flip.p < 1 ? g_flip.before : s;
+    FlipTile(cv, -gap / 2 - W, W, H, u, s.hh, was.hh, g_flip.p);
+    FlipTile(cv, gap / 2, W, H, u, s.mm, was.mm, g_flip.p);
+    Mark(cv, s, 11 * u, u, -gap / 2 - W + 16 * u, -H / 2 + 16 * u, 1);
     DayAndDate(cv, s, u, H / 2 + 36 * u);
+}
+
+// Digital: LED digits, every segment there and the lit ones bright, leaning a little; the short day
+// and AM/PM over them, the date under.
+void Digit(Canvas& cv, float x, float y, float w, float h, float sw, int digit) {
+    static const unsigned char kLit[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};  // segments a-g: bits 0-6
+    const float g = sw * 1.15f, l = x, r = x + w, t = y, m = y + h / 2, b = y + h;
+    auto at = [&](float px, float py) { return D2D1::Point2F(px - py * 0.08f, py); };  // leaning right
+    const float seg[7][4] = {{l + g, t, r - g, t}, {r, t + g, r, m - g}, {r, m + g, r, b - g}, {l + g, b, r - g, b},
+                             {l, m + g, l, b - g}, {l, t + g, l, m - g}, {l + g, m, r - g, m}};
+    const unsigned lit = digit >= 0 && digit <= 9 ? kLit[digit] : 0;
+    for (int k = 0; k < 7; k++) cv.Line(at(seg[k][0], seg[k][1]), at(seg[k][2], seg[k][3]), sw, lit >> k & 1 ? 1.f : 0.1f);
+}
+
+void DigitalDesign(Canvas& cv, const ClockLook& l, const SYSTEMTIME&, const Says& s, float u) {
+    const float w = 56 * u, h = 104 * u, sw = 10 * u, pair = 22 * u, colon = 40 * u;
+    const int hour = l.h24 ? s.hour : (s.hour + 11) % 12 + 1;
+    const int digits[4] = {l.h24 || hour >= 10 ? hour / 10 : -1, hour % 10, s.minute / 10, s.minute % 10};
+    const float x0 = -(4 * w + 2 * pair + colon) / 2, xs[4] = {x0, x0 + w + pair, x0 + 2 * w + pair + colon, x0 + 3 * w + 2 * pair + colon};
+    for (int i = 0; i < 4; i++) Digit(cv, xs[i], -h / 2, w, h, sw, digits[i]);
+    for (float y : {-h / 5, h / 5}) cv.Circle(-y * 0.08f, y, 6 * u, 0, 1);
+    const float top = -h / 2 - 26 * u - P.faces[F_ORBITRON].cap * 18 * u;
+    Put(cv, s.shortDay, F_ORBITRON, 18 * u, s.joined ? 0 : 5 * u, x0 + 6 * u, top, 1, 0.9f, s.rtl, 700);
+    if (!s.mark.empty()) Put(cv, s.mark, F_ORBITRON, 18 * u, s.joined ? 0 : 4 * u, -x0 - 2 * u, top, -1, 0.9f, s.rtl, 700);
+    DayAndDate(cv, s, u, h / 2 + 36 * u, false);
 }
 
 // Stack: big hours over fainter minutes; AM/PM beside the hours; the date under them.
@@ -790,7 +980,7 @@ void Stack(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float
     const float px = 118 * u, cap = P.faces[F_MICHROMA].cap * px, gap = 24 * u;
     const float hw = Put(cv, s.hh, F_MICHROMA, px, 0, 0, -cap - gap / 2, 0, 1);
     Put(cv, s.mm, F_MICHROMA, px, 0, 0, gap / 2, 0, 0.55f);
-    if (!s.mark.empty()) Put(cv, s.mark, F_SYNCOPATE, 14 * u, s.joined ? 0 : 3 * u, hw / 2 + 14 * u, -cap - gap / 2, 1, 0.85f, s.rtl);
+    Mark(cv, s, 14 * u, u, hw / 2 + 14 * u, -cap - gap / 2, 1);
     DayAndDate(cv, s, u, cap + gap / 2 + 36 * u, false);
 }
 
@@ -799,57 +989,102 @@ void LineDesign(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, 
     const float px = 64 * u, cap = P.faces[F_MICHROMA].cap * px;
     const std::wstring time = s.hh + L":" + s.mm;
     const float tw = Width(time, F_MICHROMA, px, 0);
-    const float mw = s.mark.empty() ? 0 : Width(s.mark, F_SYNCOPATE, 14 * u, 3 * u) + 10 * u;
+    const float mw = s.mark.empty() ? 0 : Width(s.mark, F_SYNCOPATE, 14 * u, 3 * u, kThick) + 10 * u;
     const float dayPx = 17 * u, datePx = 19 * u;
-    const float rw = std::max(Width(s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u), s.date.empty() ? 0 : Width(s.date, F_QUICKSAND, datePx, 1.5f * u));
+    const float rw = std::max(Width(s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u, kThick), s.date.empty() ? 0 : Width(s.date, F_QUICKSAND, datePx, 1.5f * u));
     const float x0 = -(tw + mw + 52 * u + rw) / 2, top = -cap / 2;
     Put(cv, time, F_MICHROMA, px, 0, x0, top, 1, 1);
-    if (mw > 0) Put(cv, s.mark, F_SYNCOPATE, 14 * u, s.joined ? 0 : 3 * u, x0 + tw + 10 * u, top, 1, 0.85f, s.rtl);
+    if (mw > 0) Mark(cv, s, 14 * u, u, x0 + tw + 10 * u, top, 1);
     const float bar = x0 + tw + mw + 26 * u;
     cv.Line(D2D1::Point2F(bar, top - 8 * u), D2D1::Point2F(bar, top + cap + 8 * u), 3 * u, 0.8f);
     const float rx = bar + 26 * u;
     if (s.date.empty()) {
-        Put(cv, s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u, rx, -dayPx * 0.36f, 1, 0.9f, s.rtl);
+        Put(cv, s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u, rx, -dayPx * 0.36f, 1, 0.9f, s.rtl, kThick);
     } else {
-        Put(cv, s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u, rx, top, 1, 0.9f, s.rtl);
+        Put(cv, s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u, rx, top, 1, 0.9f, s.rtl, kThick);
         Put(cv, s.date, F_QUICKSAND, datePx, 1.5f * u, rx, top + cap - datePx * 0.72f, 1, 0.95f, s.rtl);
     }
 }
 
-// Big: the day and the date over a big, round time (its colon set by its ink, evenly between the
-// hours and minutes: the font gives it room on one side only).
+// Big: the day and the date over a big, round time.
 void Big(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
     const float y = DayAndDate(cv, s, u, 0) + 6 * u;
-    const float px = 150 * u, gap = 0.1f * px;
-    const std::wstring part[3] = {s.hh, L":", s.mm};
-    float l[3], r[3], tw = 2 * gap;
-    for (int i = 0; i < 3; i++) {
-        if (!Ink(part[i], F_QUICKSAND, px, &l[i], &r[i])) return;
-        tw += r[i] - l[i];
-    }
-    float x = -tw / 2;
-    for (int i = 0; i < 3; i++) {
-        Put(cv, part[i], F_QUICKSAND, px, 0, x - l[i], y, 1, 1);
-        x += r[i] - l[i] + gap;
-    }
-    if (!s.mark.empty()) Put(cv, s.mark, F_SYNCOPATE, 16 * u, s.joined ? 0 : 3 * u, tw / 2 + 12 * u, y, 1, 0.85f, s.rtl);
+    const float tw = RoundTime(&cv, s, 150 * u, 0, y, 0);
+    Mark(cv, s, 16 * u, u, tw / 2 + 12 * u, y, 1);
+}
+
+// Bold: the time in heavy, wide letters under the day; the date under it.
+void Bold(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
+    const float px = 112 * u, cap = P.faces[F_ORBITRON].cap * px, dayPx = 22 * u;
+    const float tw = Put(cv, s.hh + L":" + s.mm, F_ORBITRON, px, 0, 0, -cap / 2, 0, 1, false, 900);
+    Put(cv, s.day, F_ORBITRON, dayPx, s.joined ? 0 : 9 * u, 0, -cap / 2 - 24 * u - P.faces[F_ORBITRON].cap * dayPx, 0, 0.9f, s.rtl, 700);
+    if (!s.mark.empty()) Put(cv, s.mark, F_ORBITRON, 16 * u, s.joined ? 0 : 3 * u, tw / 2 + 12 * u, -cap / 2, 1, 0.85f, s.rtl, 700);
+    if (!s.date.empty()) Put(cv, s.date, F_QUICKSAND, 22 * u, 2 * u, 0, cap / 2 + 26 * u, 0, 0.95f, s.rtl);
+}
+
+// Calendar: a desk calendar's page (the short day, the day's number, the month) beside the time.
+void CalendarDesign(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
+    const float W = 128 * u, H = 148 * u, head = 40 * u, tpx = 96 * u, tcap = P.faces[F_QUICKSAND].cap * tpx;
+    const float tw = RoundTime(nullptr, s, tpx, 0, 0, 1), x0 = -(W + 36 * u + tw) / 2, cx = x0 + W / 2;
+    cv.Frame(D2D1::RectF(x0, -H / 2, x0 + W, H / 2), 16 * u, 3 * u, 0.9f);
+    cv.Line(D2D1::Point2F(x0 + 1.5f * u, -H / 2 + head), D2D1::Point2F(x0 + W - 1.5f * u, -H / 2 + head), 2 * u, 0.5f);
+    for (float rx : {x0 + W * 0.3f, x0 + W * 0.7f}) cv.Line(D2D1::Point2F(rx, -H / 2 - 9 * u), D2D1::Point2F(rx, -H / 2 + 7 * u), 5 * u, 1);
+    const float dpx = 15 * u, dcap = P.faces[F_SYNCOPATE].cap * dpx;
+    Put(cv, s.shortDay, F_SYNCOPATE, dpx, s.joined ? 0 : 4 * u, cx, -H / 2 + (head - dcap) / 2 + 2 * u, 0, 0.95f, s.rtl, kThick);
+    const float npx = 64 * u, ncap = P.faces[F_MICHROMA].cap * npx, mpx = 13 * u, mcap = P.faces[F_SYNCOPATE].cap * mpx;
+    const float body = H - head, top = -H / 2 + head + (body - ncap - 14 * u - mcap) / 2;
+    Put(cv, s.dayNumber, F_MICHROMA, npx, 0, cx, top, 0, 1);
+    Put(cv, s.shortMonth, F_SYNCOPATE, mpx, s.joined ? 0 : 4 * u, cx, top + ncap + 14 * u, 0, 0.8f, s.rtl, kThick);
+    const float tx = x0 + W + 36 * u;
+    RoundTime(&cv, s, tpx, tx, -tcap / 2 - (s.mark.empty() ? 0 : 12 * u), 1);
+    Mark(cv, s, 14 * u, u, tx + tw, tcap / 2 + 6 * u, -1);
+}
+
+// Words: the time in English words, the hour over the minutes, then the part of the day.
+std::wstring Number(int n) {  // 1-59
+    static const wchar_t* const kOnes[] = {L"",        L"ONE",     L"TWO",       L"THREE",    L"FOUR",     L"FIVE",    L"SIX",
+                                           L"SEVEN",   L"EIGHT",   L"NINE",      L"TEN",      L"ELEVEN",   L"TWELVE",  L"THIRTEEN",
+                                           L"FOURTEEN", L"FIFTEEN", L"SIXTEEN",  L"SEVENTEEN", L"EIGHTEEN", L"NINETEEN"};
+    static const wchar_t* const kTens[] = {L"", L"", L"TWENTY", L"THIRTY", L"FORTY", L"FIFTY"};
+    if (n < 20) return kOnes[n];
+    return std::wstring(kTens[n / 10]) + (n % 10 ? std::wstring(L" ") + kOnes[n % 10] : L"");
+}
+
+void WordsDesign(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
+    const std::wstring hour = Number((s.hour + 11) % 12 + 1);
+    const std::wstring minutes = s.minute == 0 ? L"O'CLOCK" : s.minute < 10 ? L"OH " + Number(s.minute) : Number(s.minute);
+    const wchar_t* part = s.hour < 5 ? L"AT NIGHT" : s.hour < 12 ? L"IN THE MORNING" : s.hour < 17 ? L"IN THE AFTERNOON" : s.hour < 21 ? L"IN THE EVENING" : L"AT NIGHT";
+    const float hpx = 70 * u, hcap = P.faces[F_ORBITRON].cap * hpx, mpx = 30 * u, mcap = P.faces[F_SYNCOPATE].cap * mpx;
+    float y = -(hcap + 22 * u + mcap) / 2;
+    Put(cv, hour, F_ORBITRON, hpx, 6 * u, 0, y, 0, 1, false, 800);
+    y += hcap + 22 * u;
+    Put(cv, minutes, F_SYNCOPATE, mpx, 7 * u, 0, y, 0, 0.92f, false, kThick);
+    y += mcap + 20 * u;
+    Put(cv, part, F_QUICKSAND, 18 * u, 3 * u, 0, y, 0, 0.7f);
+    DayAndDate(cv, s, u, y + 18 * u * 0.72f + 26 * u, false);
 }
 
 struct Design {
     const wchar_t* key;
     const wchar_t* name;
     const wchar_t* about;
-    bool day, digital, date;
+    bool day, hours, digits, date;  // what it shows: the day's name; 12- or 24-hour time; numbers; the date line
     void (*lay)(Canvas&, const ClockLook&, const SYSTEMTIME&, const Says&, float u);
 };
 
 const Design kDesigns[] = {
-    {L"dial", L"Dial", L"Hands on a dial", false, false, true, Dial},
-    {L"ring", L"Ring", L"The hour fills a ring", true, true, true, RingDesign},
-    {L"flip", L"Flip", L"Flip-clock tiles", true, true, true, Flip},
-    {L"stack", L"Stack", L"Hours over minutes", false, true, true, Stack},
-    {L"line", L"Line", L"Time, then day and date", true, true, true, LineDesign},
-    {L"big", L"Big", L"The date over a big time", true, true, true, Big},
+    {L"dial", L"Dial", L"Hands on a dial", false, false, false, true, Dial},
+    {L"watch", L"Watch", L"A watch with the day and date", true, false, true, false, Watch},
+    {L"ring", L"Ring", L"The hour fills a ring", true, true, true, true, RingDesign},
+    {L"orbit", L"Orbit", L"Hours and minutes on two rings", false, true, true, true, Orbit},
+    {L"flip", L"Flip", L"Flip-clock tiles", true, true, true, true, Flip},
+    {L"digital", L"Digital", L"LED digits under the day", true, true, false, true, DigitalDesign},
+    {L"stack", L"Stack", L"Hours over minutes", false, true, true, true, Stack},
+    {L"line", L"Line", L"Time, then day and date", true, true, true, true, LineDesign},
+    {L"big", L"Big", L"The date over a big time", true, true, true, true, Big},
+    {L"bold", L"Bold", L"Heavy time under the day", true, true, true, true, Bold},
+    {L"calendar", L"Calendar", L"A calendar page and the time", true, true, true, false, CalendarDesign},
+    {L"words", L"Words", L"The time in words", false, false, false, true, WordsDesign},
 };
 
 const Design* FindDesign(const std::wstring& key) {
@@ -876,12 +1111,84 @@ ID2D1PathGeometry* ArcGeometry(const Item& i) {
     return g;
 }
 
+// Draws text as its letters' outlines, filled and widened by `thick` (one shape: no overlap shows
+// where the item is see-through).
+struct ThickText : IDWriteTextRenderer {
+    ID2D1RenderTarget* rt;
+    ID2D1Brush* brush;
+    ID2D1StrokeStyle* round;
+    float thick;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** p) override {
+        *p = IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, __uuidof(IDWritePixelSnapping)) || IsEqualIID(riid, __uuidof(IDWriteTextRenderer)) ? this
+                                                                                                                                                 : nullptr;
+        return *p ? S_OK : E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+    HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* no) override {
+        *no = TRUE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* m) override {
+        rt->GetTransform((D2D1_MATRIX_3X2_F*)m);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* p) override {
+        *p = 1;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE, const DWRITE_GLYPH_RUN* run,
+                                           const DWRITE_GLYPH_RUN_DESCRIPTION*, IUnknown*) override {
+        ID2D1PathGeometry *outline = nullptr, *wide = nullptr, *both = nullptr;
+        ID2D1GeometrySink* sink = nullptr;
+        auto open = [&](ID2D1PathGeometry** g) { return SUCCEEDED(P.d2f->CreatePathGeometry(g)) && SUCCEEDED((*g)->Open(&sink)); };
+        auto close = [&] {
+            const bool ok = SUCCEEDED(sink->Close());
+            Rel(sink);
+            return ok;
+        };
+        bool ok = open(&outline) && SUCCEEDED(run->fontFace->GetGlyphRunOutline(run->fontEmSize, run->glyphIndices, run->glyphAdvances, run->glyphOffsets,
+                                                                                run->glyphCount, run->isSideways, run->bidiLevel % 2, sink)) && close();
+        ok = ok && open(&wide) && SUCCEEDED(outline->Widen(thick, round, nullptr, 0.05f, sink)) && close();
+        ok = ok && open(&both) && SUCCEEDED(outline->CombineWithGeometry(wide, D2D1_COMBINE_MODE_UNION, nullptr, 0.05f, sink)) && close();
+        Rel(sink);
+        if (ok) {
+            D2D1_MATRIX_3X2_F was;
+            rt->GetTransform(&was);
+            rt->SetTransform(D2D1::Matrix3x2F::Translation(x, y) * was);
+            rt->FillGeometry(both, brush);
+            rt->SetTransform(was);
+        }
+        Rel(both);
+        Rel(wide);
+        Rel(outline);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*, IUnknown*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*, IUnknown*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE DrawInlineObject(void*, FLOAT, FLOAT, IDWriteInlineObject*, BOOL, BOOL, IUnknown*) override { return S_OK; }
+};
+
 // A design's canvas, drawn into the picture (with the look's glow and opacity, as Mond).
-bool PaintDesign(const Design& d, const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out) {
+bool PaintDesign(const Design& d, const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out, float flip) {
     if (!UseDesignFonts()) return false;
     Canvas cv;
     const float u = k * look.size;
+    g_flip.p = 1;
+    if (flip < 1) {  // the minute before, for the flaps falling over
+        FILETIME f;
+        SYSTEMTIME before = t;
+        if (SystemTimeToFileTime(&t, &f)) {
+            ULARGE_INTEGER n{{f.dwLowDateTime, f.dwHighDateTime}};
+            n.QuadPart -= 60ull * 10000000;
+            f = FILETIME{n.LowPart, n.HighPart};
+            FileTimeToSystemTime(&f, &before);
+        }
+        g_flip.p = std::clamp(flip, 0.f, 1.f);
+        g_flip.before = SaysFor(look, before);
+    }
     d.lay(cv, look, t, SaysFor(look, t), u);
+    g_flip.p = 1;
     if (cv.items.empty()) return false;
     const float glowR = look.glow > 0 ? look.glowSize * look.size * k : 0;
     const int pad = (int)ceilf(glowR);
@@ -919,29 +1226,34 @@ bool PaintDesign(const Design& d, const ClockLook& look, float k, const SYSTEMTI
             rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             rt->SetTransform(D2D1::Matrix3x2F::Translation(ox, oy));
             for (const Item& i : cv.items) {
+                if (i.clipped && i.squash < 0.01f) continue;  // a flap seen edge on
                 brush->SetOpacity(i.a);
+                if (i.clipped) {  // its clip folds with it
+                    rt->SetTransform(D2D1::Matrix3x2F(1, 0, 0, i.squash, 0, i.hinge * (1 - i.squash)) * D2D1::Matrix3x2F::Translation(ox, oy));
+                    rt->PushAxisAlignedClip(i.clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                }
                 switch (i.kind) {
-                    case Item::TEXT: rt->DrawTextLayout(i.p, i.text, brush, D2D1_DRAW_TEXT_OPTIONS_NONE); break;
+                    case Item::TEXT:
+                        if (i.width > 0) {
+                            ThickText thick;
+                            thick.rt = rt;
+                            thick.brush = brush;
+                            thick.round = round;
+                            thick.thick = i.width;
+                            i.text->Draw(nullptr, &thick, i.p.x, i.p.y);
+                        } else {
+                            rt->DrawTextLayout(i.p, i.text, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                        }
+                        break;
                     case Item::LINE: rt->DrawLine(i.p, i.q, brush, i.width, round); break;
                     case Item::CIRCLE:
                         if (i.width > 0) rt->DrawEllipse(D2D1::Ellipse(i.p, i.q.x, i.q.x), brush, i.width);
                         else rt->FillEllipse(D2D1::Ellipse(i.p, i.q.x, i.q.x), brush);
                         break;
-                    case Item::RECT: rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(i.p.x, i.p.y, i.q.x, i.q.y), i.radius, i.radius), brush); break;
-                    case Item::TILE: {  // two halves: the tile without a thin band across its middle
-                        ID2D1RoundedRectangleGeometry* tile = nullptr;
-                        ID2D1RectangleGeometry* band = nullptr;
-                        ID2D1GeometryGroup* both = nullptr;
-                        const float mid = (i.p.y + i.q.y) / 2;
-                        P.d2f->CreateRoundedRectangleGeometry(D2D1::RoundedRect(D2D1::RectF(i.p.x, i.p.y, i.q.x, i.q.y), i.radius, i.radius), &tile);
-                        P.d2f->CreateRectangleGeometry(D2D1::RectF(i.p.x, mid - i.sweep / 2, i.q.x, mid + i.sweep / 2), &band);
-                        if (tile && band) {
-                            ID2D1Geometry* parts[2] = {tile, band};
-                            if (SUCCEEDED(P.d2f->CreateGeometryGroup(D2D1_FILL_MODE_ALTERNATE, parts, 2, &both))) rt->FillGeometry(both, brush);
-                        }
-                        Rel(both);
-                        Rel(band);
-                        Rel(tile);
+                    case Item::RECT: {
+                        const D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(D2D1::RectF(i.p.x, i.p.y, i.q.x, i.q.y), i.radius, i.radius);
+                        if (i.width > 0) rt->DrawRoundedRectangle(rr, brush, i.width);
+                        else rt->FillRoundedRectangle(rr, brush);
                         break;
                     }
                     case Item::ARC:
@@ -950,6 +1262,10 @@ bool PaintDesign(const Design& d, const ClockLook& look, float k, const SYSTEMTI
                             arc->Release();
                         }
                         break;
+                }
+                if (i.clipped) {
+                    rt->PopAxisAlignedClip();
+                    rt->SetTransform(D2D1::Matrix3x2F::Translation(ox, oy));
                 }
             }
             ok = SUCCEEDED(rt->EndDraw());
@@ -998,7 +1314,7 @@ std::vector<ClockStyleInfo> Clock_Styles() {
         list.push_back({L"", first ? std::wstring(L"Mond") : L"Mond \u00B7 " + f.key, about, f, true, true, true});
     };
     mond(fonts[0]);
-    for (const Design& d : kDesigns) list.push_back({d.key, d.name, d.about, ClockFontInfo{L"", nullptr, false, true}, d.day, d.digital, d.date});
+    for (const Design& d : kDesigns) list.push_back({d.key, d.name, d.about, ClockFontInfo{L"", nullptr, false, true}, d.day, d.hours || d.digits, d.date});
     for (size_t i = 1; i < fonts.size(); i++) mond(fonts[i]);
     return list;
 }
@@ -1025,17 +1341,22 @@ std::wstring Clock_StyleName(const ClockLook& l) {
 bool Clock_UsesWords(const ClockLook& l) {
     const Design* d = FindDesign(l.style);
     if (!d) return true;
-    return d->day || (d->digital && !l.h24) || (d->date && DateHasWords(l.date));
+    return d->day || (d->hours && !l.h24) || (d->date && DateHasWords(l.date));
 }
 
 bool Clock_UsesDigits(const ClockLook& l) {
     const Design* d = FindDesign(l.style);
-    return !d || d->digital || (d->date && l.date != 14);
+    return !d || d->digits || (d->date && l.date != 14);
 }
 
 bool Clock_UsesHours(const ClockLook& l) {
     const Design* d = FindDesign(l.style);
-    return !d || d->digital;
+    return !d || d->hours;
+}
+
+bool Clock_Flips(const ClockLook& l) {
+    const Design* d = FindDesign(l.style);
+    return d && d->lay == Flip;
 }
 
 bool Clock_UsesDate(const ClockLook& l) {
@@ -1099,10 +1420,10 @@ void Clock_ReleasePainter() {
 // DIPs); everything is then scaled to real pixels by k. The lines are placed by their capitals, with
 // Mond's gaps measured from the skin: the date's 25.7 DIPs below the day's baseline, the time's 31.5
 // below the date's (x Scale), so every font keeps the same rhythm.
-bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out) {
+bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out, float flip) {
     const float size = look.size;
     if (!OpenPainter()) return false;
-    if (const Design* d = FindDesign(look.style)) return PaintDesign(*d, look, k, t, out);
+    if (const Design* d = FindDesign(look.style)) return PaintDesign(*d, look, k, t, out, flip);
     if (!UseFont(look.font) && !UseFont(kFonts[0].key)) return false;  // a font that's gone: the default
     const Words& words = WordsFor(look.lang, look.nativeDigits);
     const std::wstring day = words.days[t.wDayOfWeek % 7], date = Clock_DateText(look, look.date, t);
@@ -1250,6 +1571,7 @@ void Clock_Hide() {
 void Clock_Refresh() {
     if (!W.hwnd) return;
     W.drawn.clear();
+    W.drawnStyle.clear();
     DrawClock();
 }
 

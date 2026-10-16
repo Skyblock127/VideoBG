@@ -24,7 +24,8 @@ constexpr UINT_PTR TIMER_TURN = 1;
 constexpr UINT kTurnMs = 33;
 constexpr int kBars = 30;
 constexpr float kPi = 3.14159265f;
-enum Part { PART_NONE, PART_PREV, PART_PLAY, PART_NEXT, PART_VOLUME, PART_BODY };
+enum Part { PART_NONE = PLAYER_NONE, PART_PREV = PLAYER_PREV, PART_PLAY = PLAYER_PLAY, PART_NEXT = PLAYER_NEXT, PART_VOLUME = PLAYER_VOLUME,
+            PART_SEEK = PLAYER_SEEK, PART_BODY = PLAYER_BODY };
 
 // IAudioMeterInformation (the sound playing, for the bars), declared here: the headers only name it.
 struct AudioMeter : IUnknown {
@@ -55,6 +56,8 @@ struct Shown {
     float turn = 0, turn2 = 0, slow = 0;  // degrees turned: the record (and a cassette's left reel), a cassette's right reel, a disc
     float arm = 0;             // the record's arm: 0 resting beside it, 1 on it
     const float* bars = nullptr;  // each bar's height (0..1)
+    float level = 0;           // how loud the sound is (0..1, smoothed: the Wave's threads)
+    float clock = 0;           // seconds the threads have moved
     int hot = PART_NONE, press = PART_NONE;
     bool sliding = false;
 };
@@ -95,7 +98,14 @@ struct PlayerWindow {
     double last = 0;               // when the turning parts last moved
     float turn = 0, turn2 = 0, slow = 0, arm = 0;
     float bars[kBars] = {};
+    float level = 0, waveT = 0;
+    bool seeking = false;          // the song's place is being dragged
+    float seekFrac = -1;           // to there (shown there while held, and a moment after)
+    double seekHold = 0;
     AudioMeter* meter = nullptr;  // the sound playing (for the bars)
+    IMMDeviceEnumerator* outputs = nullptr;  // (kept with the meter: to see the output change)
+    std::wstring meterFor;        // the output the meter listens to
+    double meterChecked = 0;      // when that was last checked
     // The song's cover, as pixels (made into D.art when drawn)
     std::wstring artFor;
     std::vector<uint32_t> artPx;
@@ -266,13 +276,18 @@ D2D1_MATRIX_3X2_F Rotation(float deg) {  // (Matrix3x2F::Rotation needs d2d1.dll
     return D2D1::Matrix3x2F(c, s, -s, c, 0, 0);
 }
 
-// The song's cover in a circle of radius r at c, turned `deg` degrees; false if the song has none.
-bool Cover(D2D1_POINT_2F c, float r, float deg) {
+// The song's cover, made ready to draw (D.art); false if the song has none.
+bool Art() {
     if (!D.art && !W.artPx.empty()) {
         D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
         D.rt->CreateBitmap(D2D1::SizeU((UINT32)W.artW, (UINT32)W.artH), W.artPx.data(), (UINT32)W.artW * 4, bp, &D.art);
     }
-    if (!D.art) return false;
+    return D.art != nullptr;
+}
+
+// The song's cover in a circle of radius r at c, turned `deg` degrees; false if the song has none.
+bool Cover(D2D1_POINT_2F c, float r, float deg) {
+    if (!Art()) return false;
     const D2D1_SIZE_F sz = D.art->GetSize();
     const float side = std::min(sz.width, sz.height), s = 2 * r / side;
     ID2D1BitmapBrush* brush = nullptr;
@@ -306,8 +321,12 @@ struct PlayerStyle {
     float btn, playR;                // their sizes
     D2D1_RECT_F volume;              // its volume slider's track
     bool turns;                      // something on it turns while the music plays
+    bool sound;                      // it moves with the sound
     D2D1_RECT_F turning;             // where (only that part is drawn again, each frame)
     void (*draw)(const struct PlayerStyle&, const Shown&);
+    // Where the song's place is moved: the share of the song at x, y; -1 if that's not on it (held:
+    // the pointer took hold of it, so anywhere counts). Each style shows the place one way only.
+    float (*seek)(const struct PlayerStyle&, float x, float y, bool held);
 };
 
 // Previous, play / pause (lit), next.
@@ -326,6 +345,7 @@ void Buttons(const PlayerStyle& st, const Shown& s) {
 // The volume (VideoBG's own, as in its settings): its icon, then the slider.
 void Volume(const PlayerStyle& st, const Shown& s) {
     const D2D1_RECT_F& t = st.volume;
+    if (t.right <= t.left) return;  // (it has none)
     const float cy = (t.top + t.bottom) / 2;
     Text(s.volume == 0 ? L"\uE74F" : s.volume < 34 ? L"\uE993" : s.volume < 67 ? L"\uE994" : L"\uE995", R(t.left - 26, cy - 12, t.left - 4, cy + 12),
          D.fIcon, Col(0xFFFFFF, 0.8f));
@@ -373,7 +393,6 @@ void DrawVinyl(const PlayerStyle& st, const Shown& s) {
         const float x = 172;
         Text(s.song, R(x, 16, st.w - 18, 38), D.fTitle, Col(0xFFFFFF, 0.95f));
         Text(s.where, R(x, 38, st.w - 18, 54), D.fSmall, Col(0xFFFFFF, 0.6f));
-        Progress(R(x, 64, st.w - 18, 66.5f), s);
         Buttons(st, s);
         Volume(st, s);
     }
@@ -510,25 +529,243 @@ void DrawBars(const PlayerStyle& st, const Shown& s) {
     }
 }
 
+// Mini: a small pill, just the cover, the song and its buttons; the song's place along its edge.
+void DrawMini(const PlayerStyle& st, const Shown& s) {
+    const D2D1_POINT_2F c = Pt(28, 28);
+    Card(st.w, st.h, st.h / 2 - 0.5f, 0.86f);
+    if (!Cover(c, 19, 0)) {
+        Circle(c, 19, s.accent);
+        Text(L"\uE8D6", R(c.x - 19, c.y - 19, c.x + 19, c.y + 19), D.fIcon, Luma(s.accent) > 0.55f ? Col(0x000000, 0.75f) : Col(0xFFFFFF, 0.9f));
+    }
+    Text(s.song, R(56, 8, 172, 30), D.fTitle, Col(0xFFFFFF, 0.95f));
+    Text(s.where, R(56, 28, 172, 46), D.fSmall, Col(0xFFFFFF, 0.6f));
+    Buttons(st, s);
+    D.rt->PushAxisAlignedClip(R(28, st.h - 4, st.w - 28, st.h - 1), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    Progress(R(28, st.h - 4, st.w - 28, st.h - 1.5f), s);
+    D.rt->PopAxisAlignedClip();
+}
+
+// Cover: the song's cover, square and big, beside the song and its controls.
+void DrawCover(const PlayerStyle& st, const Shown& s) {
+    Card(st.w, st.h, 22);
+    const D2D1_RECT_F pic = R(15, 15, 135, 135);
+    ID2D1RoundedRectangleGeometry* shape = nullptr;
+    bool drawn = false;
+    if (Art() && SUCCEEDED(D.d2d->CreateRoundedRectangleGeometry(D2D1::RoundedRect(pic, 12, 12), &shape))) {
+        const D2D1_SIZE_F sz = D.art->GetSize();
+        const float side = std::min(sz.width, sz.height), k = (pic.right - pic.left) / side;
+        ID2D1BitmapBrush* brush = nullptr;
+        const D2D1_MATRIX_3X2_F m = D2D1::Matrix3x2F::Translation(-(sz.width - side) / 2, -(sz.height - side) / 2) * D2D1::Matrix3x2F::Scale(k, k) *
+                                    D2D1::Matrix3x2F::Translation(pic.left, pic.top);
+        if (SUCCEEDED(D.rt->CreateBitmapBrush(D.art, D2D1::BitmapBrushProperties(D2D1_EXTEND_MODE_CLAMP, D2D1_EXTEND_MODE_CLAMP, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR),
+                                              D2D1::BrushProperties(1, m), &brush))) {
+            D.rt->FillGeometry(shape, brush);
+            brush->Release();
+            drawn = true;
+        }
+    }
+    Rel(shape);
+    if (!drawn) {  // no cover: a note on the accent
+        Fill(pic, s.accent, 12);
+        IDWriteTextFormat* big = Format(L"Segoe Fluent Icons", 44, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
+        Text(L"\uE8D6", pic, big, Luma(s.accent) > 0.55f ? Col(0x000000, 0.6f) : Col(0xFFFFFF, 0.85f));
+        Rel(big);
+    }
+    Stroke(pic, Col(0xFFFFFF, 0.1f), 12);
+    const float x = 154;
+    Text(s.song, R(x, 18, st.w - 18, 40), D.fTitle, Col(0xFFFFFF, 0.95f));
+    Text(s.where, R(x, 40, st.w - 18, 56), D.fSmall, Col(0xFFFFFF, 0.6f));
+    Progress(R(x, 66, st.w - 18, 68.5f), s);
+    Buttons(st, s);
+    Volume(st, s);
+}
+
+// Halo: the song's cover turning slowly in a ring of bars that move with the sound; beside it, the
+// song and its controls.
+constexpr D2D1_POINT_2F kHaloC{80, 75};
+
+void DrawHalo(const PlayerStyle& st, const Shown& s) {
+    const D2D1_POINT_2F c = kHaloC;
+    if (StillPart()) {
+        Card(st.w, st.h, 24);
+        const float x = 168;
+        Text(s.song, R(x, 16, st.w - 18, 38), D.fTitle, Col(0xFFFFFF, 0.95f));
+        Text(s.where, R(x, 38, st.w - 18, 54), D.fSmall, Col(0xFFFFFF, 0.6f));
+        Buttons(st, s);
+        Volume(st, s);
+    }
+    if (!TurningPart()) return;
+    for (int i = 0; i < kBars; i++) {  // the bars, all round (the played part lit)
+        const float v = s.bars ? std::clamp(s.bars[i], 0.f, 1.f) : 0, deg = i * 360.f / kBars;
+        Line(Polar(c, 42, deg), Polar(c, 45 + 22 * v, deg), i < s.done * kBars ? s.accent : Col(0xFFFFFF, 0.38f), 3.6f);
+    }
+    if (!Cover(c, 34, s.slow)) {
+        Circle(c, 34, Col(0x26262B));
+        Ring(c, 26, Col(0xFFFFFF, 0.08f), 1);
+        Arc(c, 30, s.slow, 50, Col(0xFFFFFF, 0.22f), 2);
+        Arc(c, 30, s.slow + 180, 50, Col(0xFFFFFF, 0.12f), 2);
+        Circle(c, 11, s.accent);
+    }
+    Ring(c, 34, Col(0xFFFFFF, 0.14f), 1);
+    Circle(c, 3, Col(0x141417));
+}
+
+// Wave: the song over threads of light that swing with the sound, each its own wave, in shades of
+// blue (the played part bright, the rest faint); the buttons beside the song, the volume under.
+void DrawWave(const PlayerStyle& st, const Shown& s) {
+    if (StillPart()) {
+        Card(st.w, st.h, 20);
+        Text(s.song, R(18, 12, st.w - 134, 34), D.fTitle, Col(0xFFFFFF, 0.95f));
+        Text(s.where, R(18, 33, st.w - 134, 49), D.fSmall, Col(0xFFFFFF, 0.6f));
+        Buttons(st, s);
+        Volume(st, s);
+    }
+    if (!TurningPart()) return;
+    static const UINT32 kBlue[] = {0x0288D1, 0x29B6F6, 0x1E88E5, 0x81D4FA, 0x4FC3F7};
+    static const float kWaves[] = {1.6f, 2.3f, 1.2f, 3.1f, 2.7f};      // across the player
+    static const float kSpeed[] = {3.1f, -2.4f, 1.7f, 4.2f, -3.6f};    // radians a second
+    static const float kShare[] = {1, 0.78f, 0.62f, 0.45f, 0.34f};     // of the swing
+    static const float kWidth[] = {2.2f, 1.6f, 1.8f, 1.2f, 1.4f};
+    const float left = 20, right = st.w - 20, mid = 80, amp = 23, split = left + (right - left) * s.done;
+    const float level = std::max(0.04f, std::clamp(s.level, 0.f, 1.f));  // (quiet: nearly flat, still there)
+    for (int k = 0; k < 5; k++) {
+        ID2D1PathGeometry* g = nullptr;
+        ID2D1GeometrySink* sink = nullptr;
+        if (FAILED(D.d2d->CreatePathGeometry(&g)) || FAILED(g->Open(&sink))) {
+            Rel(g);
+            return;
+        }
+        const float swing = amp * level * kShare[k] * (0.75f + 0.25f * sinf(s.clock * 0.9f + k * 1.3f));
+        for (float x = left; x <= right + 0.01f; x += 3) {
+            const float u = (x - left) / (right - left), e = 4 * u - 2;  // e: -2..2
+            const float fade = 4 / ((2 + e * e * e * e) * (2 + e * e * e * e));  // (2 / (2 + e^4))^2: 1 in the middle, 0 at the ends
+            const D2D1_POINT_2F p = Pt(x, mid + swing * fade * sinf(2 * kPi * kWaves[k] * u + kSpeed[k] * s.clock + k * 1.1f));
+            if (x == left) sink->BeginFigure(p, D2D1_FIGURE_BEGIN_HOLLOW);
+            else sink->AddLine(p);
+        }
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->Close();
+        sink->Release();
+        for (int part = 0; part < 2; part++) {
+            D.rt->PushAxisAlignedClip(part ? R(split, mid - amp - 4, right + 4, mid + amp + 4) : R(left - 4, mid - amp - 4, split, mid + amp + 4),
+                                      D2D1_ANTIALIAS_MODE_ALIASED);
+            D.br->SetColor(Col(kBlue[k], part ? 0.3f : 0.95f));
+            D.rt->DrawGeometry(g, D.br, kWidth[k], D.round);
+            D.rt->PopAxisAlignedClip();
+        }
+        g->Release();
+    }
+}
+
+// Radio: an old radio, its speaker's grille, and a tuning dial whose needle moves along the song.
+void DrawRadio(const PlayerStyle& st, const Shown& s) {
+    Card(st.w, st.h, 20, 0.88f);
+    // The grille: rows of holes, round at its ends.
+    const D2D1_RECT_F grille = R(16, 16, 112, st.h - 16);
+    Fill(grille, Col(0xFFFFFF, 0.04f), 12);
+    const float gcx = (grille.left + grille.right) / 2, gcy = (grille.top + grille.bottom) / 2, gr = 40;
+    for (float y = gcy - gr + 4; y <= gcy + gr - 3; y += 8)
+        for (float x = gcx - gr + 4; x <= gcx + gr - 3; x += 8)
+            if (hypotf(x - gcx, y - gcy) <= gr - 2) Circle(Pt(x, y), 1.9f, Col(0xFFFFFF, 0.22f));
+    Circle(Pt(gcx, gcy + gr + 14), 3, s.playing ? s.accent : Col(0xFFFFFF, 0.25f));  // the light: on while it plays
+    // The dial: a scale with its numbers, the needle where the song is.
+    const D2D1_RECT_F dial = R(128, 16, st.w - 16, 62);
+    Fill(dial, Col(0x0A0A0C, 0.9f), 9);
+    Stroke(dial, Col(0xFFFFFF, 0.12f), 9);
+    const float l = dial.left + 14, r = dial.right - 14;
+    for (int i = 0; i <= 40; i++) {
+        const float x = l + (r - l) * i / 40;
+        Line(Pt(x, dial.bottom - 10 - (i % 5 ? 4 : 9)), Pt(x, dial.bottom - 10), Col(0xFFFFFF, i % 5 ? 0.25f : 0.5f), 1);
+    }
+    static const wchar_t* const kMarks[] = {L"88", L"92", L"96", L"100", L"104", L"108"};
+    for (int i = 0; i < 6; i++) {
+        const float x = l + (r - l) * i * 8 / 40;
+        Text(kMarks[i], R(x - 14, dial.top + 2, x + 14, dial.top + 18), D.fMark, Col(0xFFFFFF, 0.45f));
+    }
+    const float nx = l + (r - l) * s.done;
+    Line(Pt(nx, dial.top + 6), Pt(nx, dial.bottom - 6), s.accent, 2.2f);
+    // The song, then the controls.
+    Text(s.song, R(130, 70, st.w - 16, 92), D.fTitle, Col(0xFFFFFF, 0.95f));
+    Text(s.where, R(130, 91, st.w - 16, 107), D.fSmall, Col(0xFFFFFF, 0.6f));
+    Buttons(st, s);
+    Volume(st, s);
+}
+
+// ---- Moving the song's place: on what shows it, in each style -------------------------------
+
+float Along(float x, float l, float r) { return std::clamp((x - l) / (r - l), 0.f, 1.f); }
+
+bool Inside(float x, float y, const D2D1_RECT_F& r) { return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; }
+
+bool OnRing(D2D1_POINT_2F c, float x, float y, float r0, float r1) {
+    const float d = hypotf(x - c.x, y - c.y);
+    return d >= r0 && d <= r1;
+}
+
+float Around(D2D1_POINT_2F c, float x, float y) {  // clockwise from 12 o'clock, as a share of the way round
+    float deg = atan2f(x - c.x, c.y - y) * 180 / kPi;
+    if (deg < 0) deg += 360;
+    return deg / 360;
+}
+
+float SeekVinyl(const PlayerStyle&, float x, float y, bool held) {  // the grooves: the arm goes in as the song goes
+    if (!held && !OnRing(kVinylC, x, y, 26, kVinylR + 2)) return -1;
+    return std::clamp((57 - hypotf(x - kVinylC.x, y - kVinylC.y)) / 25, 0.f, 1.f);
+}
+
+float SeekCassette(const PlayerStyle& st, float x, float y, bool held) {  // the window: tape from reel to reel
+    return held || Inside(x, y, R(80, 62, st.w - 80, 110)) ? Along(x, 92, st.w - 92) : -1;
+}
+
+float SeekDisc(const PlayerStyle&, float x, float y, bool held) {  // the ring round the disc
+    return held || OnRing(Pt(42, 42), x, y, 26, 44) ? Around(Pt(42, 42), x, y) : -1;
+}
+
+float SeekBars(const PlayerStyle& st, float x, float y, bool held) {  // the bars (or threads): lit as far as it's played
+    return held || Inside(x, y, R(16, 52, st.w - 16, 108)) ? Along(x, 18, st.w - 18) : -1;
+}
+
+float SeekHalo(const PlayerStyle&, float x, float y, bool held) {  // the bars round the cover
+    return held || OnRing(kHaloC, x, y, 36, 70) ? Around(kHaloC, x, y) : -1;
+}
+
+float SeekCover(const PlayerStyle& st, float x, float y, bool held) {  // its line
+    return held || Inside(x, y, R(150, 58, st.w - 14, 76)) ? Along(x, 154, st.w - 18) : -1;
+}
+
+float SeekRadio(const PlayerStyle& st, float x, float y, bool held) {  // the dial: the needle
+    return held || Inside(x, y, R(128, 16, st.w - 16, 62)) ? Along(x, 142, st.w - 30) : -1;
+}
+
+float SeekMini(const PlayerStyle& st, float x, float y, bool held) {  // the line along its bottom edge
+    return held || Inside(x, y, R(24, st.h - 12, st.w - 24, st.h)) ? Along(x, 28, st.w - 28) : -1;
+}
+
 const PlayerStyle kStyles[] = {
-    {L"Vinyl", L"A record that turns", 400, 150, {192, 106}, {232, 106}, {272, 106}, 16, 19, {324, 104.5f, 380, 107.5f}, true, {12, 8, 172, 142}, DrawVinyl},
-    {L"Cassette", L"Tape winds reel to reel", 340, 196, {128, 172}, {170, 172}, {212, 172}, 15, 17, {262, 170.5f, 314, 173.5f}, true, {78, 60, 262, 112}, DrawCassette},
-    {L"Disc", L"A disc turning in a ring", 350, 84, {240, 42}, {280, 42}, {320, 42}, 15, 19, {110, 63.5f, 200, 66.5f}, true, {10, 10, 74, 74}, DrawDisc},
-    {L"Bars", L"Bars move with the sound", 360, 136, {256, 30}, {294, 30}, {332, 30}, 15, 17, {44, 118.5f, 330, 121.5f}, true, {16, 54, 344, 104}, DrawBars},
+    {L"Vinyl", L"A record that turns", 400, 150, {192, 106}, {232, 106}, {272, 106}, 16, 19, {324, 104.5f, 380, 107.5f}, true, false, {12, 8, 172, 142}, DrawVinyl, SeekVinyl},
+    {L"Cassette", L"Tape winds reel to reel", 340, 196, {128, 172}, {170, 172}, {212, 172}, 15, 17, {262, 170.5f, 314, 173.5f}, true, false, {78, 60, 262, 112}, DrawCassette, SeekCassette},
+    {L"Disc", L"A disc turning in a ring", 350, 84, {240, 42}, {280, 42}, {320, 42}, 15, 19, {110, 63.5f, 200, 66.5f}, true, false, {10, 10, 74, 74}, DrawDisc, SeekDisc},
+    {L"Bars", L"Bars move with the sound", 360, 136, {256, 30}, {294, 30}, {332, 30}, 15, 17, {44, 118.5f, 330, 121.5f}, true, true, {16, 54, 344, 104}, DrawBars, SeekBars},
+    {L"Wave", L"Threads swing with the sound", 360, 136, {256, 30}, {294, 30}, {332, 30}, 15, 17, {44, 118.5f, 330, 121.5f}, true, true, {16, 54, 344, 106}, DrawWave, SeekBars},
+    {L"Halo", L"Bars round the cover", 400, 150, {188, 106}, {228, 106}, {268, 106}, 16, 19, {320, 104.5f, 380, 107.5f}, true, true, {8, 6, 152, 146}, DrawHalo, SeekHalo},
+    {L"Cover", L"The song's cover, big", 380, 150, {174, 106}, {214, 106}, {254, 106}, 16, 19, {304, 104.5f, 362, 107.5f}, false, false, {}, DrawCover, SeekCover},
+    {L"Radio", L"A dial follows the song", 340, 170, {152, 138}, {192, 138}, {232, 138}, 15, 17, {276, 136.5f, 324, 139.5f}, false, false, {}, DrawRadio, SeekRadio},
+    {L"Mini", L"Just the song, small", 300, 56, {196, 28}, {234, 28}, {272, 28}, 13, 17, {}, false, false, {}, DrawMini, SeekMini},
 };
 
 const PlayerStyle& Style() {
     return kStyles[std::clamp(g_settings.musicPlayer - 1, 0, (int)std::size(kStyles) - 1)];
 }
 
-int HitPart(float x, float y) {
-    const PlayerStyle& st = Style();
+int HitPart(const PlayerStyle& st, float x, float y) {
     auto over = [&](D2D1_POINT_2F c, float r) { return hypotf(x - c.x, y - c.y) <= r + 3; };
     if (over(st.play, st.playR)) return PART_PLAY;
     if (over(st.prev, st.btn)) return PART_PREV;
     if (over(st.next, st.btn)) return PART_NEXT;
     const D2D1_RECT_F& v = st.volume;
-    if (x >= v.left - 26 && x <= v.right + 10 && y >= v.top - 12 && y <= v.bottom + 12) return PART_VOLUME;
+    if (v.right > v.left && x >= v.left - 26 && x <= v.right + 10 && y >= v.top - 12 && y <= v.bottom + 12) return PART_VOLUME;
+    const MusicState ms = Host_MusicState();
+    if (ms.track >= 0 && ms.durMs && st.seek(st, x, y, false) >= 0) return PART_SEEK;  // (only while a song is there to move in)
     return x >= 0 && y >= 0 && x < st.w && y < st.h ? PART_BODY : PART_NONE;
 }
 
@@ -570,19 +807,44 @@ void LoadCover(const std::wstring& path) {
     if (f) f->Release();
 }
 
+// The speakers or headphones the sound goes to now ("" if none), and that device.
+std::wstring DefaultOutput(IMMDevice** dev) {
+    static const CLSID kEnumerator = {0xBCDE0395, 0xE52F, 0x467C, {0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E}};
+    static const IID kIEnumerator = {0xA95664D2, 0x9614, 0x4F35, {0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6}};
+    if (!W.outputs && FAILED(CoCreateInstance(kEnumerator, nullptr, CLSCTX_INPROC_SERVER, kIEnumerator, (void**)&W.outputs))) return L"";
+    IMMDevice* d = nullptr;
+    if (FAILED(W.outputs->GetDefaultAudioEndpoint(eRender, eMultimedia, &d))) return L"";
+    std::wstring id;
+    LPWSTR p = nullptr;
+    if (SUCCEEDED(d->GetId(&p))) {
+        id = p;
+        CoTaskMemFree(p);
+    }
+    if (dev) *dev = d;
+    else d->Release();
+    return id;
+}
+
+void StopMeter() {
+    Rel(W.meter);
+    Rel(W.outputs);
+    W.meterFor.clear();
+}
+
 // How loud the sound playing is (0..1), for the bars.
 float Loudness() {
+    const double now = Now();
+    if (W.meter && now - W.meterChecked > 1) {  // headphones plugged in or out: the sound plays somewhere else now
+        W.meterChecked = now;
+        if (DefaultOutput(nullptr) != W.meterFor) Rel(W.meter);
+    }
     if (!W.meter) {
-        static const CLSID kEnumerator = {0xBCDE0395, 0xE52F, 0x467C, {0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E}};
-        static const IID kIEnumerator = {0xA95664D2, 0x9614, 0x4F35, {0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6}};
         static const IID kIMeter = {0xC02216F6, 0x8C67, 0x4B5B, {0x9D, 0x00, 0xD0, 0x08, 0xE7, 0x3E, 0x00, 0x64}};
-        IMMDeviceEnumerator* e = nullptr;
         IMMDevice* dev = nullptr;
-        if (SUCCEEDED(CoCreateInstance(kEnumerator, nullptr, CLSCTX_INPROC_SERVER, kIEnumerator, (void**)&e)) &&
-            SUCCEEDED(e->GetDefaultAudioEndpoint(eRender, eMultimedia, &dev)))
-            dev->Activate(kIMeter, CLSCTX_INPROC_SERVER, nullptr, (void**)&W.meter);
+        W.meterFor = DefaultOutput(&dev);
+        W.meterChecked = now;
+        if (dev) dev->Activate(kIMeter, CLSCTX_INPROC_SERVER, nullptr, (void**)&W.meter);
         Rel(dev);
-        Rel(e);
         if (!W.meter) return 0;
     }
     float peak = 0;
@@ -596,6 +858,7 @@ float Loudness() {
 // What turns, moved on by dt seconds: the record, the reels, the arm, the bars (bars: the style has them).
 void Turn(float dt, bool playing, float done, bool bars) {
     if (playing) {
+        W.waveT = fmodf(W.waveT + dt, 3600.f);
         W.turn = fmodf(W.turn + 200 * dt, 360.f);  // a record at 33 1/3
         W.turn2 = fmodf(W.turn2 + 160 * dt * (14 / (10 + 18 * done)), 360.f);  // a cassette's right reel (tape winding on)
         W.slow = fmodf(W.slow + 45 * dt, 360.f);
@@ -604,6 +867,7 @@ void Turn(float dt, bool playing, float done, bool bars) {
     if (!bars) return;
     const double t = Now();
     const float loud = playing ? Loudness() : 0;
+    W.level = loud > W.level ? W.level + (loud - W.level) * std::min(1.f, dt * 12) : std::max(loud, W.level - dt * 1.2f);
     for (int i = 0; i < kBars; i++) {  // the sound's level, shaped differently for each bar
         const float shape = 0.35f + 0.65f * (0.5f + 0.5f * sinf((float)t * (3.1f + i * 0.37f) + i * 1.7f)) *
                                         (0.6f + 0.4f * sinf((float)t * 1.3f + i * 0.9f));
@@ -613,7 +877,7 @@ void Turn(float dt, bool playing, float done, bool bars) {
 }
 
 bool Settled() {
-    if (W.arm > 0 && W.arm < 1) return false;
+    if ((W.arm > 0 && W.arm < 1) || W.level > 0.005f) return false;
     for (float b : W.bars)
         if (b > 0.005f) return false;
     return true;
@@ -626,13 +890,17 @@ bool DesktopSeen() {
     return !(mask & (PR_COVERED | PR_LOCKED | PR_DISPLAY_OFF));
 }
 
-Shown Current() {
+// What shows now; seek (0..1): the place being dragged to, in a preview.
+Shown Current(float seek = -1) {
     const MusicState ms = Host_MusicState();
     const int n = (int)W.songs.size();
     const int kept = g_settings.musicTrack >= 0 && g_settings.musicTrack < n ? g_settings.musicTrack : 0;
     const int track = ms.track >= 0 && ms.track < n ? ms.track : kept;
     const bool playing = g_settings.musicPlaying;
-    const UINT pos = ms.track >= 0 ? ms.posMs : g_settings.musicPosMs, dur = ms.track >= 0 ? ms.durMs : g_settings.musicDurMs;
+    const UINT dur = ms.track >= 0 ? ms.durMs : g_settings.musicDurMs;
+    UINT pos = ms.track >= 0 ? ms.posMs : g_settings.musicPosMs;
+    if (seek < 0 && W.seekFrac >= 0 && (W.seeking || Now() < W.seekHold)) seek = W.seekFrac;  // (until the song gets there)
+    if (seek >= 0) pos = (UINT)(seek * dur);
     Shown s;
     s.song = n ? SongName(W.songs[track]) : L"No songs chosen yet";
     s.where = !playing ? L"Paused" + (dur ? L"  \u00B7  " + Minutes(pos) + L" / " + Minutes(dur) : L"")
@@ -770,6 +1038,8 @@ void Draw(bool force = false) {
     s.slow = W.slow;
     s.arm = W.arm;
     s.bars = W.bars;
+    s.level = W.level;
+    s.clock = W.waveT;
     s.hot = W.hot;
     s.press = W.press;
     s.sliding = W.sliding;
@@ -839,7 +1109,7 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 const float dt = (float)std::clamp(now - W.last, 0.0, 0.1);
                 W.last = now;
                 const MusicState ms = Host_MusicState();
-                Turn(dt, g_settings.musicPlaying && ms.playing, ms.durMs ? std::min(1.f, (float)ms.posMs / ms.durMs) : 0, Style().draw == DrawBars);
+                Turn(dt, g_settings.musicPlaying && ms.playing, ms.durMs ? std::min(1.f, (float)ms.posMs / ms.durMs) : 0, Style().sound);
                 Draw(true);
             }
             return 0;
@@ -848,13 +1118,18 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 SetVolumeAt(x);
                 return 0;
             }
+            if (W.seeking) {  // the place follows the pointer; the song moves there when let go
+                W.seekFrac = Style().seek(Style(), x, y, true);
+                Draw();
+                return 0;
+            }
             if (W.dragging) {  // follows the pointer; the place is kept when let go
                 POINT p;
                 GetCursorPos(&p);
                 SetWindowPos(h, nullptr, p.x - W.grab.x, p.y - W.grab.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                 return 0;
             }
-            const int hot = HitPart(x, y);
+            const int hot = HitPart(Style(), x, y);
             if (hot != W.hot) {
                 W.hot = hot;
                 Draw();
@@ -872,10 +1147,13 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_LBUTTONDOWN:
         case WM_LBUTTONDBLCLK:
             SetCapture(h);
-            W.press = HitPart(x, y);
+            W.press = HitPart(Style(), x, y);
             if (W.press == PART_VOLUME) {
                 W.sliding = true;
                 SetVolumeAt(x);
+            } else if (W.press == PART_SEEK) {
+                W.seeking = true;
+                W.seekFrac = Style().seek(Style(), x, y, true);
             } else if (W.press == PART_BODY) {
                 W.dragging = true;
                 W.grab = POINT{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
@@ -890,6 +1168,9 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 W.sliding = false;
                 Host_SettingsChanged();
                 UI_Refresh();
+            } else if (W.seeking) {
+                W.seeking = false;
+                Player_Seek(W.seekFrac);
             } else if (W.dragging) {
                 W.dragging = false;
                 RECT r;
@@ -901,7 +1182,7 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 g_settings.playerY = std::clamp(((r.top + r.bottom) / 2.f - mon.top) / (mon.bottom - mon.top), 0.f, 1.f);
                 SaveSettings(g_settings);
                 Log(L"player: moved to %.1f%%, %.1f%%", g_settings.playerX * 100, g_settings.playerY * 100);
-            } else if (part == HitPart(x, y)) {
+            } else if (part == HitPart(Style(), x, y)) {
                 if (part == PART_PLAY) Host_PlayMusic(!g_settings.musicPlaying);
                 else if (part == PART_PREV || part == PART_NEXT) Host_SkipMusic(part == PART_NEXT);
             }
@@ -977,18 +1258,23 @@ void Player_Hide() {
     DestroyWindow(W.hwnd);
     W.hwnd = nullptr;
     W.hot = W.press = PART_NONE;
-    W.dragging = W.sliding = W.turning = false;
-    Rel(W.meter);
+    W.dragging = W.sliding = W.turning = W.seeking = false;
+    StopMeter();
     StopDrawing();
     FreeWindowDib();
     Log(L"player: off the desktop");
 }
 
-bool Player_Paint(int style, float scale, bool live, ClockImage* out) {
+bool Player_Paint(int style, float scale, bool live, ClockImage* out, const PlayerInput* in) {
     if (style < 1 || style > (int)std::size(kStyles) || !StartDrawing()) return false;
     const PlayerStyle& st = kStyles[style - 1];
     if (!W.hwnd) W.songs = LoadPlaylist();  // (the window keeps its own up to date)
-    Shown s = Current();
+    Shown s = Current(in ? in->seek : -1);
+    if (in) {
+        s.hot = in->hot;
+        s.press = in->press;
+        s.sliding = in->sliding;
+    }
     // What turns: by the clock, so a preview moves on its own (or, still, as it looks mid-song).
     const float t = live && s.playing ? (float)fmod(Now(), 3600.0) : 0;
     s.turn = fmodf(30 + 200 * t, 360.f);
@@ -1000,6 +1286,8 @@ bool Player_Paint(int style, float scale, bool live, ClockImage* out) {
     for (int i = 0; i < kBars; i++)
         bars[i] = (live && !s.playing) ? 0 : 0.25f + 0.55f * (0.5f + 0.5f * sinf(t * (3.1f + i * 0.37f) + i * 1.7f)) * (0.6f + 0.4f * sinf(t * 1.3f + i * 0.9f));
     s.bars = bars;
+    s.level = live ? (s.playing ? 0.55f + 0.25f * sinf(t * 1.7f) : 0) : 0.6f;
+    s.clock = live ? t : 1.3f;
     const int w = (int)ceilf(st.w * scale), h = (int)ceilf(st.h * scale);
     W.drawn.clear();  // (the window's next frame is drawn whole: this used the same drawing surface)
     return Render(st, s, scale, w, h, [&](HDC, const uint32_t* px) {
@@ -1018,6 +1306,32 @@ void Player_Size(int style, float* w, float* h) {
     const bool ok = style >= 1 && style <= (int)std::size(kStyles);
     *w = ok ? kStyles[style - 1].w : 0;
     *h = ok ? kStyles[style - 1].h : 0;
+}
+
+int Player_PartAt(int style, float x, float y) {
+    return style >= 1 && style <= (int)std::size(kStyles) ? HitPart(kStyles[style - 1], x, y) : PART_NONE;
+}
+
+float Player_VolumeAt(int style, float x) {
+    if (style < 1 || style > (int)std::size(kStyles)) return 0;
+    const D2D1_RECT_F& t = kStyles[style - 1].volume;
+    return t.right > t.left ? std::clamp((x - t.left) / (t.right - t.left), 0.f, 1.f) : 0;
+}
+
+float Player_SeekAt(int style, float x, float y) {
+    return style >= 1 && style <= (int)std::size(kStyles) ? kStyles[style - 1].seek(kStyles[style - 1], x, y, true) : 0;
+}
+
+bool Player_HasVolume(int style) {
+    return style >= 1 && style <= (int)std::size(kStyles) && kStyles[style - 1].volume.right > kStyles[style - 1].volume.left;
+}
+
+void Player_Seek(float frac) {
+    const MusicState ms = Host_MusicState();
+    W.seekFrac = std::clamp(frac, 0.f, 1.f);
+    W.seekHold = Now() + 1.2;  // shown there until the song has got there
+    if (ms.track >= 0 && ms.durMs) Host_MusicCommand(MC_SEEK, (LPARAM)(W.seekFrac * ms.durMs));
+    Player_Update();
 }
 
 bool Player_Turns() { return g_settings.musicPlaying && Host_MusicState().playing; }
