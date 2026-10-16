@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Skyblock127/VideoBG/releases/latest"><img src="https://img.shields.io/github/v/release/Skyblock127/VideoBG?label=latest&color=8A63FF" alt="Latest release"></a>
+  <a href="https://github.com/Skyblock127/VideoBG/releases/latest"><img src="https://img.shields.io/github/v/release/Skyblock127/VideoBG?label=latest&color=1F6FEB" alt="Latest release"></a>
   <a href="https://github.com/Skyblock127/VideoBG/releases"><img src="https://img.shields.io/github/downloads/Skyblock127/VideoBG/total?color=2EA043" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows&logoColor=white" alt="Windows 10 | 11">
   <img src="https://img.shields.io/badge/admin%20rights-not%20needed-555" alt="No admin rights needed">
@@ -21,6 +21,9 @@ it off stops the video part completely.
 
 ## Features
 
+- **Two looks:** the classic settings window, or the **modern look**: your wallpapers as a deck of
+  cards over a full-screen view of the wallpaper, with the clock, the music and quick settings
+  right there.
 - **Any video Windows can play:** MP4, MOV, MKV, WebM, AVI and more. VideoBG turns animated GIFs
   into a video once and then uses that.
 - **`Ctrl + Alt + B`** turns the wallpaper on and off.
@@ -30,18 +33,18 @@ it off stops the video part completely.
   it to use less memory.
 - **Crop:** choose which part of the video fills the screen, in your screen's shape or any shape (stretched to fit).
 - **Desktop clock:** day, date and time, which you can drag anywhere, in a style of your choice:
-  the Mond text clock (four fonts included, or any font of your own), a dial, a ring, flip tiles,
-  stacked digits, a single line or a big time. Your own colour, size, opacity, glow and language.
+  the Mond text clock (four fonts included, or any font of your own), Dial, Watch, Ring, Orbit,
+  Flip (its flaps fall at each new minute), Digital, Stack, Line, Big, Bold, Calendar or Words. Your own colour, size, opacity, glow and language.
   Save looks as presets and use them on any clock.
 - **Lock screen:** while the wallpaper is on, the lock screen shows a frame of the video.
-- **Sound:** silent, the video's own sound, or your own music with a player: play/pause, seek, next/previous, shuffle, repeat, and a playlist you can rearrange. A music player can sit on your desktop too: a turning record, a cassette, a disc or bars that move with the sound.
+- **Sound:** silent, the video's own sound, or your own music with a player: play/pause, seek, next/previous, shuffle, repeat, and a playlist you can rearrange. A music player can sit on your desktop too, in nine styles (Vinyl, Cassette, Disc, Bars, Wave, Halo, Cover, Radio, Mini); click or drag what shows the song's place to move in the song. The music never starts by itself when Windows starts.
 - **Clear errors:** if a video won't play, VideoBG says why and gives you the fix.
 
 ## Install
 
 You'll need 64-bit Windows 10 or 11. VideoBG doesn't need admin rights.
 
-1. Download the zip (for example **VideoBG-1.5.1.zip**) from the
+1. Download the zip (for example **VideoBG-2.0.0.zip**) from the
    **[latest release](https://github.com/Skyblock127/VideoBG/releases/latest)**.
 2. Right-click the zip and choose **Extract All**. Extract it somewhere it can stay, for example
    `C:\Tools`. You get a **VideoBG** folder there (`C:\Tools\VideoBG`), and VideoBG runs from it.
@@ -96,7 +99,8 @@ the bottom of the screen, over a full-screen view of the wallpaper:
 - **Enter** or a click on the middle card (once the deck has stopped on it) makes it your
   wallpaper: the card comes forward and glows, its picture turns into the video playing and its
   "Current" badge pops in; then the card fades away around the video, which grows smoothly to fill
-  the screen. **Esc** closes and keeps the one you had.
+  the screen. **Esc** (or choosing the one that's already your wallpaper) closes and keeps the one
+  you had. Next to the title: the wallpaper's RAM and the tray app's.
 - **Right-click the middle card** for its actions: the red **bin** (click it again, once it's a
   tick, to take the video off the list; the file isn't touched), its **versions** (the original and
   any lighter ones; pick which one plays) and, for your wallpaper, **crop**: drag and scroll right

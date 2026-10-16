@@ -1,4 +1,4 @@
-VideoBG 1.10.2 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
+VideoBG 2.0.0 - video wallpaper and desktop clock for Windows 10/11 (64-bit)
 ==============================================================================
 
 What it does
@@ -34,27 +34,31 @@ Using it
         after a moment on it. Enter, or a click on the middle card once the
         deck has stopped on it, makes it your wallpaper: it comes forward,
         its picture turns into the video playing, and the video grows to
-        fill the screen. Esc or Ctrl+Alt+B closes and keeps the one you had.
+        fill the screen. Esc or Ctrl+Alt+B (or choosing the one that's already
+        your wallpaper) closes and keeps the one you had. Next to the title:
+        the wallpaper's RAM and the tray app's.
       * Right-click the middle card: the red bin (click it again, once it's
         a tick, to take the video off the list; the file isn't touched), its
         versions (the original and any lighter ones), and for your wallpaper,
         crop (drag and scroll right on the screen, and pick the picture for
         your lock screen). Delete brings up the bin too. Each card shows the
         size of the version it plays.
-      * Clock (top right): drag the clock right on your desktop, with all its
+      * Clock (top right, or C): the clock of the video in the middle, over
+        that video. Drag the clock right on your desktop, with all its
         settings beside it (style, language, an eyedropper and any colour for
         both colours); it's this video's own clock. The arrow sends the panel to the other
         side, the eye hides it. Save or Cancel takes you back.
-      * Music (top right): play, pause, skip, shuffle, repeat, the volume,
-        your playlist (click a song to play it, drag its grip to move it),
-        and a music player on your desktop (step through its styles and see
-        it right there; drag it on the desktop to move it).
-      * Settings (top right, or right-click anywhere else): add videos, the
+      * Music (top right, or M): the music player on your desktop (step
+        through its styles); the player shown there works as the remote
+        (play, pause, skip, volume, and its place in the song). Then your
+        playlist, with shuffle and repeat on its heading (click a song to
+        play it, drag its grip to move it).
+      * Settings (top right, or S): add videos, the
         lock screen, the wallpaper off, all the settings, or back to the
         classic look. The settings window is the same in both looks.
       * VideoBG.exe --wallpapers opens the picker from a shortcut.
   - Pause/Break: plays or pauses My music, or mutes the video's audio (the
-    video plays on, so the sound comes back in sync). Change it, or set
+    video plays on, so the sound comes back in sync). It works in games too. Change it, or set
     none with Backspace, on the General page.
   - VideoBG starts the way you left it (on or off); change that on the
     General page ("When app starts").
@@ -105,10 +109,9 @@ Using it
       * Date: how the date reads (09 OCTOBER, 2026. / OCTOBER 9, 2026 /
         09 / 10 / 26 ...), or no date at all.
       * Style: the clock's design, each shown as it looks: Mond (day, date
-        and time) in any font, Dial (hands, the date under it), Ring (the
-        hour fills a ring around the time), Flip (flip-clock tiles), Stack
-        (hours over minutes), Line (time, then day and date) and Big (the
-        date over a big time). What a style doesn't show is greyed out (a
+        and time) in any font, Dial, Watch, Ring, Orbit, Flip (its flaps fall
+        at each new minute), Digital, Stack, Line, Big, Bold, Calendar and
+        Words. What a style doesn't show is greyed out (a
         dial has no 12/24-hour time; with no date, it has no words at all).
       * Language (top of the style list) writes the day, month and AM/PM in
         any language Windows knows, with its own digits if it has them. A
@@ -140,9 +143,12 @@ Using it
     songs counts as shuffling; turning shuffle off goes back to the order
     you chose them in. With the video wallpaper off the music waits where it
     was, and Play/Pause decides whether it starts when the wallpaper's back.
-    "On the desktop" puts a music player on your desktop while My music
-    plays: Vinyl (a record that turns, with the song's cover), Cassette,
-    Disc or Bars (they move with the sound). Drag it to move it.
+    "Player" puts a music player on your desktop while My music plays:
+    Vinyl, Cassette, Disc, Bars, Wave, Halo, Cover, Radio or Mini. Its
+    buttons and volume work there; click or drag what shows the song's
+    place (the record, the ring, the dial...) to move in the song. Drag
+    the rest of it to move it. When VideoBG starts with Windows the music
+    stays paused until you press Play.
   - Sound and Playback pages: sound source, speed, frame rate, and (under
     Power saving) pausing while apps cover the desktop or on battery.
   - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.
