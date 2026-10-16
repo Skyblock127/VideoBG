@@ -69,7 +69,18 @@ ClockLook WantedLook() {
     return g_settings.clockVideoOwn ? g_settings.clockVideo : g_settings.clockLive;
 }
 
+// The modern look's music player on the desktop: there with the video wallpaper, while My music is on.
+void SyncPlayer(bool force) {
+    if (g_settings.look != 1 || g_settings.musicPlayer < 1 || g_settings.sound != 2 || !WallpaperShowing()) {
+        Player_Hide();
+        return;
+    }
+    Player_Show(LoadPlaylist(), force);
+}
+
+// The desktop clock (and the music player beside it) as the wallpaper and settings want them now.
 void SyncClock(bool force = false) {
+    SyncPlayer(force);
     if (!WantedLook().show || g_exiting) {
         if (!g_clockShown.empty()) Log(L"clock: hidden");
         g_clockShown.clear();
@@ -258,8 +269,7 @@ void Reconcile() {
 }
 
 void ApplyBatteryPolicy() {
-    // The modern look has no still wallpaper to turn off to: the renderer pauses instead.
-    bool off = g_settings.onBattery == 2 && g_settings.look == 0 && g_onBattery && g_on && !g_override;
+    bool off = g_settings.onBattery == 2 && g_onBattery && g_on && !g_override;
     if (off != g_batteryOff) {
         g_batteryOff = off;
         Reconcile();
@@ -459,10 +469,7 @@ void ToggleMusic() {
         Log(L"tray: sound shortcut pressed, but there's no sound to pause");
         return;
     }
-    g_settings.musicPlaying = !g_settings.musicPlaying;
-    Log(L"tray: music %ls by the shortcut", g_settings.musicPlaying ? L"played" : L"paused");
-    Host_SettingsChanged();
-    UI_Refresh();
+    Host_PlayMusic(!g_settings.musicPlaying);
 }
 
 LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -529,6 +536,8 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             g_music.durMs = (UINT)((UINT64)l & 0xFFFFFFFF);
             g_music.track = (int)(((UINT64)l >> 32) & 0xFFFF) - 2;
             g_music.playing = ((UINT64)l >> 48) & 1;
+            Player_Update();
+            Modern_MusicChanged();
             return 0;
         case WM_VBG_MUSIC_END:  // the last song ended with repeat off: stopped, ready at the first song
             g_settings.musicPlaying = false;
@@ -662,6 +671,7 @@ void Host_SettingsChanged() {
     ApplyBatteryPolicy();
     SyncClock();
     SyncLockScreen();  // the video or its crop may have changed
+    Modern_SettingsChanged();
 }
 
 void Host_FrameChanged() {
@@ -726,6 +736,17 @@ void Host_SetLook(int look) {
 
 void Host_Showcase(HWND under) {
     if (g_ctl) PostMessageW(g_ctl, WM_VBG_SHOWCASE, under ? 1 : 0, (LPARAM)under);
+}
+
+void Host_ShowcaseLook(float brightness, const RECT* box) {
+    if (!g_ctl) return;
+    const bool usual = brightness >= 1 && !box;
+    PostMessageW(g_ctl, WM_VBG_SHOWCASE_LOOK, usual ? 0 : 1 + (WPARAM)(std::clamp(brightness, 0.f, 1.f) * 1000 + 0.5f),
+                 box ? PackBox(*box) : 0);
+}
+
+void Host_HoldWallpaper(bool hold) {
+    if (g_ctl) PostMessageW(g_ctl, WM_VBG_HOLD, hold ? 1 : 0, 0);
 }
 
 void Host_PreviewVideo(const std::wstring& path, double time, UINT seq) {
@@ -854,6 +875,57 @@ MusicState Host_MusicState() { return g_music; }
 
 void Host_KeepMusicPlace() { KeepMusicPlace(); }
 
+void Host_PlayMusic(bool play) {
+    if (play == g_settings.musicPlaying) return;
+    g_settings.musicPlaying = play;
+    Log(L"tray: music %ls", play ? L"played" : L"paused");
+    Host_SettingsChanged();
+    UI_Refresh();
+}
+
+void Host_SkipMusic(bool next) {
+    Host_MusicCommand(next ? MC_NEXT : MC_PREV, 0);
+    Host_PlayMusic(true);
+}
+
+// My music's play order, the same in both looks. The order chosen (as Windows listed the files) is
+// the only "unshuffled" one: shuffling makes a new order, and moving a song by hand does too;
+// shuffle off goes back to the order chosen.
+void Host_ShuffleMusic(size_t n) {
+    if (n < 2) return;
+    std::vector<int> order = MusicOrderFor(g_settings, n);
+    if (MusicShuffled(order)) {
+        g_settings.musicOrder.clear();  // back to the order chosen
+    } else {  // the song playing stays first; the rest in random order
+        const int cur = g_music.track;
+        for (size_t i = 0; i < n; i++)
+            if (order[i] == cur) std::swap(order[0], order[i]);
+        static unsigned long long seed = GetTickCount64() * 2654435761ULL;
+        for (size_t i = n - 1; i > 1; i--) {
+            seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            std::swap(order[i], order[1 + (size_t)((seed >> 33) % i)]);
+        }
+        g_settings.musicOrder = order;
+    }
+    Log(L"music: %ls", g_settings.musicOrder.empty() ? L"in the order chosen" : L"shuffled");
+    Host_SettingsChanged();
+}
+
+void Host_PlaceSong(size_t n, int song, int to) {
+    std::vector<int> order = MusicOrderFor(g_settings, n);
+    auto it = std::find(order.begin(), order.end(), song);
+    if (it == order.end()) return;
+    const int from = (int)(it - order.begin());
+    to = std::clamp(to, 0, (int)order.size() - 1);
+    if (from == to) return;
+    order.erase(it);
+    order.insert(order.begin() + to, song);
+    if (MusicShuffled(order)) g_settings.musicOrder = order;
+    else g_settings.musicOrder.clear();
+    Log(L"music: song moved from %d to %d", from + 1, to + 1);
+    Host_SettingsChanged();
+}
+
 void Host_LiveVolume(int volume) {
     if (g_ctl) PostMessageW(g_ctl, WM_VBG_VOLUME, (WPARAM)std::clamp(volume, 0, 100), 0);
 }
@@ -913,8 +985,7 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker) {
     if (GetSystemPowerStatus(&ps)) g_onBattery = ps.ACLineStatus == 0;
     g_power = RegisterPowerSettingNotification(g_wnd, &GUID_ACDC_POWER_SOURCE, DEVICE_NOTIFY_WINDOW_HANDLE);
 
-    // The modern look has only the video wallpaper: it starts with it.
-    g_on = g_settings.look == 1 || g_settings.launch == 0 || (g_settings.launch == 1 && g_settings.lastOn);
+    g_on = g_settings.launch == 0 || (g_settings.launch == 1 && g_settings.lastOn);
     ApplyBatteryPolicy();
     Reconcile();
 

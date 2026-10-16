@@ -31,7 +31,7 @@ constexpr float kSongRowH = 34;       // a song's row in the playlist
 
 enum Id {
     ID_NONE, ID_POWER, ID_CHOOSE, ID_CROP, ID_LOCK, ID_TIMELINE, ID_SPEED, ID_VOLUME, ID_FPS,
-    ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_MUSIC_HOTKEY, ID_LAUNCH, ID_LOOK, ID_CLK_PLACE, ID_STARTUP_LINK, ID_STARTUP_REG,
+    ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_MUSIC_HOTKEY, ID_LAUNCH, ID_LOOK, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_MUSIC_PLAY, ID_MUSIC_PREV, ID_MUSIC_NEXT, ID_MUSIC_SHUFFLE, ID_MUSIC_REPEAT, ID_MUSIC_SEEK,
     ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_UNMUTE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
@@ -400,8 +400,7 @@ void LoadTheme() {
     RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
                  L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size);
     Theme& t = u.th;
-    const bool modern = g_settings.look == 1;
-    t.dark = light == 0 || modern;  // the modern look is always dark
+    t.dark = light == 0;
     // Accent palette: Light2 for dark mode, Dark1 for light mode (what Windows 11 controls use).
     BYTE pal[32] = {};
     size = sizeof pal;
@@ -411,12 +410,7 @@ void LoadTheme() {
         const BYTE* c = pal + (t.dark ? 1 : 4) * 4;
         accent = D2D1::ColorF(c[0] / 255.f, c[1] / 255.f, c[2] / 255.f);
     }
-    if (modern) {  // deeper, cooler blacks, like the wallpaper picker
-        t.bg = Rgb(0x0E0F11); t.card = Rgb(0x18191C); t.stroke = Rgb(0x0A0A0C);
-        t.text = Rgb(0xFFFFFF); t.text2 = Rgb(0xC6C8CE); t.text3 = Rgb(0x8D9098);
-        t.ctrl = Rgb(0x232529); t.ctrlHover = Rgb(0x2B2D32); t.ctrlPress = Rgb(0x1F2124); t.ctrlStroke = Rgb(0x35383E);
-        t.track = Rgb(0x8A8D94); t.onAccent = Rgb(0x000000); t.good = Rgb(0x6CCB5F); t.warn = Rgb(0xFCE100);
-    } else if (t.dark) {
+    if (t.dark) {
         t.bg = Rgb(0x202020); t.card = Rgb(0x2B2B2B); t.stroke = Rgb(0x1C1C1C);
         t.text = Rgb(0xFFFFFF); t.text2 = Rgb(0xCFCFCF); t.text3 = Rgb(0x9D9D9D);
         t.ctrl = Rgb(0x373737); t.ctrlHover = Rgb(0x3D3D3D); t.ctrlPress = Rgb(0x323232); t.ctrlStroke = Rgb(0x454545);
@@ -1058,6 +1052,7 @@ std::wstring StatusText(D2D1_COLOR_F* dot) {
         if (mask & PR_DISPLAY_OFF) return L"Paused while the screen is off";
         if (mask & PR_BATTERY) return L"Paused on battery";
         if (mask & PR_LOW_MEMORY) return L"Paused: the PC is low on memory";
+        if (mask & PR_HOLD) return L"Held on a frame in the wallpaper picker";
         return L"Paused while an app covers the desktop";
     }
     if (st == RS_PLAYING) { *dot = u.th.good; return L"Playing"; }
@@ -1603,8 +1598,7 @@ void PaintPowerCard(float x, float y, float w) {
     Seg(ID_COVER, SegRect(cx, yy, cw), {L"Nothing", L"Fullscreen apps", L"Maximized apps"}, g_settings.pauseCover);
     yy += kRowH;
     Row(lx, yy, kLabelW, L"On battery");
-    if (g_settings.look == 1) Seg(ID_BATTERY, SegRect(cx, yy, cw), {L"Keep playing", L"Pause"}, std::min(g_settings.onBattery, 1));
-    else Seg(ID_BATTERY, SegRect(cx, yy, cw), {L"Keep playing", L"Pause", L"Still wallpaper"}, g_settings.onBattery);
+    Seg(ID_BATTERY, SegRect(cx, yy, cw), {L"Keep playing", L"Pause", L"Still wallpaper"}, g_settings.onBattery);
 }
 
 // ---- Feedback (General page) -----------------------------------------------------------------
@@ -1659,8 +1653,8 @@ void PaintGeneralPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const float msgH = u.hotkeyMsg.empty() ? 0 : 18;
-    const bool modern = g_settings.look == 1;  // only the video wallpaper: it always starts with it
-    D2D1_RECT_F gc = R(x, y, x + w, y + kCardHead + (modern ? 3 : 4) * kRowH + msgH + 10);
+    const bool modern = g_settings.look == 1;  // the shortcut brings up the wallpapers
+    D2D1_RECT_F gc = R(x, y, x + w, y + kCardHead + 4 * kRowH + msgH + 10);
     Card(gc, L"\uE713", L"General");
     float yy = y + kCardHead;
     // A shortcut box: click it, then press the keys (its message, if any, under it).
@@ -1684,11 +1678,9 @@ void PaintGeneralPage(float x, float w) {
              L"Press the new shortcut (Esc cancels)");
     shortcut(ID_MUSIC_HOTKEY, L"Pause / mute sound", g_settings.musicHkMods, g_settings.musicHkVk,
              L"Press a key (Esc cancels, Backspace: none)");
-    if (!modern) {
-        Row(lx, yy, kLabelW, L"When app starts");
-        Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Video wallpaper", L"As I left it", L"Still wallpaper"}, g_settings.launch);
-        yy += kRowH;
-    }
+    Row(lx, yy, kLabelW, L"When app starts");
+    Seg(ID_LAUNCH, SegRect(cx, yy, cw), {L"Video wallpaper", L"As I left it", L"Still wallpaper"}, g_settings.launch);
+    yy += kRowH;
     Row(lx, yy, kLabelW, L"Start with Windows");
     bool enabled = false;
     bool registered = Host_StartupRegistered(&enabled);
@@ -2080,8 +2072,7 @@ void PaintClockPage(float x, float w) {
     // look every video shares or this video's own; Show / Hide is part of the look picked.
     // One row of three equal parts: which wallpaper, which video's clock, shown or hidden.
     const float segW = (iw - 2 * 12) / 3, ry = y + kCardHead;
-    if (g_settings.look == 1) Button(ID_CLK_PLACE, R(lx, ry, lx + segW, ry + 32), L"Place on desktop", L"\uE7C9", false, on && !editing);
-    else Seg(ID_CLK_MODE, R(lx, ry, lx + segW, ry + 32), {L"Video", L"Still"}, u.clockEdit, !editing);
+    Seg(ID_CLK_MODE, R(lx, ry, lx + segW, ry + 32), {L"Video", L"Still"}, u.clockEdit, !editing);
     Seg(ID_CLK_SCOPE, R(lx + segW + 12, ry, lx + 2 * segW + 12, ry + 32), {L"This video", L"All videos"},
         g_settings.clockVideoOwn ? 0 : 1, u.clockEdit == 0 && !video.empty() && !editing);
     Seg(ID_CLK_SHOW, R(x + w - kPad - segW, ry, x + w - kPad, ry + 32), {L"Show", L"Hide"}, EditedLook()->show ? 0 : 1, !editing);
@@ -2146,7 +2137,6 @@ void PaintClockPage(float x, float w) {
                                               : L"Show or hide the clock on the video wallpaper, for every video using the shared look";
             break;
         case ID_CLK_MODE: help = L"Video wallpaper: the clock while a video plays. Still wallpaper: while the video wallpaper is off"; break;
-        case ID_CLK_PLACE: help = L"Drag the clock right on your desktop, over your wallpaper"; break;
         case ID_CLK_SCOPE:
             help = u.clockEdit == 1 ? L"Only for the video wallpaper: a clock just for this video, or the one every video shares"
                                     : L"This video's own clock, or the one every video shares (this video keeps its own)";
@@ -3448,7 +3438,7 @@ void LeaveCrop(bool apply) {
 
 void ShowClockPage() {
     u.nav = NAV_CLOCK;
-    if (prs.edit < 0) u.clockEdit = Host_ClockLive() || g_settings.look == 1 ? 0 : 1;  // kept while a preset is edited
+    if (prs.edit < 0) u.clockEdit = Host_ClockLive() ? 0 : 1;  // kept while a preset is edited
     if (u.stillPx.empty() && !u.stillLoading) {
         u.stillLoading = true;
         Job j;
@@ -4056,9 +4046,6 @@ void OnSeg(int id, int i) {
         case ID_LOOK:
             if (i == g_settings.look) return;
             Host_SetLook(i);
-            u.clockEdit = Host_ClockLive() || i == 1 ? 0 : 1;
-            LoadTheme();
-            ForgetScaled();
             InvalidateRect(u.hwnd, nullptr, FALSE);
             return;
         case ID_CLK_MODE:
@@ -4099,44 +4086,12 @@ void OnSeg(int id, int i) {
 // files) is the only "unshuffled" one: shuffling makes a new order, and moving a song by hand
 // does too; shuffle off goes back to the order chosen.
 
-void MusicShuffle() {
-    const size_t n = u.playlist.size();
-    if (n < 2) return;
-    std::vector<int> order = MusicOrderFor(g_settings, n);
-    if (MusicShuffled(order)) {
-        g_settings.musicOrder.clear();  // back to the order chosen
-    } else {  // the song playing stays first; the rest in random order
-        const int cur = Host_MusicState().track;
-        for (size_t i = 0; i < n; i++)
-            if (order[i] == cur) std::swap(order[0], order[i]);
-        static unsigned long long seed = GetTickCount64() * 2654435761ULL;
-        for (size_t i = n - 1; i > 1; i--) {
-            seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
-            std::swap(order[i], order[1 + (size_t)((seed >> 33) % i)]);
-        }
-        g_settings.musicOrder = order;
-    }
-    Log(L"ui: music %ls", g_settings.musicOrder.empty() ? L"in the order chosen" : L"shuffled");
-    Host_SettingsChanged();
-}
+void MusicShuffle() { Host_ShuffleMusic(u.playlist.size()); }
 
 void OnClick(int id);
 
 // Puts a song at place `to` in the play order (the others move along).
-void MusicPlace(int song, int to) {
-    std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
-    auto it = std::find(order.begin(), order.end(), song);
-    if (it == order.end()) return;
-    const int from = (int)(it - order.begin());
-    to = std::clamp(to, 0, (int)order.size() - 1);
-    if (from == to) return;
-    order.erase(it);
-    order.insert(order.begin() + to, song);
-    if (MusicShuffled(order)) g_settings.musicOrder = order;
-    else g_settings.musicOrder.clear();
-    Log(L"ui: song moved from %d to %d", from + 1, to + 1);
-    Host_SettingsChanged();
-}
+void MusicPlace(int song, int to) { Host_PlaceSong(u.playlist.size(), song, to); }
 
 // Moves a song one place up (-1) or down (1) in the play order (Alt+arrows on a focused song).
 void MusicMove(int song, int dir) {
@@ -4582,7 +4537,6 @@ void OnClick(int id) {
         case ID_FB_LOG: fb.withLog = !fb.withLog; break;
         case ID_FB_PREVIEW: FeedbackPreview(); break;
         case ID_PRS: OpenPresets(); break;
-        case ID_CLK_PLACE: Modern_Open(1); break;
         case ID_PRS_CLOSE: ClosePresets(); break;
         case ID_PRS_NO: prs.confirm = -1; break;
         case ID_PRS_YES: PresetConfirmed(); break;
@@ -5222,7 +5176,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     SetTimer(h, TIMER_SONGS, 15, nullptr);
                 }
             } else if (u.page == 1) {
-                ZoomCrop(GET_WHEEL_DELTA_WPARAM(w) > 0 ? 0.92f : 1 / 0.92f);
+                ZoomCrop(powf(0.92f, GET_WHEEL_DELTA_WPARAM(w) / 120.f));  // touchpads send many small steps
             }
             return 0;
         case WM_KEYDOWN:
@@ -5478,6 +5432,22 @@ void QueryGpu() {
 }
 
 }  // namespace
+
+std::vector<LightCopy> UI_LightCopiesOf(const std::wstring& original) {
+    std::vector<LightCopy> out;
+    for (const Version& v : LightCopiesOf(original)) out.push_back(LightCopy{v.path, v.w, v.h, v.bytes});
+    std::sort(out.begin(), out.end(), [](const LightCopy& a, const LightCopy& b) { return (UINT64)a.w * a.h > (UINT64)b.w * b.h; });
+    return out;
+}
+
+void UI_ShowVersions() {
+    UI_Show();
+    if (!u.hwnd || u.page != 0 || DialogOpen()) return;
+    StopRecording();
+    u.nav = NAV_VIDEO;
+    OpenVersions();
+    InvalidateRect(u.hwnd, nullptr, FALSE);
+}
 
 void UI_Show() {
     if (u.hwnd) {

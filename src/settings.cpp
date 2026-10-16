@@ -684,6 +684,9 @@ void LoadSettings(Settings& s) {
     s.lastOn = ReadInt(ini, L"LastOn", 1, 0, 1) != 0;
     s.pipeline = ReadInt(ini, L"Pipeline", 0, 0, 2);
     s.look = ReadInt(ini, L"Look", 0, 0, 1);
+    s.musicPlayer = ReadInt(ini, L"MusicPlayer", 0, 0, 16);
+    s.playerX = ReadFloat(ini, L"General", L"PlayerX", 0.5f, 0, 1);
+    s.playerY = ReadFloat(ini, L"General", L"PlayerY", 0.9f, 0, 1);
     s.lockFollow = ReadInt(ini, L"LockScreenFollows", 1, 0, 1) != 0;
     s.clockStill.size = s.clockLive.size = ReadFloat(ini, L"Clock", L"Size", 1.06f, 0.5f, 2.5f);  // older: one size for all
     // Older versions had one 12/24-hour setting for every look: it's where each look starts from.
@@ -747,8 +750,13 @@ void SaveSettings(const Settings& s) {
     WriteInt(ini, L"LastOn", s.lastOn ? 1 : 0);
     WriteInt(ini, L"LockScreenFollows", s.lockFollow ? 1 : 0);
     WriteInt(ini, L"Look", s.look);
+    WriteInt(ini, L"MusicPlayer", s.musicPlayer);
     ini.Set(L"General", L"PreviewTime", nullptr);  // per video now
     wchar_t buf[64];
+    swprintf(buf, 64, L"%.4f", s.playerX);
+    ini.Set(L"General", L"PlayerX", buf);
+    swprintf(buf, 64, L"%.4f", s.playerY);
+    ini.Set(L"General", L"PlayerY", buf);
 
     for (const wchar_t* old : {L"Skin", L"Variable", L"RainmeterExe", L"Size", L"Enabled", L"Hours"})  // from older versions
         ini.Set(L"Clock", old, nullptr);

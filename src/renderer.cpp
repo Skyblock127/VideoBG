@@ -45,6 +45,8 @@ struct Target {
     MFVideoNormalizedRect src{0, 0, 1, 1};
     RECT dst{};
     bool letterbox = false;
+    MFVideoNormalizedRect boxSrc{0, 0, 1, 1};  // the showcase while a wallpaper is chosen: the video again, in a box
+    RECT boxDst{};                             // (empty: no box)
 };
 
 struct InView {
@@ -85,6 +87,11 @@ struct State {
     // the wallpaper's own while the user looks at it (the preview).
     HWND showcaseUnder = nullptr;        // the picker window; nullptr = no showcase
     std::atomic<bool> showcaseUp{false}; // the showcase has had its first frame (told the host)
+    // A wallpaper being chosen: the showcase dims (the video blended over black) and plays the video
+    // again in a box that grows to fill it. Written under the lock.
+    bool scLook = false;
+    float scBright = 1;
+    RECT scBox{};
     std::wstring preview;                // the video being previewed, "" = the wallpaper's own
     Crop previewVideoCrop;               // its crop
     double returnPos = 0;                // where the wallpaper's own video was when previewing began
@@ -201,6 +208,13 @@ void UpdateRects() {
         t.src = {f.sl, f.st, f.sr, f.sb};
         t.dst = {lroundf(f.dl), lroundf(f.dt), lroundf(f.dr), lroundf(f.db)};
         t.letterbox = t.dst.left > 0 || t.dst.top > 0 || t.dst.right < t.w || t.dst.bottom < t.h;
+        t.boxDst = {};
+        const RECT& b = g.scBox;
+        if (t.showcase && g.scLook && b.right > b.left && b.bottom > b.top) {  // fills the box as it would the screen
+            FitRect bf = ComputeFit(g.aspect, c, CropMode(c), b.right - b.left, b.bottom - b.top);
+            t.boxSrc = {bf.sl, bf.st, bf.sr, bf.sb};
+            t.boxDst = {b.left + lroundf(bf.dl), b.top + lroundf(bf.dt), b.left + lroundf(bf.dr), b.top + lroundf(bf.db)};
+        }
     }
     ReleaseSRWLockExclusive(&g.lock);
 }
@@ -472,10 +486,22 @@ bool BlitAll(ID3D11VideoProcessorInputView* view) {
         RECT src{g.ap.left + lroundf(t.src.left * aw), g.ap.top + lroundf(t.src.top * ah), g.ap.left + lroundf(t.src.right * aw),
                  g.ap.top + lroundf(t.src.bottom * ah)};
         RECT full{0, 0, t.w, t.h};
+        const bool look = t.showcase && g.scLook;  // a wallpaper being chosen: dimmed (blended over black)
+        g.vctx->VideoProcessorSetStreamAlpha(g.vp, 0, look, look ? g.scBright : 1.f);
         g.vctx->VideoProcessorSetStreamSourceRect(g.vp, 0, TRUE, &src);
         g.vctx->VideoProcessorSetStreamDestRect(g.vp, 0, TRUE, &t.dst);
         g.vctx->VideoProcessorSetOutputTargetRect(g.vp, TRUE, &full);  // outside dst = black background
         if (!t.out || FAILED(g.vctx->VideoProcessorBlt(g.vp, t.out, 0, 1, &st))) continue;
+        if (look && t.boxDst.right > t.boxDst.left) {  // and again in its box, at full brightness (only the box is drawn)
+            RECT bs{g.ap.left + lroundf(t.boxSrc.left * aw), g.ap.top + lroundf(t.boxSrc.top * ah),
+                    g.ap.left + lroundf(t.boxSrc.right * aw), g.ap.top + lroundf(t.boxSrc.bottom * ah)};
+            g.vctx->VideoProcessorSetStreamAlpha(g.vp, 0, FALSE, 1.f);
+            g.vctx->VideoProcessorSetStreamSourceRect(g.vp, 0, TRUE, &bs);
+            g.vctx->VideoProcessorSetStreamDestRect(g.vp, 0, TRUE, &t.boxDst);
+            g.vctx->VideoProcessorSetOutputTargetRect(g.vp, TRUE, &t.boxDst);
+            g.vctx->VideoProcessorBlt(g.vp, t.out, 0, 1, &st);
+        }
+        if (look) g.vctx->VideoProcessorSetStreamAlpha(g.vp, 0, FALSE, 1.f);
         if (DeviceLost(t.sc->Present(1, 0))) ok = false;
         else if (t.showcase && !g.showcaseUp.exchange(true)) PostMessageW(g.host, WM_VBG_SHOWCASE_UP, 0, 0);
     }
@@ -605,6 +631,8 @@ bool PresentEngineFrame(bool* transferred) {
             g.ctx->ClearRenderTargetView(t.rtv, c);
         }
         if (FAILED(g.eng->TransferVideoFrame(t.bb, &t.src, &t.dst, &black))) continue;
+        if (t.showcase && g.scLook && t.boxDst.right > t.boxDst.left)  // a wallpaper being chosen: again, in its box
+            g.eng->TransferVideoFrame(t.bb, &t.boxSrc, &t.boxDst, &black);
         *transferred = true;
         if (DeviceLost(t.sc->Present(1, 0))) ok = false;
         else if (t.showcase && !g.showcaseUp.exchange(true)) PostMessageW(g.host, WM_VBG_SHOWCASE_UP, 0, 0);
@@ -1341,11 +1369,9 @@ void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD, HWND, LONG idObject, LONG, DWOR
     SetTimer(g.ctl, TIMER_RECHECK, 150, nullptr);  // coalesce bursts into one scan
 }
 
-// On battery: pause (the modern look has no still wallpaper to turn off to, so "off" pauses too),
-// except while the picker is showing it.
+// On battery: pause, except while the picker is showing it.
 void ApplyBatteryPolicy() {
-    const bool pause = g.s.onBattery == 1 || (g.s.onBattery == 2 && g.s.look == 1);
-    SetPause(PR_BATTERY, pause && g.onBattery && !g.showcaseUnder);
+    SetPause(PR_BATTERY, g.s.onBattery == 1 && g.onBattery && !g.showcaseUnder);
 }
 
 // Low on memory (Windows says so, or under 10% of RAM is free): the wallpaper pauses and lets go of
@@ -1436,6 +1462,11 @@ void PreviewVideo(const std::wstring& path, double time, UINT seq);
 void ShowcaseOff() {
     if (!g.showcaseUnder) return;
     g.showcaseUnder = nullptr;
+    AcquireSRWLockExclusive(&g.lock);
+    g.scLook = false;
+    g.scBox = {};
+    ReleaseSRWLockExclusive(&g.lock);
+    SetPause(PR_HOLD, false);
     if (!g.preview.empty()) PreviewVideo(L"", 0, g.previewSeq);  // the picker's gone: never leave its preview playing
     Target t;
     AcquireSRWLockExclusive(&g.lock);
@@ -1564,6 +1595,19 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_VBG_SHOWCASE:
             if (w) ShowcaseOn((HWND)l);
             else ShowcaseOff();
+            return 0;
+        case WM_VBG_SHOWCASE_LOOK:  // the picker choosing a wallpaper: sent each of its frames while it moves
+            AcquireSRWLockExclusive(&g.lock);
+            g.scLook = w != 0;
+            g.scBright = w ? std::clamp((float)(w - 1) / 1000.f, 0.f, 1.f) : 1.f;
+            g.scBox = w ? UnpackBox(l) : RECT{};
+            ReleaseSRWLockExclusive(&g.lock);
+            UpdateRects();
+            if (g.parked) { Unpark(); ApplyPauseState(); }
+            RequestRedraw();
+            return 0;
+        case WM_VBG_HOLD:  // a frame being picked: the video waits there
+            SetPause(PR_HOLD, w != 0);
             return 0;
         case WM_COPYDATA: {  // the picker previewing a video: copied, then done once this returns
             auto* cd = (const COPYDATASTRUCT*)l;

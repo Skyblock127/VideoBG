@@ -90,18 +90,29 @@ Switch the look at the top of the settings (**Classic** / **Modern**). In the mo
 `Ctrl + Alt + B` (or the tray icon) brings your wallpapers up as a deck of cards that rises from
 the bottom of the screen, over a full-screen view of the wallpaper:
 
-- Scroll, drag the deck or use the arrow keys. The wallpaper shows each one's picture at once, and
-  its video starts after a moment on it.
-- **Enter**, a click on the middle card or **Set as wallpaper** makes it your wallpaper. **Esc**
-  closes and keeps the one you had.
-- **Add videos** adds as many as you like; **Delete** takes one off the list (the file isn't
-  touched). The first time, the list has the videos you've used before.
-- **Clock** lets you drag the desktop clock right on your desktop.
-- **Settings** opens all the settings (in a darker style), or goes back to the classic look.
+- Scroll (a touchpad works too), drag the deck or use the arrow keys. The wallpaper shows each
+  one's picture at once, and its video starts after a moment on it.
+- **Enter** or a click on the middle card (once the deck has stopped on it) makes it your
+  wallpaper: the card comes forward and glows, then fades away around its picture, and the picture,
+  already playing, grows to fill the screen. **Esc** closes and keeps the one you had.
+- **Right-click the middle card** for its actions: the red **bin** (click it again, once it's a
+  tick, to take the video off the list; the file isn't touched), its **versions** (the original and
+  any lighter ones; pick which one plays) and, for your wallpaper, **crop**: drag and scroll right
+  on the screen, and choose the picture for your lock screen (the wallpaper waits on that frame while
+  you drag). A video's versions share one card, which shows the size of the version it plays.
+- **Clock**: drag the clock right on your desktop, with all its settings beside it (style, colours,
+  size, glow, date, time). Each colour has an eyedropper (point at your wallpaper: the clock takes
+  the colour as you move) and a grid for any colour. It's this video's own clock. Its arrow sends
+  the panel to the other side; the eye hides everything to take a look.
+- **Music**: play, pause, skip, shuffle, repeat and the volume, your **playlist** (click a song to
+  play it, drag its grip to move it, or choose songs), and a **music player on your desktop**
+  (behind your apps, with the song, its controls and the volume; drag it to move it).
+- **Settings** (or a right-click anywhere else): add videos, the lock screen, the wallpaper off,
+  all the settings, or back to the classic look.
 
-The modern look is all about the video wallpaper: it always starts with it, and *on battery* pauses
-instead of switching to your still wallpaper. `VideoBG.exe --wallpapers` opens the picker from a
-shortcut.
+The classic settings window stays as it is in both looks: what's deeper (playback, power, the
+shortcuts, what plays) is set there, and both looks always show the same settings.
+`VideoBG.exe --wallpapers` opens the picker from a shortcut.
 
 No mouse needed: **Tab** moves between controls, **Enter** or **Space** uses one, the **arrow keys**
 move sliders, the clock and the crop box, and **Esc** lets go (press it again to close).

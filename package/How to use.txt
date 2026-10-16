@@ -28,22 +28,29 @@ Using it
       * Ctrl+Alt+B (or the tray icon) brings your wallpapers up as a deck of
         cards from the bottom of the screen, over a full-screen view of the
         wallpaper (your apps come back when it closes). Each card shows the
-        video's picture, its size, length, codec, sound and file size.
-      * Scroll, drag the deck or use the arrow keys: the wallpaper shows each
-        one's picture at once, and its video plays after a moment on it.
-        Enter (or a click on the middle card, or "Set as wallpaper") makes it
-        your wallpaper; Esc or Ctrl+Alt+B closes and keeps the one you had.
-      * Add videos (top right) adds as many as you like; Delete (or the
-        Settings menu) takes one off the list (the file isn't touched). The
-        first time, the list has the videos you've used before.
-      * Clock (top right): drag the clock right on your desktop (it snaps to
-        the middle; arrow keys nudge it), then Save. The clock page in the
-        settings has "Place on desktop" too.
-      * Settings (top right): all the settings (this window, in a darker
-        style), or back to the classic look.
-      * The modern look is all about the video wallpaper: it always starts
-        with it, and "on battery" pauses instead of switching to your still
-        wallpaper. VideoBG.exe --wallpapers opens the picker from a shortcut.
+        video's picture, its resolution, length, codec, sound and file size.
+      * Scroll (a touchpad works too), drag the deck or use the arrow keys:
+        the wallpaper shows each one's picture at once, and its video plays
+        after a moment on it. Enter, or a click on the middle card once the
+        deck has stopped on it, makes it your wallpaper; Esc or Ctrl+Alt+B
+        closes and keeps the one you had.
+      * Right-click the middle card: the red bin (click it again, once it's
+        a tick, to take the video off the list; the file isn't touched), its
+        versions (the original and any lighter ones), and for your wallpaper,
+        crop (drag and scroll right on the screen, and pick the picture for
+        your lock screen). Delete brings up the bin too. Each card shows the
+        size of the version it plays.
+      * Clock (top right): drag the clock right on your desktop, with all its
+        settings beside it (an eyedropper and any colour for both colours);
+        it's this video's own clock. The arrow sends the panel to the other
+        side, the eye hides it. Save or Cancel takes you back.
+      * Music (top right): play, pause, skip, shuffle, repeat, the volume,
+        your playlist (click a song to play it, drag its grip to move it),
+        and a music player on your desktop (drag it to move it).
+      * Settings (top right, or right-click anywhere else): add videos, the
+        lock screen, the wallpaper off, all the settings, or back to the
+        classic look. The settings window is the same in both looks.
+      * VideoBG.exe --wallpapers opens the picker from a shortcut.
   - Pause/Break: plays or pauses My music, or mutes the video's audio (the
     video plays on, so the sound comes back in sync). Change it, or set
     none with Backspace, on the General page.

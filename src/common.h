@@ -52,7 +52,19 @@ enum : UINT {
     WM_VBG_SHOWCASE_UP,                  // renderer -> host   the showcase has its first frame on screen
     WM_VBG_PREVIEW_UP,                   // renderer -> host   after a preview switch: wParam 1 = its first frame is up, 0 = it couldn't play
     WM_VBG_PICKER,                       // 2nd instance -> host: open the wallpaper picker (--wallpapers)
+    WM_VBG_SHOWCASE_LOOK,                // host -> renderer   a wallpaper being chosen: wParam 0 = the showcase as usual, else
+                                         //                    1 + the brightness of the rest (0-1000); lParam = PackBox of the box its video plays in
+    WM_VBG_HOLD,                         // host -> renderer   wParam 1 = hold the video still (the picker's frame slider), 0 = let it play
 };
+// A box on the showcase (target pixels), 16 bits a side.
+inline LPARAM PackBox(const RECT& r) {
+    auto u = [](LONG v) { return (UINT64)(v < 0 ? 0 : v > 0xFFFF ? 0xFFFF : v); };
+    return (LPARAM)(u(r.left) | u(r.top) << 16 | u(r.right) << 32 | u(r.bottom) << 48);
+}
+inline RECT UnpackBox(LPARAM p) {
+    const UINT64 v = (UINT64)p;
+    return RECT{(LONG)(v & 0xFFFF), (LONG)(v >> 16 & 0xFFFF), (LONG)(v >> 32 & 0xFFFF), (LONG)(v >> 48 & 0xFFFF)};
+}
 // WM_COPYDATA host -> renderer (the one message that's sent): play this video in place of the
 // wallpaper's own (the picker previewing it), from `time` seconds; an empty path goes back.
 constexpr ULONG_PTR COPY_PREVIEW_VIDEO = 0x56424731;
@@ -72,7 +84,7 @@ enum : LPARAM {
 };
 
 enum RendererState : WPARAM { RS_LOADING = 0, RS_PLAYING = 1, RS_PAUSED = 2, RS_ERROR = 3 };
-enum PauseReason : LPARAM { PR_COVERED = 1, PR_LOCKED = 2, PR_DISPLAY_OFF = 4, PR_BATTERY = 8, PR_LOW_MEMORY = 16 };
+enum PauseReason : LPARAM { PR_COVERED = 1, PR_LOCKED = 2, PR_DISPLAY_OFF = 4, PR_BATTERY = 8, PR_LOW_MEMORY = 16, PR_HOLD = 32 };
 
 constexpr DWORD EXIT_RENDER_RESTART = 3;  // renderer asks the host to start it again
 constexpr DWORD EXIT_RENDER_ERROR = 4;    // renderer could not play the video
@@ -141,7 +153,9 @@ struct Settings {
     double previewTime = -1;  // seconds; the video's frame for previews and the lock screen (-1 = auto; stored per video)
     bool lockFollow = true;   // the lock screen shows the video's frame while the wallpaper shows, the user's own picture otherwise
     int pipeline = 0;         // 0 auto, 1 always media engine, 2 always silent reader (INI only)
-    int look = 0;             // 0 native (the classic settings window), 1 modern (the wallpaper picker; video only)
+    int look = 0;             // 0 native (the classic settings window), 1 modern (the wallpaper picker)
+    int musicPlayer = 0;      // the modern look's music player on the desktop: 0 none, else 1 + its style (with My music)
+    float playerX = 0.5f, playerY = 0.9f;  // its centre, as a share of the main screen
     Crop crop;                // crop for the current video (stored per video)
 
     // Desktop clock: one look while the video wallpaper shows, one for the still wallpaper. A video
@@ -254,6 +268,10 @@ void Host_MusicCommand(MusicCommand cmd, LPARAM value);  // next, previous, seek
 void Host_LiveVolume(int volume);            // the sound follows the volume slider before it's saved
 void Host_SeekWallpaper(double seconds, bool exact);  // the wallpaper follows the Preview slider
 void Host_KeepMusicPlace();                  // remember the song and spot (leaving My music; the wallpaper stopping)
+void Host_PlayMusic(bool play);              // My music: play or pause (kept, as the play button does)
+void Host_SkipMusic(bool next);              // the next or previous song (skipping means listening)
+void Host_ShuffleMusic(size_t songs);        // shuffle on (a new order, the song playing first) or off (the order chosen)
+void Host_PlaceSong(size_t songs, int song, int to);  // puts a song at place `to` in the play order
 struct MusicState {
     int track = -1;       // playlist index playing (-1 none)
     bool playing = false; // actually playing now
@@ -273,6 +291,8 @@ void Host_VideoPlayable(const std::wstring& path);  // the UI could read it: res
 // The modern look's picker: the wallpaper full screen just under `under` (nullptr = stop), and another
 // video playing in its place ("" = the wallpaper's own again; seq comes back with WM_VBG_PREVIEW_UP).
 void Host_Showcase(HWND under);
+void Host_ShowcaseLook(float brightness, const RECT* box);  // choosing: the rest dims, the video plays in box (pixels); (1, nullptr) = as usual
+void Host_HoldWallpaper(bool hold);                          // the video holds still (while a frame is picked), then plays on
 void Host_SetLook(int look);  // 0 classic, 1 modern
 void Host_PreviewVideo(const std::wstring& path, double time, UINT seq);
 struct FaultText;
@@ -284,6 +304,13 @@ void UI_Refresh();
 bool UI_IsOpen();
 void UI_ConvertGif(const std::wstring& gif);  // opens the settings and turns the GIF into a video, then uses it
 void UI_VideoFailed();                        // the video couldn't play: look at the file again
+struct LightCopy {                            // a lighter version of a video, made by VideoBG
+    std::wstring path;
+    UINT w = 0, h = 0;
+    ULONGLONG bytes = 0;
+};
+std::vector<LightCopy> UI_LightCopiesOf(const std::wstring& original);
+void UI_ShowVersions();                       // the settings window, at the wallpaper's versions
 
 // modern.cpp - the modern look's wallpaper picker (the host's message loop runs its frames).
 bool Modern_Open(int mode);   // 0 picking a wallpaper, 1 placing the clock; false if it couldn't open
@@ -293,6 +320,8 @@ bool Modern_IsOpen();
 HANDLE Modern_FrameWait();    // signalled when the picker can draw its next frame; nullptr while nothing moves
 void Modern_Frame();
 void Modern_RendererEvent(UINT msg, WPARAM w, LPARAM l);  // the renderer's showcase / preview news
+void Modern_SettingsChanged();  // the settings changed (in the picker or the settings window): show them as they are now
+void Modern_MusicChanged();     // the song or its place changed
 
 // formats.cpp - which files VideoBG takes, and why one can't be played.
 extern const wchar_t kVideoPatterns[];  // for the open dialog
@@ -377,6 +406,12 @@ void Clock_Hide();
 void Clock_Refresh();   // time jumped, display changed, woke from sleep: redraw and re-place
 float Clock_PixelScale();
 std::wstring Clock_StyleKey(const ClockLook& look);  // everything that changes the picture (not the place)
+
+// Desktop music player (player.cpp), for the modern look: the song and its controls, on the desktop.
+void Player_Show(const std::vector<std::wstring>& songs, bool force);  // create / update (songs: the playlist)
+void Player_Update();  // the song or its place changed: redrawn if it shows something new
+void Player_Hide();
+std::vector<std::wstring> Player_Styles();  // by name: Settings::musicPlayer is 0 for none, else 1 + one of these
 // The clock's fonts. Fonts VideoBG can't include (free for personal use only) are used once they're
 // on the PC: installed, or added through VideoBG (kept in %LOCALAPPDATA%\VideoBG\Fonts).
 struct ClockFontInfo {
