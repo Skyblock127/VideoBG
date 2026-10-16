@@ -1012,6 +1012,11 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker) {
     InstallCrashLog(L"tray app");
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     LoadSettings(g_settings);
+    if (!openSettings && !openPicker && g_settings.musicPlaying) {  // started with Windows: My music waits for Play (never loud at sign-in)
+        g_settings.musicPlaying = false;
+        SaveSettings(g_settings);
+        Log(L"tray: started with Windows, so the music stays paused");
+    }
 
     g_job = CreateJobObjectW(nullptr, nullptr);
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION jl{};

@@ -71,6 +71,7 @@ struct Drawing {
     ID2D1SolidColorBrush* br = nullptr;
     ID2D1StrokeStyle* round = nullptr;
     IDWriteTextFormat *fTitle = nullptr, *fSmall = nullptr, *fBold = nullptr, *fIcon = nullptr, *fIconBig = nullptr, *fMark = nullptr;
+    IDWriteTextFormat *fMicroLeft = nullptr, *fMicroRight = nullptr, *fDial = nullptr, *fStereo = nullptr, *fUnit = nullptr, *fTime = nullptr;
     ID2D1Bitmap* art = nullptr;  // the song's cover, for this render target
     ID2D1Bitmap* still = nullptr;  // the window's style without what turns (drawn when what it shows changes)
     int layer = 0;               // what a style draws: 0 all of it, 1 what stays still, 2 what turns
@@ -185,15 +186,22 @@ bool StartDrawing() {
     D.d2d->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0, &D.round);
     D.fTitle = Format(L"Segoe UI Variable Display", 14.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
     D.fSmall = Format(L"Segoe UI Variable Text", 11.5f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING);
-    D.fBold = Format(L"Segoe UI Variable Text", 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER);
+    D.fBold = Format(L"Segoe UI Variable Text", 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
     D.fMark = Format(L"Segoe UI Variable Text", 11, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER);
     D.fIcon = Format(L"Segoe Fluent Icons", 13, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
     D.fIconBig = Format(L"Segoe Fluent Icons", 15, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
-    return D.br && D.round && D.fTitle && D.fSmall && D.fBold && D.fMark && D.fIcon && D.fIconBig;
+    D.fMicroLeft = Format(L"Segoe UI Variable Text", 7.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
+    D.fMicroRight = Format(L"Segoe UI Variable Text", 7.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_TRAILING);
+    D.fDial = Format(L"Segoe UI Variable Display", 9.0f, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER);
+    D.fStereo = Format(L"Segoe UI Variable Text", 6.8f, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER);
+    D.fUnit = Format(L"Segoe UI Variable Text", 6.8f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_TRAILING);
+    D.fTime = Format(L"Segoe UI Variable Text", 10.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING);
+    return D.br && D.round && D.fTitle && D.fSmall && D.fBold && D.fMark && D.fIcon && D.fIconBig &&
+           D.fMicroLeft && D.fMicroRight && D.fDial && D.fStereo && D.fUnit && D.fTime;
 }
 
 void StopDrawing() {
-    for (IDWriteTextFormat** f : {&D.fTitle, &D.fSmall, &D.fBold, &D.fMark, &D.fIcon, &D.fIconBig}) Rel(*f);
+    for (IDWriteTextFormat** f : {&D.fTitle, &D.fSmall, &D.fBold, &D.fMark, &D.fIcon, &D.fIconBig, &D.fMicroLeft, &D.fMicroRight, &D.fDial, &D.fStereo, &D.fUnit, &D.fTime}) Rel(*f);
     Rel(D.art);
     Rel(D.still);
     W.stillKey.clear();
@@ -237,6 +245,16 @@ void Circle(D2D1_POINT_2F p, float r, D2D1_COLOR_F c) {
 void Ring(D2D1_POINT_2F p, float r, D2D1_COLOR_F c, float width) {
     D.br->SetColor(c);
     D.rt->DrawEllipse(D2D1::Ellipse(p, r, r), D.br, width);
+}
+
+void Ellipse(D2D1_POINT_2F p, float rx, float ry, D2D1_COLOR_F c) {
+    D.br->SetColor(c);
+    D.rt->FillEllipse(D2D1::Ellipse(p, rx, ry), D.br);
+}
+
+void EllipseRing(D2D1_POINT_2F p, float rx, float ry, D2D1_COLOR_F c, float width) {
+    D.br->SetColor(c);
+    D.rt->DrawEllipse(D2D1::Ellipse(p, rx, ry), D.br, width);
 }
 
 void Line(D2D1_POINT_2F a, D2D1_POINT_2F b, D2D1_COLOR_F c, float width) {
@@ -302,6 +320,35 @@ bool Cover(D2D1_POINT_2F c, float r, float deg) {
     return true;
 }
 
+// The song's cover in a rounded rectangle; false if the song has none (and draws a note on accent).
+bool CoverBox(const D2D1_RECT_F& pic, float radius, const Shown& s) {
+    ID2D1RoundedRectangleGeometry* shape = nullptr;
+    bool drawn = false;
+    if (Art() && SUCCEEDED(D.d2d->CreateRoundedRectangleGeometry(D2D1::RoundedRect(pic, radius, radius), &shape))) {
+        const D2D1_SIZE_F sz = D.art->GetSize();
+        const float side = std::min(sz.width, sz.height), k = (pic.right - pic.left) / side;
+        ID2D1BitmapBrush* brush = nullptr;
+        const D2D1_MATRIX_3X2_F m = D2D1::Matrix3x2F::Translation(-(sz.width - side) / 2, -(sz.height - side) / 2) * D2D1::Matrix3x2F::Scale(k, k) *
+                                    D2D1::Matrix3x2F::Translation(pic.left, pic.top);
+        if (SUCCEEDED(D.rt->CreateBitmapBrush(D.art, D2D1::BitmapBrushProperties(D2D1_EXTEND_MODE_CLAMP, D2D1_EXTEND_MODE_CLAMP, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR),
+                                              D2D1::BrushProperties(1, m), &brush))) {
+            D.rt->FillGeometry(shape, brush);
+            brush->Release();
+            drawn = true;
+        }
+    }
+    Rel(shape);
+    if (!drawn) {
+        Fill(pic, s.accent, radius);
+        const float iconSz = std::max(12.f, (pic.bottom - pic.top) * 0.44f);
+        IDWriteTextFormat* iconFmt = Format(L"Segoe Fluent Icons", iconSz, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
+        Text(L"\uE8D6", pic, iconFmt, Luma(s.accent) > 0.55f ? Col(0x000000, 0.6f) : Col(0xFFFFFF, 0.85f));
+        Rel(iconFmt);
+    }
+    Stroke(pic, Col(0xFFFFFF, 0.1f), radius);
+    return drawn;
+}
+
 // The glass card most styles sit on.
 void Card(float w, float h, float radius, float a = 0.84f) {
     const D2D1_RECT_F r = R(0.5f, 0.5f, w - 0.5f, h - 0.5f);
@@ -362,8 +409,8 @@ void Progress(const D2D1_RECT_F& line, const Shown& s) {
 
 // Vinyl: a record on a turntable, turning while the song plays; its arm rests beside it when paused
 // and, playing, sits in the groove, moving in as the song goes. Beside it, the song and its controls.
-constexpr D2D1_POINT_2F kVinylC{80, 75}, kVinylPivot{152, 20};
-constexpr float kVinylR = 62, kArmLen = 96;
+constexpr D2D1_POINT_2F kVinylC{60, 60}, kVinylPivot{116, 16};
+constexpr float kVinylR = 48, kArmLen = 76;
 
 D2D1_POINT_2F ArmAt(float deg) {  // the arm's tip, pointing `deg` degrees from the pivot (0 = right, clockwise)
     return Pt(kVinylPivot.x + kArmLen * cosf(deg * kPi / 180), kVinylPivot.y + kArmLen * sinf(deg * kPi / 180));
@@ -383,106 +430,167 @@ float ArmOnRecord(float groove) {  // the arm's angle that puts its tip `groove`
 void DrawVinyl(const PlayerStyle& st, const Shown& s) {
     const D2D1_POINT_2F c = kVinylC;
     if (StillPart()) {
-        Card(st.w, st.h, 24);
+        Card(st.w, st.h, 20);
         Circle(c, kVinylR, Col(0x0B0B0D, 0.98f));
         Ring(c, kVinylR, Col(0xFFFFFF, 0.12f), 1);
-        for (int i = 0; i < 11; i++) Ring(c, 58 - i * 3.f, Col(0xFFFFFF, i % 3 ? 0.035f : 0.07f), 0.8f);
-        Arc(c, 50, 300, 42, Col(0xFFFFFF, 0.16f), 2);  // light on the grooves (it stays: the record turns under it)
-        Arc(c, 40, 120, 38, Col(0xFFFFFF, 0.1f), 2);
+        for (int i = 0; i < 9; i++) Ring(c, 44 - i * 2.4f, Col(0xFFFFFF, i % 3 ? 0.035f : 0.07f), 0.8f);
+        Arc(c, 36, 300, 32, Col(0xFFFFFF, 0.16f), 1.8f);  // light on the grooves (it stays: the record turns under it)
+        Arc(c, 30, 120, 28, Col(0xFFFFFF, 0.1f), 1.8f);
         // The song, its place, the buttons and the volume.
-        const float x = 172;
-        Text(s.song, R(x, 16, st.w - 18, 38), D.fTitle, Col(0xFFFFFF, 0.95f));
-        Text(s.where, R(x, 38, st.w - 18, 54), D.fSmall, Col(0xFFFFFF, 0.6f));
+        const float x = 140;
+        Text(s.song, R(x, 15, st.w - 18, 37), D.fTitle, Col(0xFFFFFF, 0.95f));
+        Text(s.where, R(x, 37, st.w - 18, 53), D.fSmall, Col(0xFFFFFF, 0.6f));
         Buttons(st, s);
         Volume(st, s);
     }
     if (!TurningPart()) return;
     // The label (the song's cover, if it has one) turns.
-    if (!Cover(c, 23, s.turn)) {
-        Circle(c, 23, s.accent);
+    if (!Cover(c, 18, s.turn)) {
+        Circle(c, 18, s.accent);
         const D2D1_COLOR_F mark = Luma(s.accent) > 0.55f ? Col(0x000000, 0.45f) : Col(0xFFFFFF, 0.7f);
-        Arc(c, 16, s.turn, 70, mark, 2.4f);
-        Circle(Polar(c, 9, s.turn + 200), 2, mark);
+        Arc(c, 12, s.turn, 70, mark, 2.f);
+        Circle(Polar(c, 7, s.turn + 200), 1.8f, mark);
     }
-    Circle(c, 3.2f, Col(0x141417));
+    Circle(c, 2.8f, Col(0x141417));
     // The arm: from its pivot at the corner, onto the groove (further in as the song goes).
-    const float rest = 100, on = ArmOnRecord(57 - 25 * s.done);
+    const float rest = 100, on = ArmOnRecord(44 - 20 * s.done);
     const float deg = rest + (on - rest) * s.arm;
     const D2D1_POINT_2F tip = ArmAt(deg), back = ArmAt(deg + 180);
     const D2D1_POINT_2F weight = Pt(kVinylPivot.x + (back.x - kVinylPivot.x) * 0.16f, kVinylPivot.y + (back.y - kVinylPivot.y) * 0.16f);
-    Line(kVinylPivot, weight, Col(0xFFFFFF, 0.55f), 7);
-    Line(kVinylPivot, tip, Col(0xFFFFFF, 0.85f), 3.2f);
+    Line(kVinylPivot, weight, Col(0xFFFFFF, 0.55f), 6);
+    Line(kVinylPivot, tip, Col(0xFFFFFF, 0.85f), 2.8f);
     const float head = (deg + 28) * kPi / 180;
-    Line(tip, Pt(tip.x + 11 * cosf(head), tip.y + 11 * sinf(head)), Col(0xFFFFFF, 0.92f), 6);
-    Circle(kVinylPivot, 9, Col(0x2A2A2F));
-    Ring(kVinylPivot, 9, Col(0xFFFFFF, 0.2f), 1);
-    Circle(kVinylPivot, 3.5f, Col(0xFFFFFF, 0.7f));
+    Line(tip, Pt(tip.x + 9 * cosf(head), tip.y + 9 * sinf(head)), Col(0xFFFFFF, 0.92f), 5.2f);
+    Circle(kVinylPivot, 8, Col(0x2A2A2F));
+    Ring(kVinylPivot, 8, Col(0xFFFFFF, 0.2f), 1);
+    Circle(kVinylPivot, 3, Col(0xFFFFFF, 0.7f));
 }
 
 // Cassette: a tape whose reels turn while the song plays, the tape winding from one reel to the
 // other as it goes; the song on its label; the controls on a strip under it.
+void Screw(D2D1_POINT_2F p, float r) {
+    Circle(p, r, Col(0x1B232A));
+    Ring(p, r, Col(0x45525C), 0.8f);
+    Line(Pt(p.x - r * 0.55f, p.y - r * 0.55f), Pt(p.x + r * 0.55f, p.y + r * 0.55f), Col(0x080D11), 1.2f);
+    Line(Pt(p.x - r * 0.55f, p.y + r * 0.55f), Pt(p.x + r * 0.55f, p.y - r * 0.55f), Col(0x080D11), 1.2f);
+}
+
 void CassetteBody(const PlayerStyle& st, const Shown& s, const D2D1_RECT_F& win);
 
 void DrawCassette(const PlayerStyle& st, const Shown& s) {
-    const float w = st.w;
-    const D2D1_RECT_F win = R(80, 62, w - 80, 110);
-    const D2D1_POINT_2F lc = Pt(112, 86), rc = Pt(w - 112, 86);
+    const D2D1_RECT_F win = R(14, 14, 218, 106);
+    const D2D1_POINT_2F lc = Pt(54, 58), rc = Pt(178, 58);
     if (StillPart()) CassetteBody(st, s, win);
     if (!TurningPart()) return;
-    const float lr = 10 + 18 * (1 - s.done), rr = 10 + 18 * s.done;
+
+    // Moving parts 1: Cassette tape reels and strand inside the window
+    const float lr = 11 + 18 * (1 - s.done), rr = 11 + 18 * s.done;
     D.rt->PushAxisAlignedClip(R(win.left + 1, win.top + 1, win.right - 1, win.bottom - 1), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    const D2D1_COLOR_F tape = Col(0x3B2F27);
-    Circle(lc, lr, tape);
-    Circle(rc, rr, tape);
-    Line(Pt(lc.x, lc.y + lr), Pt(rc.x, rc.y + rr), tape, 1.6f);
+    const D2D1_COLOR_F tapeCol = Col(0x35261F);
+    Circle(lc, lr, tapeCol);
+    Circle(rc, rr, tapeCol);
+    if (lr > 16) Ring(lc, lr - 4, Col(0x4C372E, 0.45f), 0.8f);
+    if (rr > 16) Ring(rc, rr - 4, Col(0x4C372E, 0.45f), 0.8f);
+    // Tape feeding from left (supply) to right (take-up) along the bottom
+    Line(Pt(lc.x, lc.y + lr), Pt(rc.x, rc.y + rr), Col(0x3F2E26), 2.2f);
     D.rt->PopAxisAlignedClip();
-    for (int k = 0; k < 2; k++) {  // the hubs, turning
+
+    // Stamped metal hubs - rotating COUNTER-CLOCKWISE (-deg) so bottom moves rightward with the tape
+    for (int k = 0; k < 2; k++) {
         const D2D1_POINT_2F c = k ? rc : lc;
-        const float deg = k ? s.turn2 : s.turn;
-        Circle(c, 9, Col(0xFFFFFF, 0.88f));
-        for (int i = 0; i < 6; i++) Line(Polar(c, 4.5f, deg + i * 60), Polar(c, 8.6f, deg + i * 60), Col(0x0A0A0C), 2.2f);
-        Circle(c, 3, Col(0x0A0A0C));
+        const float deg = k ? -s.turn2 : -s.turn;
+        Circle(c, 11.5f, Col(0xD0D6DA));
+        Ring(c, 11.5f, Col(0x75818A), 1);
+        for (int i = 0; i < 6; i++) Line(Polar(c, 4.f, deg + i * 60), Polar(c, 10.f, deg + i * 60), Col(0x11171D), 2.2f);
+        Circle(c, 5.2f, Col(0x1B242C));
+        Circle(c, 3.f, Col(0x06090D));
     }
-    Stroke(win, Col(0xFFFFFF, 0.1f), 12);
+
+    // Moving parts 2: Equalizer bars moving with the sound
+    const float ew = 4.5f, egap = 4.2f, ex0 = 276, eyBottom = 78, eMaxH = 32;
+    for (int i = 0; i < 11; i++) {
+        const float x = ex0 + i * (ew + egap);
+        const float v = (s.playing && s.bars) ? std::clamp(s.bars[i * 2], 0.06f, 1.f) : 0.06f;
+        const float h = std::clamp(v * eMaxH, 2.5f, eMaxH);
+        Fill(R(x, eyBottom - h, x + ew, eyBottom), s.accent, 2);
+    }
 }
 
-// The cassette's case, label and controls (what stays still).
+// The cassette's case, displays and controls (what stays still).
 void CassetteBody(const PlayerStyle& st, const Shown& s, const D2D1_RECT_F& win) {
-    const float w = st.w;
-    const D2D1_RECT_F body = R(10, 8, w - 10, 140);
-    Fill(body, Col(0x1C1C20, 0.96f), 16);
-    Stroke(body, Col(0xFFFFFF, 0.12f), 16);
-    for (D2D1_POINT_2F p : {Pt(24, 22), Pt(w - 24, 22), Pt(24, 126), Pt(w - 24, 126)}) Circle(p, 3.2f, Col(0xFFFFFF, 0.16f));
-    // The label, with the song on it.
-    const D2D1_RECT_F label = R(32, 20, w - 32, 52);
-    Fill(label, s.accent, 7);
-    const D2D1_COLOR_F ink = Luma(s.accent) > 0.55f ? Col(0x000000, 0.85f) : Col(0xFFFFFF, 0.95f);
-    D2D1_COLOR_F side = ink;
-    side.a *= 0.6f;
-    Text(L"A", R(label.left + 6, label.top, label.left + 24, label.bottom), D.fMark, side);
-    Text(s.song, R(label.left + 26, label.top, label.right - 26, label.bottom), D.fBold, ink);
-    // The window (its reels and tape turn over it), and the bottom edge, with the holes.
-    Fill(win, Col(0x0A0A0C), 12);
+    // 1. Main Boombox chassis
+    Fill(R(0.5f, 0.5f, st.w - 0.5f, st.h - 0.5f), Col(0x141B22, 0.96f), 18);
+    Stroke(R(0.5f, 0.5f, st.w - 0.5f, st.h - 0.5f), Col(0x364552), 18, 1.2f);
+    // Outer corner screws
+    Screw(Pt(11, 11), 3.2f);
+    Screw(Pt(st.w - 11, 11), 3.2f);
+    Screw(Pt(11, st.h - 11), 3.2f);
+    Screw(Pt(st.w - 11, st.h - 11), 3.2f);
+
+    // 2. Left side: The Cassette Window
+    Fill(win, Col(0x070B0E, 0.95f), 12);
+    Stroke(win, Col(0x3B4854), 12, 1.5f);
+    Stroke(R(win.left + 2, win.top + 2, win.right - 2, win.bottom - 2), Col(0xFFFFFF, 0.08f), 10, 0.8f);
+    // 4 window screws
+    Screw(Pt(win.left + 8, win.top + 8), 2.4f);
+    Screw(Pt(win.right - 8, win.top + 8), 2.4f);
+    Screw(Pt(win.left + 8, win.bottom - 8), 2.4f);
+    Screw(Pt(win.right - 8, win.bottom - 8), 2.4f);
+
+    // Time readout guide marks & text inside the tape window (centered between reels at x=116)
+    Line(Pt(80, 50), Pt(80, 66), Col(0x354049), 1.5f);
+    Line(Pt(152, 50), Pt(152, 66), Col(0x354049), 1.5f);
+    Text(s.where, R(81, 49, 151, 67), D.fMark, Col(0xC4CDD2, 0.9f));
+
+    // Bottom molded trapezoid detail & sprocket holes
     ID2D1PathGeometry* g = nullptr;
     ID2D1GeometrySink* sink = nullptr;
     if (SUCCEEDED(D.d2d->CreatePathGeometry(&g)) && SUCCEEDED(g->Open(&sink))) {
-        sink->BeginFigure(Pt(62, 140), D2D1_FIGURE_BEGIN_FILLED);
-        const D2D1_POINT_2F pts[3] = {Pt(76, 118), Pt(w - 76, 118), Pt(w - 62, 140)};
+        sink->BeginFigure(Pt(54, 136), D2D1_FIGURE_BEGIN_FILLED);
+        const D2D1_POINT_2F pts[3] = {Pt(68, 112), Pt(164, 112), Pt(178, 136)};
         sink->AddLines(pts, 3);
         sink->EndFigure(D2D1_FIGURE_END_CLOSED);
         sink->Close();
         sink->Release();
-        D.br->SetColor(Col(0x26262B));
+        D.br->SetColor(Col(0x10171F));
         D.rt->FillGeometry(g, D.br);
+        D.br->SetColor(Col(0x323E48));
+        D.rt->DrawGeometry(g, D.br, 1.2f);
     }
     Rel(g);
-    Circle(Pt(110, 130), 4, Col(0x0A0A0C));
-    Circle(Pt(w - 110, 130), 4, Col(0x0A0A0C));
-    // The controls.
-    const D2D1_RECT_F strip = R(10, 148, w - 10, st.h - 2);
-    Fill(strip, Col(0x141417, 0.86f), 16);
-    Stroke(strip, Col(0xFFFFFF, 0.1f), 16);
-    Text(s.where, R(26, strip.top, 124, strip.bottom), D.fSmall, Col(0xFFFFFF, 0.65f));
+    Circle(Pt(80, 124), 4.2f, Col(0x05080B));
+    Ring(Pt(80, 124), 4.2f, Col(0x323E48), 1);
+    Circle(Pt(152, 124), 4.2f, Col(0x05080B));
+    Ring(Pt(152, 124), 4.2f, Col(0x323E48), 1);
+
+    // 3. Right side: Top LCD Song Title Display
+    const D2D1_RECT_F disp = R(230, 14, 368, 38);
+    Fill(disp, s.accent, 6);
+    Stroke(disp, Col(0x0B2330), 6, 1);
+    const float plateMidY = (disp.top + disp.bottom) / 2;
+    Screw(Pt(disp.left + 8, plateMidY), 2.2f);
+    Screw(Pt(disp.right - 8, plateMidY), 2.2f);
+    const D2D1_COLOR_F ink = Luma(s.accent) > 0.55f ? Col(0x000000, 0.88f) : Col(0xFFFFFF, 0.95f);
+    Text(s.song, R(disp.left + 15, disp.top, disp.right - 15, disp.bottom), D.fBold, ink);
+
+    // 4. Right side: Middle Cover Art & Equalizer Slots
+    const D2D1_RECT_F art = R(230, 44, 268, 78);
+    Fill(art, Col(0x0E161D), 6);
+    Stroke(art, Col(0x34424D), 6, 1);
+    if (!Cover(Pt(249, 61), 15, 0)) {
+        IDWriteTextFormat* iconFmt = Format(L"Segoe Fluent Icons", 18, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
+        Text(L"\uE8D6", art, iconFmt, Col(0xFFFFFF, 0.4f));
+        Rel(iconFmt);
+    }
+    // Equalizer slots background
+    const float ew = 4.5f, egap = 4.2f, ex0 = 276, eyBottom = 78, eMaxH = 32;
+    for (int i = 0; i < 11; i++) {
+        const float x = ex0 + i * (ew + egap);
+        Fill(R(x, eyBottom - eMaxH, x + ew, eyBottom), Col(0x070B0E), 2);
+        Stroke(R(x, eyBottom - eMaxH, x + ew, eyBottom), Col(0x27333C), 2, 0.8f);
+    }
+
+    // 5. Right side: Buttons & Volume
     Buttons(st, s);
     Volume(st, s);
 }
@@ -511,19 +619,22 @@ void DrawDisc(const PlayerStyle& st, const Shown& s) {
     Circle(c, 2.6f, Col(0x141417));
 }
 
-// Bars: the song over bars that move with the sound, the buttons beside the song, the volume under.
+// Bars: the song and its controls over bars that move with the sound.
 void DrawBars(const PlayerStyle& st, const Shown& s) {
     if (StillPart()) {
         Card(st.w, st.h, 20);
-        Text(s.song, R(18, 12, st.w - 134, 34), D.fTitle, Col(0xFFFFFF, 0.95f));
-        Text(s.where, R(18, 33, st.w - 134, 49), D.fSmall, Col(0xFFFFFF, 0.6f));
+        CoverBox(R(18, 14, 58, 54), 13, s);
+        Text(s.song, R(68, 14, st.w - 138, 34), D.fTitle, Col(0xFFFFFF, 0.95f));
+        Text(s.where, R(68, 36, st.w - 138, 54), D.fSmall, Col(0xFFFFFF, 0.6f));
         Buttons(st, s);
         Volume(st, s);
     }
     if (!TurningPart()) return;
-    const float left = 18, right = st.w - 18, base = 102, top = 58, step = (right - left) / kBars, bw = step - 3;
+    const float left = 18, right = st.w - 18, base = 106, maxHgt = 32.f, step = (right - left) / kBars, bw = step - 3;
     for (int i = 0; i < kBars; i++) {
-        const float v = s.bars ? std::clamp(s.bars[i], 0.f, 1.f) : 0, hgt = 3 + (base - top - 3) * v;
+        const float raw = s.bars ? std::clamp(s.bars[i], 0.f, 1.f) : 0;
+        const float v = raw < 0.6f ? raw : 0.6f + 0.3f * tanhf((raw - 0.6f) / 0.4f);
+        const float hgt = std::clamp(3.f + (maxHgt - 3.f) * v, 3.f, maxHgt);
         const float x = left + i * step + 1.5f;
         Fill(R(x, base - hgt, x + bw, base), i < s.done * kBars ? s.accent : Col(0xFFFFFF, 0.3f), std::min(2.f, bw / 2));
     }
@@ -537,8 +648,9 @@ void DrawMini(const PlayerStyle& st, const Shown& s) {
         Circle(c, 19, s.accent);
         Text(L"\uE8D6", R(c.x - 19, c.y - 19, c.x + 19, c.y + 19), D.fIcon, Luma(s.accent) > 0.55f ? Col(0x000000, 0.75f) : Col(0xFFFFFF, 0.9f));
     }
-    Text(s.song, R(56, 8, 172, 30), D.fTitle, Col(0xFFFFFF, 0.95f));
-    Text(s.where, R(56, 28, 172, 46), D.fSmall, Col(0xFFFFFF, 0.6f));
+    Text(s.song, R(56, 8, st.prev.x - st.btn - 4, 30), D.fTitle, Col(0xFFFFFF, 0.95f));
+    Text(s.where, R(56, 28, st.volume.left - 28, 46), D.fSmall, Col(0xFFFFFF, 0.6f));
+    Volume(st, s);
     Buttons(st, s);
     D.rt->PushAxisAlignedClip(R(28, st.h - 4, st.w - 28, st.h - 1), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     Progress(R(28, st.h - 4, st.w - 28, st.h - 1.5f), s);
@@ -548,30 +660,7 @@ void DrawMini(const PlayerStyle& st, const Shown& s) {
 // Cover: the song's cover, square and big, beside the song and its controls.
 void DrawCover(const PlayerStyle& st, const Shown& s) {
     Card(st.w, st.h, 22);
-    const D2D1_RECT_F pic = R(15, 15, 135, 135);
-    ID2D1RoundedRectangleGeometry* shape = nullptr;
-    bool drawn = false;
-    if (Art() && SUCCEEDED(D.d2d->CreateRoundedRectangleGeometry(D2D1::RoundedRect(pic, 12, 12), &shape))) {
-        const D2D1_SIZE_F sz = D.art->GetSize();
-        const float side = std::min(sz.width, sz.height), k = (pic.right - pic.left) / side;
-        ID2D1BitmapBrush* brush = nullptr;
-        const D2D1_MATRIX_3X2_F m = D2D1::Matrix3x2F::Translation(-(sz.width - side) / 2, -(sz.height - side) / 2) * D2D1::Matrix3x2F::Scale(k, k) *
-                                    D2D1::Matrix3x2F::Translation(pic.left, pic.top);
-        if (SUCCEEDED(D.rt->CreateBitmapBrush(D.art, D2D1::BitmapBrushProperties(D2D1_EXTEND_MODE_CLAMP, D2D1_EXTEND_MODE_CLAMP, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR),
-                                              D2D1::BrushProperties(1, m), &brush))) {
-            D.rt->FillGeometry(shape, brush);
-            brush->Release();
-            drawn = true;
-        }
-    }
-    Rel(shape);
-    if (!drawn) {  // no cover: a note on the accent
-        Fill(pic, s.accent, 12);
-        IDWriteTextFormat* big = Format(L"Segoe Fluent Icons", 44, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
-        Text(L"\uE8D6", pic, big, Luma(s.accent) > 0.55f ? Col(0x000000, 0.6f) : Col(0xFFFFFF, 0.85f));
-        Rel(big);
-    }
-    Stroke(pic, Col(0xFFFFFF, 0.1f), 12);
+    CoverBox(R(15, 15, 135, 135), 12, s);
     const float x = 154;
     Text(s.song, R(x, 18, st.w - 18, 40), D.fTitle, Col(0xFFFFFF, 0.95f));
     Text(s.where, R(x, 40, st.w - 18, 56), D.fSmall, Col(0xFFFFFF, 0.6f));
@@ -582,52 +671,54 @@ void DrawCover(const PlayerStyle& st, const Shown& s) {
 
 // Halo: the song's cover turning slowly in a ring of bars that move with the sound; beside it, the
 // song and its controls.
-constexpr D2D1_POINT_2F kHaloC{80, 75};
+constexpr D2D1_POINT_2F kHaloC{60, 60};
 
 void DrawHalo(const PlayerStyle& st, const Shown& s) {
     const D2D1_POINT_2F c = kHaloC;
     if (StillPart()) {
-        Card(st.w, st.h, 24);
-        const float x = 168;
-        Text(s.song, R(x, 16, st.w - 18, 38), D.fTitle, Col(0xFFFFFF, 0.95f));
-        Text(s.where, R(x, 38, st.w - 18, 54), D.fSmall, Col(0xFFFFFF, 0.6f));
+        Card(st.w, st.h, 20);
+        const float x = 132;
+        Text(s.song, R(x, 15, st.w - 18, 37), D.fTitle, Col(0xFFFFFF, 0.95f));
+        Text(s.where, R(x, 37, st.w - 18, 53), D.fSmall, Col(0xFFFFFF, 0.6f));
         Buttons(st, s);
         Volume(st, s);
     }
     if (!TurningPart()) return;
     for (int i = 0; i < kBars; i++) {  // the bars, all round (the played part lit)
-        const float v = s.bars ? std::clamp(s.bars[i], 0.f, 1.f) : 0, deg = i * 360.f / kBars;
-        Line(Polar(c, 42, deg), Polar(c, 45 + 22 * v, deg), i < s.done * kBars ? s.accent : Col(0xFFFFFF, 0.38f), 3.6f);
+        const float raw = s.bars ? std::clamp(s.bars[i], 0.f, 1.f) : 0;
+        const float v = raw < 0.6f ? raw : 0.6f + 0.3f * tanhf((raw - 0.6f) / 0.4f);
+        const float deg = i * 360.f / kBars;
+        Line(Polar(c, 32, deg), Polar(c, 34 + 16 * v, deg), i < s.done * kBars ? s.accent : Col(0xFFFFFF, 0.38f), 3.2f);
     }
-    if (!Cover(c, 34, s.slow)) {
-        Circle(c, 34, Col(0x26262B));
-        Ring(c, 26, Col(0xFFFFFF, 0.08f), 1);
-        Arc(c, 30, s.slow, 50, Col(0xFFFFFF, 0.22f), 2);
-        Arc(c, 30, s.slow + 180, 50, Col(0xFFFFFF, 0.12f), 2);
-        Circle(c, 11, s.accent);
+    if (!Cover(c, 26, s.slow)) {
+        Circle(c, 26, Col(0x26262B));
+        Ring(c, 20, Col(0xFFFFFF, 0.08f), 1);
+        Arc(c, 23, s.slow, 50, Col(0xFFFFFF, 0.22f), 2);
+        Arc(c, 23, s.slow + 180, 50, Col(0xFFFFFF, 0.12f), 2);
+        Circle(c, 9, s.accent);
     }
-    Ring(c, 34, Col(0xFFFFFF, 0.14f), 1);
-    Circle(c, 3, Col(0x141417));
+    Ring(c, 26, Col(0xFFFFFF, 0.14f), 1);
+    Circle(c, 2.5f, Col(0x141417));
 }
 
-// Wave: the song over threads of light that swing with the sound, each its own wave, in shades of
-// blue (the played part bright, the rest faint); the buttons beside the song, the volume under.
+// Wave: the song and its controls over threads of light that swing with the sound.
 void DrawWave(const PlayerStyle& st, const Shown& s) {
     if (StillPart()) {
         Card(st.w, st.h, 20);
-        Text(s.song, R(18, 12, st.w - 134, 34), D.fTitle, Col(0xFFFFFF, 0.95f));
-        Text(s.where, R(18, 33, st.w - 134, 49), D.fSmall, Col(0xFFFFFF, 0.6f));
+        CoverBox(R(18, 14, 58, 54), 13, s);
+        Text(s.song, R(68, 14, st.w - 138, 34), D.fTitle, Col(0xFFFFFF, 0.95f));
+        Text(s.where, R(68, 36, st.w - 138, 54), D.fSmall, Col(0xFFFFFF, 0.6f));
         Buttons(st, s);
         Volume(st, s);
     }
     if (!TurningPart()) return;
     static const UINT32 kBlue[] = {0x0288D1, 0x29B6F6, 0x1E88E5, 0x81D4FA, 0x4FC3F7};
-    static const float kWaves[] = {1.6f, 2.3f, 1.2f, 3.1f, 2.7f};      // across the player
-    static const float kSpeed[] = {3.1f, -2.4f, 1.7f, 4.2f, -3.6f};    // radians a second
-    static const float kShare[] = {1, 0.78f, 0.62f, 0.45f, 0.34f};     // of the swing
-    static const float kWidth[] = {2.2f, 1.6f, 1.8f, 1.2f, 1.4f};
-    const float left = 20, right = st.w - 20, mid = 80, amp = 23, split = left + (right - left) * s.done;
-    const float level = std::max(0.04f, std::clamp(s.level, 0.f, 1.f));  // (quiet: nearly flat, still there)
+    static const float kWaves[] = {1.8f, 2.6f, 1.4f, 3.4f, 2.9f};      // across the player
+    static const float kSpeed[] = {7.5f, -6.2f, 5.0f, 9.8f, -8.4f};    // radians a second (fast!)
+    static const float kShare[] = {1.0f, 0.82f, 0.68f, 0.52f, 0.40f};  // of the swing
+    static const float kWidth[] = {2.2f, 1.7f, 1.9f, 1.3f, 1.5f};
+    const float left = 18, right = st.w - 18, mid = 86, amp = 14.f, split = left + (right - left) * s.done;
+    const float jump = std::max(0.12f, std::clamp(s.level * 1.1f, 0.f, 1.0f));
     for (int k = 0; k < 5; k++) {
         ID2D1PathGeometry* g = nullptr;
         ID2D1GeometrySink* sink = nullptr;
@@ -635,10 +726,10 @@ void DrawWave(const PlayerStyle& st, const Shown& s) {
             Rel(g);
             return;
         }
-        const float swing = amp * level * kShare[k] * (0.75f + 0.25f * sinf(s.clock * 0.9f + k * 1.3f));
-        for (float x = left; x <= right + 0.01f; x += 3) {
+        const float swing = std::min(13.5f, amp * jump * kShare[k] * (0.8f + 0.2f * sinf(s.clock * 3.2f + k * 1.5f)));
+        for (float x = left; x <= right + 0.01f; x += 2.f) {
             const float u = (x - left) / (right - left), e = 4 * u - 2;  // e: -2..2
-            const float fade = 4 / ((2 + e * e * e * e) * (2 + e * e * e * e));  // (2 / (2 + e^4))^2: 1 in the middle, 0 at the ends
+            const float fade = 4 / ((2 + e * e * e * e) * (2 + e * e * e * e));  // 1 in the middle, 0 at the ends
             const D2D1_POINT_2F p = Pt(x, mid + swing * fade * sinf(2 * kPi * kWaves[k] * u + kSpeed[k] * s.clock + k * 1.1f));
             if (x == left) sink->BeginFigure(p, D2D1_FIGURE_BEGIN_HOLLOW);
             else sink->AddLine(p);
@@ -647,7 +738,7 @@ void DrawWave(const PlayerStyle& st, const Shown& s) {
         sink->Close();
         sink->Release();
         for (int part = 0; part < 2; part++) {
-            D.rt->PushAxisAlignedClip(part ? R(split, mid - amp - 4, right + 4, mid + amp + 4) : R(left - 4, mid - amp - 4, split, mid + amp + 4),
+            D.rt->PushAxisAlignedClip(part ? R(split, 68, right + 4, 104) : R(left - 4, 68, split, 104),
                                       D2D1_ANTIALIAS_MODE_ALIASED);
             D.br->SetColor(Col(kBlue[k], part ? 0.3f : 0.95f));
             D.rt->DrawGeometry(g, D.br, kWidth[k], D.round);
@@ -657,38 +748,298 @@ void DrawWave(const PlayerStyle& st, const Shown& s) {
     }
 }
 
-// Radio: an old radio, its speaker's grille, and a tuning dial whose needle moves along the song.
-void DrawRadio(const PlayerStyle& st, const Shown& s) {
-    Card(st.w, st.h, 20, 0.88f);
-    // The grille: rows of holes, round at its ends.
-    const D2D1_RECT_F grille = R(16, 16, 112, st.h - 16);
-    Fill(grille, Col(0xFFFFFF, 0.04f), 12);
-    const float gcx = (grille.left + grille.right) / 2, gcy = (grille.top + grille.bottom) / 2, gr = 40;
-    for (float y = gcy - gr + 4; y <= gcy + gr - 3; y += 8)
-        for (float x = gcx - gr + 4; x <= gcx + gr - 3; x += 8)
-            if (hypotf(x - gcx, y - gcy) <= gr - 2) Circle(Pt(x, y), 1.9f, Col(0xFFFFFF, 0.22f));
-    Circle(Pt(gcx, gcy + gr + 14), 3, s.playing ? s.accent : Col(0xFFFFFF, 0.25f));  // the light: on while it plays
-    // The dial: a scale with its numbers, the needle where the song is.
-    const D2D1_RECT_F dial = R(128, 16, st.w - 16, 62);
-    Fill(dial, Col(0x0A0A0C, 0.9f), 9);
-    Stroke(dial, Col(0xFFFFFF, 0.12f), 9);
-    const float l = dial.left + 14, r = dial.right - 14;
-    for (int i = 0; i <= 40; i++) {
-        const float x = l + (r - l) * i / 40;
-        Line(Pt(x, dial.bottom - 10 - (i % 5 ? 4 : 9)), Pt(x, dial.bottom - 10), Col(0xFFFFFF, i % 5 ? 0.25f : 0.5f), 1);
+// Radio: a vintage transistor radio with tuner scale, telescopic antenna, carry handle, and album art.
+void DrawRadio(const PlayerStyle&, const Shown& s) {
+    // 1. Telescopic antenna tucked behind the body
+    Line(Pt(329.4f, 41.6f), Pt(359.4f, 4.0f), Col(0x0B344E, 0.6f), 5.6f);
+    Line(Pt(329.4f, 40.8f), Pt(358.6f, 4.0f), Col(0xA0B0BA), 3.6f);
+    Line(Pt(331.0f, 38.8f), Pt(358.6f, 4.0f), Col(0xF3FBFF, 0.7f), 0.8f);
+    Line(Pt(342.2f, 24.8f), Pt(345.4f, 27.2f), Col(0x526A79), 0.8f);
+    Line(Pt(351.4f, 13.2f), Pt(354.6f, 15.6f), Col(0x526A79), 0.8f);
+    Circle(Pt(359.4f, 3.6f), 2.2f, Col(0xDCE5EA));
+    Ring(Pt(359.4f, 3.6f), 2.2f, Col(0x334551), 0.6f);
+    Ellipse(Pt(328.6f, 42.0f), 6.8f, 3.2f, Col(0x111A22));
+    EllipseRing(Pt(328.6f, 42.0f), 6.8f, 3.2f, Col(0x587080), 0.8f);
+    Ellipse(Pt(328.6f, 41.2f), 4.0f, 1.6f, Col(0xA0B0BA));
+
+    // 2. Folding carry handle
+    auto drawHandlePath = [&](D2D1_POINT_2F start, float yTop, float xEnd, float rCorner, D2D1_COLOR_F col, float width) {
+        ID2D1PathGeometry* g = nullptr;
+        ID2D1GeometrySink* sink = nullptr;
+        if (SUCCEEDED(D.d2d->CreatePathGeometry(&g)) && SUCCEEDED(g->Open(&sink))) {
+            sink->BeginFigure(start, D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLine(Pt(start.x, yTop + rCorner));
+            sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(Pt(start.x, yTop), Pt(start.x + rCorner, yTop)));
+            sink->AddLine(Pt(xEnd - rCorner, yTop));
+            sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(Pt(xEnd, yTop), Pt(xEnd, yTop + rCorner)));
+            sink->AddLine(Pt(xEnd, start.y));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->Close();
+            sink->Release();
+            D.br->SetColor(col);
+            D.rt->DrawGeometry(g, D.br, width, D.round);
+            g->Release();
+        }
+    };
+    drawHandlePath(Pt(97.0f, 36.0f), 14.8f, 190.6f, 12.4f, Col(0x0F1820), 9.2f);
+    drawHandlePath(Pt(97.0f, 34.4f), 16.8f, 188.6f, 12.4f, Col(0xA0B0BA), 4.0f);
+    drawHandlePath(Pt(99.8f, 33.6f), 19.6f, 185.8f, 10.0f, Col(0x243440), 2.0f);
+    Fill(R(91.0f, 30.8f, 103.4f, 38.4f), Col(0xA0B0BA), 2.4f);
+    Stroke(R(91.0f, 30.8f, 103.4f, 38.4f), Col(0x111B24), 2.4f, 1.2f);
+    Fill(R(184.2f, 30.8f, 196.6f, 38.4f), Col(0xA0B0BA), 2.4f);
+    Stroke(R(184.2f, 30.8f, 196.6f, 38.4f), Col(0x111B24), 2.4f, 1.2f);
+
+    // 3. Main radio enclosure
+    Fill(R(1.0f, 30.4f, 373.0f, 176.4f), Col(0x1B6D9C), 17.2f);
+    Stroke(R(1.0f, 30.4f, 373.0f, 176.4f), Col(0x15354B), 17.2f, 0.8f);
+    Stroke(R(1.5f, 30.9f, 372.5f, 175.9f), Col(0x75D8FF, 0.45f), 16.8f, 0.6f);
+    Fill(R(3.4f, 32.8f, 370.6f, 174.0f), Col(0x18222B), 15.6f);
+    Stroke(R(3.4f, 32.8f, 370.6f, 174.0f), Col(0x586773, 0.6f), 15.6f, 0.6f);
+
+    // Inner top highlight curve
+    ID2D1PathGeometry* hg = nullptr;
+    ID2D1GeometrySink* hsink = nullptr;
+    if (SUCCEEDED(D.d2d->CreatePathGeometry(&hg)) && SUCCEEDED(hg->Open(&hsink))) {
+        hsink->BeginFigure(Pt(19.4f, 38.0f), D2D1_FIGURE_BEGIN_HOLLOW);
+        hsink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(Pt(19.4f, 36.0f), Pt(25.4f, 36.0f)));
+        hsink->AddLine(Pt(348.2f, 36.0f));
+        hsink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(Pt(360.6f, 36.0f), Pt(365.4f, 46.8f)));
+        hsink->EndFigure(D2D1_FIGURE_END_OPEN);
+        hsink->Close();
+        hsink->Release();
+        D.br->SetColor(Col(0x8795A0, 0.28f));
+        D.rt->DrawGeometry(hg, D.br, 0.6f, D.round);
+        hg->Release();
     }
-    static const wchar_t* const kMarks[] = {L"88", L"92", L"96", L"100", L"104", L"108"};
+
+    // 4 Corner screws
+    for (D2D1_POINT_2F sc : {Pt(14.2f, 44.0f), Pt(359.8f, 44.0f), Pt(14.2f, 162.8f), Pt(359.8f, 162.8f)}) {
+        Circle(sc, 3.2f, Col(0x101820));
+        Ring(sc, 3.2f, Col(0x697985), 0.6f);
+        Line(Pt(sc.x - 1.6f, sc.y), Pt(sc.x + 1.6f, sc.y), Col(0xA4B2BC, 0.75f), 0.6f);
+        Line(Pt(sc.x, sc.y - 1.6f), Pt(sc.x, sc.y + 1.6f), Col(0xA4B2BC, 0.75f), 0.6f);
+    }
+
+    // 4. Large circular artwork & speaker block
+    Fill(R(17.4f, 44.4f, 131.4f, 162.0f), Col(0x101820, 0.72f), 10.0f);
+    Fill(R(19.4f, 46.4f, 129.4f, 160.0f), Col(0x212B34), 8.8f);
+    Stroke(R(19.4f, 46.4f, 129.4f, 160.0f), Col(0x344450), 8.8f, 0.6f);
+
+    const D2D1_POINT_2F spkC = Pt(75.4f, 96.0f);
+    Circle(spkC, 41.2f, Col(0x0C131A));
+    Ring(spkC, 41.2f, Col(0x586B79), 0.8f);
+    Circle(spkC, 38.4f, Col(0xA0B0BA, 0.55f));
+    Circle(spkC, 36.4f, Col(0x101820));
+    Ring(spkC, 36.4f, Col(0x080D12), 2.0f);
+
+    // Album art in the large circle on the left (with vintage speaker fallback)
+    if (!Cover(spkC, 35.0f, 0)) {
+        Circle(spkC, 34.4f, Col(0x18222B));
+        Ring(spkC, 34.4f, Col(0x35434E), 0.6f);
+        for (int row = 0; row < 12; row++) {
+            const float gy = 70.0f + row * 4.8f;
+            const float xStart = (row % 2 == 0) ? 49.4f : 47.0f;
+            for (float gx = xStart; gx <= 103.0f; gx += 4.8f) {
+                const float d = hypotf(gx - spkC.x, gy - spkC.y);
+                if (d <= 28.8f) {
+                    Circle(Pt(gx, gy), d <= 18.0f ? 0.72f : 0.62f, Col(0x8BA0AD, d <= 22.0f ? 0.52f : 0.35f));
+                }
+            }
+        }
+        Ring(spkC, 30.8f, Col(0x738895, 0.16f), 0.4f);
+    } else {
+        Ring(spkC, 35.0f, Col(0xFFFFFF, 0.2f), 1.0f);
+    }
+
+    // Lower speaker panel hardware knobs
+    Line(Pt(27.4f, 132.4f), Pt(121.4f, 132.4f), Col(0x4D5D68, 0.7f), 0.4f);
+
+    auto drawKnob = [&](D2D1_POINT_2F kc) {
+        Circle(kc, 8.0f, Col(0x0B1117));
+        Ring(kc, 8.0f, Col(0x5C6D79), 0.8f);
+        Circle(kc, 6.6f, Col(0x28333D));
+        Ring(kc, 6.6f, Col(0x7E909B), 0.4f);
+        Ring(kc, 4.8f, Col(0x596A76), 0.4f);
+        Line(Pt(kc.x, kc.y - 4.8f), Pt(kc.x, kc.y - 1.6f), Col(0x7DE5FF), 1.1f);
+        Circle(kc, 1.0f, Col(0xA6B6BF));
+    };
+    drawKnob(Pt(48.6f, 148.0f));
+    drawKnob(Pt(100.2f, 148.0f));
+
+    // Power indicator LED
+    Circle(Pt(75.4f, 148.0f), 1.4f, Col(0x4ACFFF));
+    Ring(Pt(75.4f, 148.0f), 2.6f, Col(0x4ACFFF, 0.35f), 0.8f);
+
+    // 5. FM Tuner
+    Text(L"FM / AM DIGITAL TUNER", R(143.0f, 41.0f, 287.0f, 49.0f), D.fMicroLeft, Col(0x9BABB6));
+    Circle(Pt(301.4f, 41.6f), 1.2f, Col(0x52D5FF));
+    Ring(Pt(301.4f, 41.6f), 2.2f, Col(0x52D5FF, 0.35f), 0.6f);
+    Text(L"STEREO", R(302.5f, 37.5f, 333.5f, 45.5f), D.fStereo, Col(0xA7B6C0));
+    Circle(Pt(334.6f, 41.6f), 1.2f, Col(0x7CE0B2));
+
+    Fill(R(137.0f, 50.0f, 356.2f, 93.2f), Col(0x070C11), 6.8f);
+    Stroke(R(137.0f, 50.0f, 356.2f, 93.2f), Col(0x0C1116), 6.8f, 1.6f);
+    Fill(R(139.0f, 52.0f, 354.2f, 91.2f), Col(0x0C1218), 5.2f);
+    Stroke(R(139.0f, 52.0f, 354.2f, 91.2f), Col(0x35434C), 5.2f, 0.6f);
+    Line(Pt(143.4f, 54.4f), Pt(349.8f, 54.4f), Col(0x7F8D97, 0.17f), 0.4f);
+
+    static const wchar_t* const kFrequencies[] = {L"88", L"92", L"96", L"100", L"104", L"108"};
     for (int i = 0; i < 6; i++) {
-        const float x = l + (r - l) * i * 8 / 40;
-        Text(kMarks[i], R(x - 14, dial.top + 2, x + 14, dial.top + 18), D.fMark, Col(0xFFFFFF, 0.45f));
+        const float fx = 147.4f + i * 37.2f;
+        Text(kFrequencies[i], R(fx - 14.f, 60.0f, fx + 14.f, 69.0f), D.fDial, Col(0xE1EDF4, 0.68f));
     }
-    const float nx = l + (r - l) * s.done;
-    Line(Pt(nx, dial.top + 6), Pt(nx, dial.bottom - 6), s.accent, 2.2f);
-    // The song, then the controls.
-    Text(s.song, R(130, 70, st.w - 16, 92), D.fTitle, Col(0xFFFFFF, 0.95f));
-    Text(s.where, R(130, 91, st.w - 16, 107), D.fSmall, Col(0xFFFFFF, 0.6f));
-    Buttons(st, s);
-    Volume(st, s);
+
+    for (int i = 0; i <= 100; i++) {
+        const float tx = 147.8f + (347.4f - 147.8f) * i / 100.f;
+        const float yTop = (i % 20 == 0) ? 69.2f : (i % 5 == 0) ? 71.6f : 74.8f;
+        const float w = (i % 20 == 0) ? 0.7f : (i % 5 == 0) ? 0.5f : 0.4f;
+        const D2D1_COLOR_F c = (i % 20 == 0) ? Col(0xADB9C1, 0.85f) : (i % 5 == 0) ? Col(0x9AA9B3, 0.65f) : Col(0x7E8E98, 0.48f);
+        Line(Pt(tx, yTop), Pt(tx, 82.4f), c, w);
+    }
+
+    // Tuning needle at s.done
+    const float nx = 147.8f + (347.4f - 147.8f) * s.done;
+    ID2D1PathGeometry* fg = nullptr;
+    ID2D1GeometrySink* fsink = nullptr;
+    if (SUCCEEDED(D.d2d->CreatePathGeometry(&fg)) && SUCCEEDED(fg->Open(&fsink))) {
+        fsink->BeginFigure(Pt(nx, 59.6f), D2D1_FIGURE_BEGIN_FILLED);
+        const D2D1_POINT_2F pts[2] = {Pt(nx - 4.0f, 66.4f), Pt(nx + 4.0f, 66.4f)};
+        fsink->AddLines(pts, 2);
+        fsink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        fsink->Close();
+        fsink->Release();
+        D.br->SetColor(Col(0x3BCAFA, 0.24f));
+        D.rt->FillGeometry(fg, D.br);
+        fg->Release();
+    }
+    Line(Pt(nx, 54.0f), Pt(nx, 82.8f), Col(0x41D3FF), 1.2f);
+    ID2D1PathGeometry* tg = nullptr;
+    ID2D1GeometrySink* tsink = nullptr;
+    if (SUCCEEDED(D.d2d->CreatePathGeometry(&tg)) && SUCCEEDED(tg->Open(&tsink))) {
+        tsink->BeginFigure(Pt(nx - 2.0f, 54.0f), D2D1_FIGURE_BEGIN_FILLED);
+        const D2D1_POINT_2F pts[2] = {Pt(nx, 50.8f), Pt(nx + 2.0f, 54.0f)};
+        tsink->AddLines(pts, 2);
+        tsink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        tsink->Close();
+        tsink->Release();
+        D.br->SetColor(Col(0x8BEAFF));
+        D.rt->FillGeometry(tg, D.br);
+        D.br->SetColor(Col(0x18AEE9));
+        D.rt->DrawGeometry(tg, D.br, 0.4f);
+        tg->Release();
+    }
+    Text(L"MHz", R(317.0f, 83.5f, 347.4f, 90.5f), D.fUnit, Col(0x6F8998));
+
+    // 6. Track info: bold title and compact timing
+    Text(s.song, R(143.0f, 97.0f, 347.0f, 113.0f), D.fTitle, Col(0xF0F5F8));
+    Text(s.where, R(143.0f, 114.0f, 347.0f, 124.0f), D.fTime, Col(0xA8B6C0, 0.85f));
+
+    // 7. Playback controls (centered vertically with 5 DIP margin to timing above and trim below)
+    const D2D1_POINT_2F prevC = Pt(155.5f, 143.0f);
+    if (s.hot == PART_PREV) Circle(prevC, 12.0f, Col(0xFFFFFF, s.press == PART_PREV ? 0.16f : 0.08f));
+    Line(Pt(prevC.x - 4.0f, prevC.y - 4.5f), Pt(prevC.x - 4.0f, prevC.y + 4.5f), Col(0xDBE7EE), 1.2f);
+    ID2D1PathGeometry* pg = nullptr;
+    ID2D1GeometrySink* psink = nullptr;
+    if (SUCCEEDED(D.d2d->CreatePathGeometry(&pg)) && SUCCEEDED(pg->Open(&psink))) {
+        psink->BeginFigure(Pt(prevC.x + 4.0f, prevC.y - 4.5f), D2D1_FIGURE_BEGIN_HOLLOW);
+        const D2D1_POINT_2F pts[2] = {Pt(prevC.x - 2.5f, prevC.y), Pt(prevC.x + 4.0f, prevC.y + 4.5f)};
+        psink->AddLines(pts, 2);
+        psink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        psink->Close();
+        psink->Release();
+        D.br->SetColor(Col(0xDBE7EE));
+        D.rt->DrawGeometry(pg, D.br, 1.2f, D.round);
+        pg->Release();
+    }
+
+    const D2D1_POINT_2F playC = Pt(188.5f, 143.0f);
+    Circle(Pt(playC.x, playC.y + 1.0f), 14.5f, Col(0x0F1B24, 0.35f));
+    Circle(playC, 14.0f, s.hot == PART_PLAY ? Col(0x56CEF7) : Col(0x3BC5F5));
+    Ring(playC, 14.0f, Col(0x8CE7FF), 0.8f);
+    if (s.playing) {
+        Line(Pt(playC.x - 3.2f, playC.y - 4.8f), Pt(playC.x - 3.2f, playC.y + 4.8f), Col(0x123F57), 2.2f);
+        Line(Pt(playC.x + 3.2f, playC.y - 4.8f), Pt(playC.x + 3.2f, playC.y + 4.8f), Col(0x123F57), 2.2f);
+    } else {
+        ID2D1PathGeometry* plg = nullptr;
+        ID2D1GeometrySink* plsink = nullptr;
+        if (SUCCEEDED(D.d2d->CreatePathGeometry(&plg)) && SUCCEEDED(plg->Open(&plsink))) {
+            plsink->BeginFigure(Pt(playC.x - 3.0f, playC.y - 5.5f), D2D1_FIGURE_BEGIN_FILLED);
+            const D2D1_POINT_2F pts[2] = {Pt(playC.x + 5.5f, playC.y), Pt(playC.x - 3.0f, playC.y + 5.5f)};
+            plsink->AddLines(pts, 2);
+            plsink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            plsink->Close();
+            plsink->Release();
+            D.br->SetColor(Col(0x123F57));
+            D.rt->FillGeometry(plg, D.br);
+            plg->Release();
+        }
+    }
+
+    const D2D1_POINT_2F nextC = Pt(221.5f, 143.0f);
+    if (s.hot == PART_NEXT) Circle(nextC, 12.0f, Col(0xFFFFFF, s.press == PART_NEXT ? 0.16f : 0.08f));
+    Line(Pt(nextC.x + 4.0f, nextC.y - 4.5f), Pt(nextC.x + 4.0f, nextC.y + 4.5f), Col(0xDBE7EE), 1.2f);
+    ID2D1PathGeometry* ng = nullptr;
+    ID2D1GeometrySink* nsink = nullptr;
+    if (SUCCEEDED(D.d2d->CreatePathGeometry(&ng)) && SUCCEEDED(ng->Open(&nsink))) {
+        nsink->BeginFigure(Pt(nextC.x - 4.0f, nextC.y - 4.5f), D2D1_FIGURE_BEGIN_HOLLOW);
+        const D2D1_POINT_2F pts[2] = {Pt(nextC.x + 2.5f, nextC.y), Pt(nextC.x - 4.0f, nextC.y + 4.5f)};
+        nsink->AddLines(pts, 2);
+        nsink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        nsink->Close();
+        nsink->Release();
+        D.br->SetColor(Col(0xDBE7EE));
+        D.rt->DrawGeometry(ng, D.br, 1.2f, D.round);
+        ng->Release();
+    }
+
+    // 8. Volume slider
+    const D2D1_POINT_2F vi = Pt(248.0f, 143.0f);
+    ID2D1PathGeometry* vig = nullptr;
+    ID2D1GeometrySink* visink = nullptr;
+    if (SUCCEEDED(D.d2d->CreatePathGeometry(&vig)) && SUCCEEDED(vig->Open(&visink))) {
+        visink->BeginFigure(Pt(vi.x - 4.5f, vi.y - 2.5f), D2D1_FIGURE_BEGIN_HOLLOW);
+        visink->AddLine(Pt(vi.x - 2.0f, vi.y - 2.5f));
+        visink->AddLine(Pt(vi.x + 0.5f, vi.y - 4.5f));
+        visink->AddLine(Pt(vi.x + 0.5f, vi.y + 4.5f));
+        visink->AddLine(Pt(vi.x - 2.0f, vi.y + 2.5f));
+        visink->AddLine(Pt(vi.x - 4.5f, vi.y + 2.5f));
+        visink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        visink->Close();
+        visink->Release();
+        D.br->SetColor(Col(0xB8C8D2));
+        D.rt->DrawGeometry(vig, D.br, 0.8f, D.round);
+        vig->Release();
+    }
+    ID2D1PathGeometry* wg = nullptr;
+    ID2D1GeometrySink* wsink = nullptr;
+    if (SUCCEEDED(D.d2d->CreatePathGeometry(&wg)) && SUCCEEDED(wg->Open(&wsink))) {
+        wsink->BeginFigure(Pt(vi.x + 2.2f, vi.y - 2.2f), D2D1_FIGURE_BEGIN_HOLLOW);
+        wsink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(Pt(vi.x + 5.2f, vi.y), Pt(vi.x + 2.2f, vi.y + 2.2f)));
+        wsink->EndFigure(D2D1_FIGURE_END_OPEN);
+        wsink->BeginFigure(Pt(vi.x + 3.6f, vi.y - 4.0f), D2D1_FIGURE_BEGIN_HOLLOW);
+        wsink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(Pt(vi.x + 8.5f, vi.y), Pt(vi.x + 3.6f, vi.y + 4.0f)));
+        wsink->EndFigure(D2D1_FIGURE_END_OPEN);
+        wsink->Close();
+        wsink->Release();
+        D.br->SetColor(Col(0xB8C8D2, 0.75f));
+        D.rt->DrawGeometry(wg, D.br, 0.8f, D.round);
+        wg->Release();
+    }
+
+    Fill(R(263.0f, 141.5f, 347.0f, 144.5f), Col(0x091017), 1.5f);
+    Stroke(R(263.0f, 141.5f, 347.0f, 144.5f), Col(0x455660), 1.5f, 0.4f);
+
+    const float fillW = 84.0f * (s.volume / 100.f);
+    if (fillW > 0.5f) Fill(R(263.4f, 141.9f, 263.4f + fillW, 144.1f), Col(0x3BC5F5), 1.1f);
+    const float thx = 263.0f + fillW;
+    Circle(Pt(thx, 143.0f), 3.8f, Col(0xDCE8EE));
+    Ring(Pt(thx, 143.0f), 3.8f, Col(0x7A8A94), 0.6f);
+    Circle(Pt(thx, 142.6f), 1.4f, Col(0xFFFFFF, 0.85f));
+
+    // 9. Lower trim line and markings
+    Line(Pt(143.0f, 162.0f), Pt(347.0f, 162.0f), Col(0x60727E, 0.45f), 0.4f);
+    Text(L"PORTABLE STEREO  \u2022  DIGITAL AUDIO", R(143.0f, 163.5f, 297.0f, 172.0f), D.fMicroLeft, Col(0x607684));
+    Text(L"VOL. 07", R(301.0f, 163.5f, 347.0f, 172.0f), D.fMicroRight, Col(0x607684));
 }
 
 // ---- Moving the song's place: on what shows it, in each style -------------------------------
@@ -709,32 +1060,36 @@ float Around(D2D1_POINT_2F c, float x, float y) {  // clockwise from 12 o'clock,
 }
 
 float SeekVinyl(const PlayerStyle&, float x, float y, bool held) {  // the grooves: the arm goes in as the song goes
-    if (!held && !OnRing(kVinylC, x, y, 26, kVinylR + 2)) return -1;
-    return std::clamp((57 - hypotf(x - kVinylC.x, y - kVinylC.y)) / 25, 0.f, 1.f);
+    if (!held && !OnRing(kVinylC, x, y, 20, kVinylR + 2)) return -1;
+    return std::clamp((44 - hypotf(x - kVinylC.x, y - kVinylC.y)) / 20, 0.f, 1.f);
 }
 
-float SeekCassette(const PlayerStyle& st, float x, float y, bool held) {  // the window: tape from reel to reel
-    return held || Inside(x, y, R(80, 62, st.w - 80, 110)) ? Along(x, 92, st.w - 92) : -1;
+float SeekCassette(const PlayerStyle&, float x, float y, bool held) {  // the window: tape from reel to reel
+    return held || Inside(x, y, R(14, 14, 218, 106)) ? Along(x, 64, 168) : -1;
 }
 
 float SeekDisc(const PlayerStyle&, float x, float y, bool held) {  // the ring round the disc
     return held || OnRing(Pt(42, 42), x, y, 26, 44) ? Around(Pt(42, 42), x, y) : -1;
 }
 
-float SeekBars(const PlayerStyle& st, float x, float y, bool held) {  // the bars (or threads): lit as far as it's played
-    return held || Inside(x, y, R(16, 52, st.w - 16, 108)) ? Along(x, 18, st.w - 18) : -1;
+float SeekBars(const PlayerStyle& st, float x, float y, bool held) {  // the bars: lit as far as it's played
+    return held || Inside(x, y, R(16, 62, st.w - 16, 110)) ? Along(x, 18, st.w - 18) : -1;
+}
+
+float SeekWave(const PlayerStyle& st, float x, float y, bool held) {  // the threads: lit as far as it's played
+    return held || Inside(x, y, R(16, 62, st.w - 16, 110)) ? Along(x, 18, st.w - 18) : -1;
 }
 
 float SeekHalo(const PlayerStyle&, float x, float y, bool held) {  // the bars round the cover
-    return held || OnRing(kHaloC, x, y, 36, 70) ? Around(kHaloC, x, y) : -1;
+    return held || OnRing(kHaloC, x, y, 26, 54) ? Around(kHaloC, x, y) : -1;
 }
 
 float SeekCover(const PlayerStyle& st, float x, float y, bool held) {  // its line
     return held || Inside(x, y, R(150, 58, st.w - 14, 76)) ? Along(x, 154, st.w - 18) : -1;
 }
 
-float SeekRadio(const PlayerStyle& st, float x, float y, bool held) {  // the dial: the needle
-    return held || Inside(x, y, R(128, 16, st.w - 16, 62)) ? Along(x, 142, st.w - 30) : -1;
+float SeekRadio(const PlayerStyle&, float x, float y, bool held) {  // the FM tuner dial
+    return held || Inside(x, y, R(137.0f, 50.0f, 356.2f, 93.2f)) ? Along(x, 147.8f, 347.4f) : -1;
 }
 
 float SeekMini(const PlayerStyle& st, float x, float y, bool held) {  // the line along its bottom edge
@@ -742,15 +1097,15 @@ float SeekMini(const PlayerStyle& st, float x, float y, bool held) {  // the lin
 }
 
 const PlayerStyle kStyles[] = {
-    {L"Vinyl", L"A record that turns", 400, 150, {192, 106}, {232, 106}, {272, 106}, 16, 19, {324, 104.5f, 380, 107.5f}, true, false, {12, 8, 172, 142}, DrawVinyl, SeekVinyl},
-    {L"Cassette", L"Tape winds reel to reel", 340, 196, {128, 172}, {170, 172}, {212, 172}, 15, 17, {262, 170.5f, 314, 173.5f}, true, false, {78, 60, 262, 112}, DrawCassette, SeekCassette},
+    {L"Vinyl", L"A record that turns", 380, 120, {144, 82}, {182, 82}, {220, 82}, 15, 18, {276, 80.5f, 354, 83.5f}, true, false, {4, 0, 134, 114}, DrawVinyl, SeekVinyl},
+    {L"Cassette", L"Tape winds reel to reel", 380, 146, {258, 99}, {299, 99}, {340, 99}, 13, 16, {262, 126.5f, 364, 129.5f}, true, true, {14, 14, 370, 108}, DrawCassette, SeekCassette},
     {L"Disc", L"A disc turning in a ring", 350, 84, {240, 42}, {280, 42}, {320, 42}, 15, 19, {110, 63.5f, 200, 66.5f}, true, false, {10, 10, 74, 74}, DrawDisc, SeekDisc},
-    {L"Bars", L"Bars move with the sound", 360, 136, {256, 30}, {294, 30}, {332, 30}, 15, 17, {44, 118.5f, 330, 121.5f}, true, true, {16, 54, 344, 104}, DrawBars, SeekBars},
-    {L"Wave", L"Threads swing with the sound", 360, 136, {256, 30}, {294, 30}, {332, 30}, 15, 17, {44, 118.5f, 330, 121.5f}, true, true, {16, 54, 344, 106}, DrawWave, SeekBars},
-    {L"Halo", L"Bars round the cover", 400, 150, {188, 106}, {228, 106}, {268, 106}, 16, 19, {320, 104.5f, 380, 107.5f}, true, true, {8, 6, 152, 146}, DrawHalo, SeekHalo},
+    {L"Bars", L"Bars move with the sound", 360, 118, {258, 30}, {296, 30}, {334, 30}, 13, 16, {266, 52.5f, 340, 55.5f}, true, true, {16, 64, 344, 108}, DrawBars, SeekBars},
+    {L"Wave", L"Threads swing with the sound", 360, 118, {258, 30}, {296, 30}, {334, 30}, 13, 16, {266, 52.5f, 340, 55.5f}, true, true, {14, 64, 346, 108}, DrawWave, SeekWave},
+    {L"Halo", L"Bars round the cover", 380, 120, {136, 82}, {174, 82}, {212, 82}, 15, 18, {268, 80.5f, 350, 83.5f}, true, true, {6, 4, 116, 116}, DrawHalo, SeekHalo},
     {L"Cover", L"The song's cover, big", 380, 150, {174, 106}, {214, 106}, {254, 106}, 16, 19, {304, 104.5f, 362, 107.5f}, false, false, {}, DrawCover, SeekCover},
-    {L"Radio", L"A dial follows the song", 340, 170, {152, 138}, {192, 138}, {232, 138}, 15, 17, {276, 136.5f, 324, 139.5f}, false, false, {}, DrawRadio, SeekRadio},
-    {L"Mini", L"Just the song, small", 300, 56, {196, 28}, {234, 28}, {272, 28}, 13, 17, {}, false, false, {}, DrawMini, SeekMini},
+    {L"Radio", L"A dial follows the song", 374, 178, {155.5f, 143.0f}, {188.5f, 143.0f}, {221.5f, 143.0f}, 12, 14, {263.0f, 141.5f, 347.0f, 144.5f}, false, false, {}, DrawRadio, SeekRadio},
+    {L"Mini", L"Just the song, small", 320, 56, {214, 28}, {252, 28}, {290, 28}, 13, 17, {148, 35.5f, 186, 38.5f}, false, false, {}, DrawMini, SeekMini},
 };
 
 const PlayerStyle& Style() {
@@ -763,7 +1118,7 @@ int HitPart(const PlayerStyle& st, float x, float y) {
     if (over(st.prev, st.btn)) return PART_PREV;
     if (over(st.next, st.btn)) return PART_NEXT;
     const D2D1_RECT_F& v = st.volume;
-    if (v.right > v.left && x >= v.left - 26 && x <= v.right + 10 && y >= v.top - 12 && y <= v.bottom + 12) return PART_VOLUME;
+    if (v.right > v.left && x >= v.left - 26 && x <= v.right + 10 && y >= v.top - 8 && y <= v.bottom + 6) return PART_VOLUME;
     const MusicState ms = Host_MusicState();
     if (ms.track >= 0 && ms.durMs && st.seek(st, x, y, false) >= 0) return PART_SEEK;  // (only while a song is there to move in)
     return x >= 0 && y >= 0 && x < st.w && y < st.h ? PART_BODY : PART_NONE;
@@ -852,7 +1207,9 @@ float Loudness() {
         Rel(W.meter);  // the output changed: found again next time
         return 0;
     }
-    return std::clamp(sqrtf(peak) * 1.15f, 0.f, 1.f);
+    const float vol = std::clamp(g_settings.volume / 100.f, 0.04f, 1.f);
+    const float norm = std::clamp(peak / vol, 0.f, 1.f);
+    return std::clamp(sqrtf(norm) * 1.15f, 0.f, 1.f);
 }
 
 // What turns, moved on by dt seconds: the record, the reels, the arm, the bars (bars: the style has them).
@@ -867,12 +1224,12 @@ void Turn(float dt, bool playing, float done, bool bars) {
     if (!bars) return;
     const double t = Now();
     const float loud = playing ? Loudness() : 0;
-    W.level = loud > W.level ? W.level + (loud - W.level) * std::min(1.f, dt * 12) : std::max(loud, W.level - dt * 1.2f);
+    W.level = loud > W.level ? W.level + (loud - W.level) * std::min(1.f, dt * 24) : std::max(loud, W.level - dt * 3.6f);
     for (int i = 0; i < kBars; i++) {  // the sound's level, shaped differently for each bar
-        const float shape = 0.35f + 0.65f * (0.5f + 0.5f * sinf((float)t * (3.1f + i * 0.37f) + i * 1.7f)) *
-                                        (0.6f + 0.4f * sinf((float)t * 1.3f + i * 0.9f));
-        const float want = loud * shape * (1 - 0.25f * fabsf(i - kBars / 2.f) / kBars);
-        W.bars[i] = want > W.bars[i] ? W.bars[i] + (want - W.bars[i]) * std::min(1.f, dt * 18) : std::max(want, W.bars[i] - dt * 1.6f);
+        const float shape = (0.5f + 0.5f * sinf((float)t * (7.2f + i * 0.45f) + i * 1.3f)) *
+                            (0.65f + 0.35f * sinf((float)t * 4.1f + i * 0.8f));
+        const float want = std::clamp(loud * (0.22f + 0.78f * shape), 0.f, 1.f);
+        W.bars[i] = want > W.bars[i] ? W.bars[i] + (want - W.bars[i]) * std::min(1.f, dt * 24) : std::max(want, W.bars[i] - dt * 3.4f);
     }
 }
 
@@ -903,8 +1260,7 @@ Shown Current(float seek = -1) {
     if (seek >= 0) pos = (UINT)(seek * dur);
     Shown s;
     s.song = n ? SongName(W.songs[track]) : L"No songs chosen yet";
-    s.where = !playing ? L"Paused" + (dur ? L"  \u00B7  " + Minutes(pos) + L" / " + Minutes(dur) : L"")
-                       : dur ? Minutes(pos) + L" / " + Minutes(dur) : L"";
+    s.where = dur ? Minutes(pos) + L" / " + Minutes(dur) : L"";
     s.playing = playing;
     s.done = dur ? std::min(1.f, (float)pos / dur) : 0;
     s.volume = g_settings.volume;

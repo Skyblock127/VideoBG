@@ -216,6 +216,8 @@ void SaveSettings(const Settings& s);
 void SaveMyColors(const Settings& s);  // just the colour dialog's saved colours
 void SavePresets(const Settings& s);   // just the clock presets
 void LoadVideoProfile(Settings& s);  // crop, frame and clock look of s.video
+std::wstring VideoVersion(const std::wstring& original);  // the lighter version its card plays ("": the original)
+void SetVideoVersion(const std::wstring& original, const std::wstring& version);
 void SaveVideoClock(const std::wstring& video, const ClockLook& look);  // another video's own clock (not the wallpaper's)
 Crop LoadCropFor(const std::wstring& video);
 // Per-video data (videos.ini: crop, clock look) is keyed by the file's content, so renaming or

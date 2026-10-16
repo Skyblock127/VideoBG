@@ -780,6 +780,17 @@ void SaveSettings(const Settings& s) {
     }
 }
 
+std::wstring VideoVersion(const std::wstring& original) {
+    const std::wstring pid = VideoProfileId(original);
+    const std::wstring v = pid.empty() ? L"" : VRead(pid, L"Plays");
+    return !v.empty() && GetFileAttributesW(v.c_str()) != INVALID_FILE_ATTRIBUTES && IsLightCopyOf(v, original) ? v : L"";
+}
+
+void SetVideoVersion(const std::wstring& original, const std::wstring& version) {
+    const std::wstring pid = VideoProfileId(original);
+    if (!pid.empty()) VWrite(pid, L"Plays", version.empty() || VideoId(version) == pid ? nullptr : version.c_str());
+}
+
 void SaveVideoClock(const std::wstring& video, const ClockLook& look) {
     std::wstring id = VideoId(video), pid = VideoProfileId(video);
     if (id.empty() || pid.empty()) return;

@@ -29,7 +29,7 @@ namespace {
 
 constexpr wchar_t kClass[] = L"VideoBG.Picker";
 constexpr UINT WM_PK_INFO = WM_APP + 120;  // lParam = WallpaperInfo* from the library worker
-constexpr UINT_PTR TIMER_DWELL = 1, TIMER_MINUTE = 2, TIMER_TOAST = 3, TIMER_HOLD = 4;
+constexpr UINT_PTR TIMER_DWELL = 1, TIMER_MINUTE = 2, TIMER_TOAST = 3, TIMER_HOLD = 4, TIMER_RAM = 5;
 constexpr UINT kDwellMs = 1200;  // on a card this long, its video plays
 const GUID kShadowEffect = {0xC67EA361, 0x1863, 0x4E69, {0x89, 0xDB, 0x69, 0x5D, 0x3E, 0x9A, 0x5B, 0x6B}};  // CLSID_D2D1Shadow
 
@@ -234,6 +234,7 @@ struct Picker {
     ID2D1Bitmap* player = nullptr;    // the desktop player's style, as it looks (redrawn while it turns)
     int playerStyle = 0;
     double playerAt = 0;
+    std::wstring ram;                 // "53 MB \u00B7 43 MB": the wallpaper's RAM, the tray app's (beside the title)
     // The player's picture is its controller too: what the pointer is over or holds there
     D2D1_RECT_F playerBox{};          // where it's drawn
     float playerK = 1;                // DIPs here per DIP of the style
@@ -775,6 +776,11 @@ void LoadCards() {
             SetPlay(P.cards[i], p);
             P.applied = i;
         }
+    }
+    for (int i = 0; i < (int)P.cards.size(); i++) {  // the others: the version last picked for each
+        if (i == P.applied) continue;
+        const std::wstring v = VideoVersion(P.cards[i].path);
+        if (!v.empty()) SetPlay(P.cards[i], v);
     }
 }
 
@@ -1658,8 +1664,8 @@ void DrawMusicPanel() {
     const float w = 360, x = std::clamp(anchor.right - w, 20.f, P.W - 20 - w), y = anchor.bottom + 10 - (1 - a) * 8;
     float shownW = 0;
     const float ph = PlayerPreview(w - 36, &shownW);
-    const bool volumeRow = !controller || !Player_HasVolume(g_settings.musicPlayer);
-    const float fixed = 60 + (plain ? 112 : controller ? 0 : 52) + kRow + (volumeRow ? kRow : 0) + (ph > 0 ? ph + 14 : 0) + 34;
+    const bool volumeRow = !controller;
+    const float fixed = 60 + kRow + (controller ? (ph > 0 ? ph + 14 : 0) : (plain ? 112 : 52) + (volumeRow ? kRow : 0)) + 34;
     const int rows = std::clamp((int)((P.H - 20 - y - fixed - 44) / kSongRow), 3, 7);  // the playlist: as much as fits
     const float h = fixed + (mine ? 34 + std::min(n, rows) * kSongRow + (n ? 10 : 0) : 0);
     const D2D1_RECT_F box = R(x, y, x + w, y + h);
@@ -1673,34 +1679,6 @@ void DrawMusicPanel() {
                                          : L"My music  \u00B7  " + std::to_wstring(n) + L" songs";
     Text(sub, R(x + 18, y + 34, box.right - 16, y + 52), G.fSmall, Col(0xFFFFFF, 0.55f * a));
     float yy = y + 60;
-    if (plain) {
-        // No player: the song, its place (drag the line to move in it), then previous / play-pause / next.
-        const MusicState ms = Host_MusicState();
-        const bool live = ms.track >= 0;
-        const int track = live && ms.track < n ? ms.track : std::clamp(g_settings.musicTrack, 0, n - 1);
-        const UINT dur = live ? ms.durMs : g_settings.musicDurMs;
-        const float frac = P.seekFrac >= 0 ? P.seekFrac : dur ? std::min(1.f, (float)(live ? ms.posMs : g_settings.musicPosMs) / dur) : 0;
-        const std::wstring when = dur ? Duration(frac * dur / 1000.0) + L" / " + Duration(dur / 1000.0) : L"";
-        const float tw = when.empty() ? 0 : TextWidth(when, G.fSmall) + 12;
-        Text(FileTitle(P.songs[track]), R(x + 18, yy, box.right - 18 - tw, yy + 22), G.fBold, Col(0xFFFFFF, 0.95f * a));
-        Text(when, R(box.right - 18 - tw, yy, box.right - 18, yy + 22), G.fSmall, Col(0xFFFFFF, 0.6f * a), DWRITE_TEXT_ALIGNMENT_TRAILING);
-        SliderCtl(ID_MU_SEEK, R(x + 10, yy + 24, box.right - 10, yy + 48), frac, L"", a, live && dur > 0, 0);
-        const float cx = x + w / 2, cy = yy + 82;
-        IconBtn(ID_MU_PREV, cx - 54, cy, 18, L"\uE892", a, live);
-        IconBtn(ID_MU_NEXT, cx + 54, cy, 18, L"\uE893", a, live);
-        D2D1_COLOR_F pf = g_accent;
-        if (P.hot == ID_MU_PLAY) pf = D2D1::ColorF(std::min(1.f, pf.r + 0.06f), std::min(1.f, pf.g + 0.06f), std::min(1.f, pf.b + 0.06f));
-        Circle(cx, cy, 21, pf * a);
-        Text(g_settings.musicPlaying ? L"\uE769" : L"\uE768", R(cx - 21, cy - 21, cx + 21, cy + 21), G.fIcon, Col(0x000000, 0.88f * a),
-             DWRITE_TEXT_ALIGNMENT_CENTER);
-        P.hits.push_back({ID_MU_PLAY, R(cx - 21, cy - 21, cx + 21, cy + 21)});
-        yy += 112;
-    } else if (!controller) {
-        Text(mine ? L"Choose your songs in All settings (Sound), and they play here with the wallpaper."
-                  : L"To play your own songs, choose My music under Sound in All settings.",
-             R(x + 18, yy, box.right - 18, yy + 44), G.fWrap, Col(0xFFFFFF, 0.7f * a));
-        yy += 52;
-    }
     // The player on the desktop: off, or a style (step through them), then the player itself.
     Label(L"Player", x + 18, yy, a);
     {
@@ -1713,22 +1691,53 @@ void DrawMusicPanel() {
         IconBtn(ID_MU_STYLE_NEXT, r.right - 14, (r.top + r.bottom) / 2, 12, L"\uE76C", a);
     }
     yy += kRow;
-    if (ph > 0 && P.player) {
-        const float px0 = x + (w - shownW) / 2;
-        P.playerBox = R(px0, yy + 4, px0 + shownW, yy + 4 + ph);
-        G.ctx->DrawBitmap(P.player, P.playerBox, a, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        if (controller) P.hits.push_back({ID_MU_PREVIEW, P.playerBox});
-        yy += ph + 14;
+    if (controller) {
+        if (ph > 0 && P.player) {
+            const float px0 = x + (w - shownW) / 2;
+            P.playerBox = R(px0, yy + 4, px0 + shownW, yy + 4 + ph);
+            G.ctx->DrawBitmap(P.player, P.playerBox, a, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            P.hits.push_back({ID_MU_PREVIEW, P.playerBox});
+            yy += ph + 14;
+        }
+        Text(L"On the desktop, behind your apps: drag it to move it",
+             R(x + 18, yy + 2, box.right - 16, yy + 24), G.fSmall, Col(0xFFFFFF, 0.42f * a));
+    } else {
+        if (plain) {
+            // No player: the song, its place (drag the line to move in it), then previous / play-pause / next.
+            const MusicState ms = Host_MusicState();
+            const bool live = ms.track >= 0;
+            const int track = live && ms.track < n ? ms.track : std::clamp(g_settings.musicTrack, 0, n - 1);
+            const UINT dur = live ? ms.durMs : g_settings.musicDurMs;
+            const float frac = P.seekFrac >= 0 ? P.seekFrac : dur ? std::min(1.f, (float)(live ? ms.posMs : g_settings.musicPosMs) / dur) : 0;
+            const std::wstring when = dur ? Duration(frac * dur / 1000.0) + L" / " + Duration(dur / 1000.0) : L"";
+            const float tw = when.empty() ? 0 : TextWidth(when, G.fSmall) + 12;
+            Text(FileTitle(P.songs[track]), R(x + 18, yy, box.right - 18 - tw, yy + 22), G.fBold, Col(0xFFFFFF, 0.95f * a));
+            Text(when, R(box.right - 18 - tw, yy, box.right - 18, yy + 22), G.fSmall, Col(0xFFFFFF, 0.6f * a), DWRITE_TEXT_ALIGNMENT_TRAILING);
+            SliderCtl(ID_MU_SEEK, R(x + 10, yy + 24, box.right - 10, yy + 48), frac, L"", a, live && dur > 0, 0);
+            const float cx = x + w / 2, cy = yy + 82;
+            IconBtn(ID_MU_PREV, cx - 54, cy, 18, L"\uE892", a, live);
+            IconBtn(ID_MU_NEXT, cx + 54, cy, 18, L"\uE893", a, live);
+            D2D1_COLOR_F pf = g_accent;
+            if (P.hot == ID_MU_PLAY) pf = D2D1::ColorF(std::min(1.f, pf.r + 0.06f), std::min(1.f, pf.g + 0.06f), std::min(1.f, pf.b + 0.06f));
+            Circle(cx, cy, 21, pf * a);
+            Text(g_settings.musicPlaying ? L"\uE769" : L"\uE768", R(cx - 21, cy - 21, cx + 21, cy + 21), G.fIcon, Col(0x000000, 0.88f * a),
+                 DWRITE_TEXT_ALIGNMENT_CENTER);
+            P.hits.push_back({ID_MU_PLAY, R(cx - 21, cy - 21, cx + 21, cy + 21)});
+            yy += 112;
+        } else {
+            Text(mine ? L"Choose your songs in All settings (Sound), and they play here with the wallpaper."
+                      : L"To play your own songs, choose My music under Sound in All settings.",
+                 R(x + 18, yy, box.right - 18, yy + 44), G.fWrap, Col(0xFFFFFF, 0.7f * a));
+            yy += 52;
+        }
+        if (volumeRow) {
+            wchar_t v[16];
+            swprintf(v, 16, L"%d%%", g_settings.volume);
+            Label(L"Volume", x + 18, yy, a, any);
+            SliderCtl(ID_MU_VOLUME, R(x + 18 + kLabelW, yy + 6, box.right - 16, yy + kRow - 6), g_settings.volume / 100.f, v, a, any);
+            yy += kRow;
+        }
     }
-    if (volumeRow) {
-        wchar_t v[16];
-        swprintf(v, 16, L"%d%%", g_settings.volume);
-        Label(L"Volume", x + 18, yy, a, any);
-        SliderCtl(ID_MU_VOLUME, R(x + 18 + kLabelW, yy + 6, box.right - 16, yy + kRow - 6), g_settings.volume / 100.f, v, a, any);
-        yy += kRow;
-    }
-    Text(mine ? L"On the desktop, behind your apps: drag it to move it" : L"The player shows on your desktop while My music plays",
-         R(x + 18, yy + 2, box.right - 16, yy + 24), G.fSmall, Col(0xFFFFFF, 0.42f * a));
     if (!mine) return;
     yy += 34;
     // The playlist's heading: shuffle and repeat (how it plays), then choosing the songs.
@@ -1782,6 +1791,20 @@ float Tips(const std::vector<std::wstring>& tips, float x, float y, float a, boo
     return w;
 }
 
+// The wallpaper's and the tray app's RAM, as the settings window's sidebar shows them.
+void UpdateRam() {
+    auto mb = [](SIZE_T b) {
+        wchar_t t[32];
+        swprintf(t, 32, b < 10 * 1048576 ? L"%.1f MB" : L"%.0f MB", b / 1048576.0);
+        return std::wstring(t);
+    };
+    SIZE_T wall = 0, gfx = 0;
+    const std::wstring ram = Host_RendererMemory(&wall, &gfx) ? mb(wall) + L"  \u00B7  " + mb(Host_SelfMemory()) : mb(Host_SelfMemory());
+    if (ram == P.ram) return;
+    P.ram = ram;
+    P.dirty = true;
+}
+
 void DrawTopBar(float a) {
     if (a <= 0) return;
     const float y = 18 - (1 - a) * 12;
@@ -1802,13 +1825,19 @@ void DrawTopBar(float a) {
         tips = {std::to_wstring(P.cards.size()) + (P.cards.size() == 1 ? L" video" : L" videos"), L"\u2190 \u2192 browse",
                 L"Enter sets", L"\1the middle card: more", L"Esc closes"};
     }
-    const float w = 60 + std::max(TextWidth(title, G.fTitle), Tips(tips, 0, 0, a, false)) + 18;
+    const std::wstring ram = P.mode == 0 ? P.ram : L"";
+    const float ramW = ram.empty() ? 0 : TextWidth(ram, G.fSmall) + 14;
+    const float w = 60 + std::max(TextWidth(title, G.fTitle) + ramW, Tips(tips, 0, 0, a, false)) + 18;
     const D2D1_RECT_F box = R(20, y, 20 + w, y + 52);
     const float la = a * (1 - P.hideA);
     Fill(box, Col(0x141417, 0.74f * la), 16);
     Stroke(box, Col(0xFFFFFF, 0.08f * la), 16, 1);
     if (G.logo) G.ctx->DrawBitmap(G.logo, R(box.left + 12, box.top + 10, box.left + 44, box.top + 42), la);
     Text(title, R(box.left + 54, box.top + 7, box.right - 10, box.top + 29), G.fTitle, Col(0xFFFFFF, la));
+    if (!ram.empty()) {
+        const float rx = box.left + 54 + TextWidth(title, G.fTitle) + 14;
+        Text(ram, R(rx, box.top + 9, rx + ramW, box.top + 29), G.fSmall, Col(0xFFFFFF, 0.55f * la));
+    }
     Tips(tips, box.left + 54, box.top + 28, la, true);
 
     // Right: what can be done.
@@ -2251,6 +2280,10 @@ void Choose(int i) {
         ShowToast(c.info.fault == VF_GIF ? L"Turn the GIF into a video in Settings first" : L"This one can't be used as a wallpaper");
         return;
     }
+    if (i == P.applied && SameFile(c.play, g_settings.video)) {  // it's the wallpaper already: just back to it
+        BeginClose(L"Esc");
+        return;
+    }
     const Pose p = CardPose(i);
     P.chosen = i;
     P.chosenAt = P.phaseAt = Now();  // (the timeline in Step runs from here)
@@ -2384,6 +2417,7 @@ void UseVersion(int k) {
     const std::wstring path = k == 0 ? c.path : P.versionList[k - 1].path;
     if (SameFile(path, c.play)) return;
     SetPlay(c, path);
+    SetVideoVersion(c.path, k == 0 ? L"" : path);  // (kept for next time)
     const std::wstring name = k == 0 ? std::wstring(L"the original") : L"the " + std::to_wstring(P.versionList[k - 1].h) + L"p version";
     if (P.actionsCard == P.applied) {
         Log(L"picker: the wallpaper's version is %ls now", path.c_str());
@@ -3478,6 +3512,7 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (w == TIMER_MINUTE) { UpdateClock(); P.dirty = true; }
             else if (w == TIMER_TOAST) { KillTimer(h, TIMER_TOAST); P.toastOn = false; P.dirty = true; }
             else if (w == TIMER_HOLD) ReleaseHold();
+            else if (w == TIMER_RAM) UpdateRam();
             return 0;
         case WM_PK_INFO:
             if (P.hwnd) OnInfo((WallpaperInfo*)l);
@@ -3555,6 +3590,8 @@ bool Modern_Open(int mode) {
     }
     AskPictures();
     SetTimer(P.hwnd, TIMER_MINUTE, 15000, nullptr);
+    UpdateRam();
+    SetTimer(P.hwnd, TIMER_RAM, 2000, nullptr);
     ShowWindow(P.hwnd, SW_SHOW);
     SetForegroundWindow(P.hwnd);
     if (!Host_IsOn() && !g_settings.video.empty()) Host_SetOn(true);  // the picker shows the wallpaper: it plays
