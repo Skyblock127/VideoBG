@@ -1055,7 +1055,6 @@ std::wstring StatusText(D2D1_COLOR_F* dot) {
         if (mask & PR_LOCKED) return L"Paused while the PC is locked";
         if (mask & PR_DISPLAY_OFF) return L"Paused while the screen is off";
         if (mask & PR_BATTERY) return L"Paused on battery";
-        if (mask & PR_LOW_MEMORY) return L"Paused: the PC is low on memory";
         if (mask & PR_HOLD) return L"Held on the frame being picked";
         return L"Paused while an app covers the desktop";
     }
@@ -1525,7 +1524,7 @@ void PaintSoundPage(float x, float w) {
     Row(lx, yy, kLabelW, L"Play");
     Seg(ID_SOUND, SegRect(cx, yy, cw), {L"Nothing", L"Video's audio", L"My music"}, mode);
     yy += kRowH;
-    // The sound when the video pauses (covered, locked, screen off, on battery, low memory). With the
+    // The sound when the video pauses (covered, locked, screen off, on battery). With the
     // still wallpaper there's no sound at all.
     Row(lx, yy, kLabelW, L"When video pauses", kRowH, mode != 0);
     Seg(ID_KEEPSOUND, SegRect(cx, yy, cw), {L"Pause the sound too", L"Keep the sound playing"}, g_settings.keepSound ? 1 : 0, mode != 0);
@@ -3444,8 +3443,8 @@ void PaintMemoryTip() {
     const float w = 330, x = u.memInfo.right + 10, bottom = u.memInfo.bottom + 4;
     const std::wstring text =
         L"Wallpaper RAM climbs during the first minute of playback, then stays level: it's the video's decoded frames, "
-        L"kept ready so playback is smooth. It isn't a leak.\n\nWhen the wallpaper pauses (covered by an app, PC locked, screen off, "
-        L"or the PC low on memory), VideoBG lets go of those frames and it drops to a few MB.\n\nA lighter version (Video page, "
+        L"kept ready so playback is smooth. It isn't a leak.\n\nWhen the wallpaper pauses (covered by an app, PC locked or screen off), "
+        L"VideoBG lets go of those frames and it drops to a few MB.\n\nA lighter version (Video page, "
         L"Versions) needs less while it plays.";
     const float h = 186, y = bottom - h;
     const D2D1_RECT_F r = R(x, y, x + w, bottom);

@@ -113,8 +113,6 @@ struct State {
     // the last frame stays on screen; playback picks up at parkedPos.
     bool parked = false;
     double parkedPos = 0;
-    HANDLE lowMemory = nullptr;   // Windows' "memory is low" signal
-    ULONGLONG memoryOkSince = 0;  // paused for low memory: since when there's been room again
 
     // silent pipeline (owned by the render thread once it runs)
     bool silent = false;
@@ -1112,7 +1110,7 @@ bool CanPark() { return g.pauseMask != 0 && !g.parked && !(g.videoAudio && g.s.k
 // Let the decoder go once paused a while: soon when nobody can see the desktop (locked, screen
 // off), later when covered, so a quick look at the desktop doesn't wait for it.
 void ArmPark() {
-    const UINT delay = (g.pauseMask & PR_LOW_MEMORY) ? 100 : (g.pauseMask & (PR_LOCKED | PR_DISPLAY_OFF)) ? 5000 : 10000;
+    const UINT delay = (g.pauseMask & (PR_LOCKED | PR_DISPLAY_OFF)) ? 5000 : 10000;
     if (CanPark()) SetTimer(g.ctl, TIMER_PARK, delay, nullptr);
     else KillTimer(g.ctl, TIMER_PARK);
 }
@@ -1469,35 +1467,6 @@ void ApplyBatteryPolicy() {
     SetPause(PR_BATTERY, g.s.onBattery == 1 && g.onBattery && !g.showcaseUnder);
 }
 
-// Low on memory (Windows says so, or under 10% of RAM is free): the wallpaper pauses and lets go of
-// its frames at once, giving the memory to whatever needs it. It plays again once over 15% has
-// been free for half a minute. Checked every 5 seconds.
-void CheckMemory() {
-    static int tick;
-    if (++tick % 5) return;
-    if (!g.lowMemory) g.lowMemory = CreateMemoryResourceNotification(LowMemoryResourceNotification);
-    BOOL signalled = FALSE;
-    if (g.lowMemory) QueryMemoryResourceNotification(g.lowMemory, &signalled);
-    MEMORYSTATUSEX ms{sizeof ms};
-    GlobalMemoryStatusEx(&ms);
-    const double free = ms.ullTotalPhys ? (double)ms.ullAvailPhys / (double)ms.ullTotalPhys : 1;
-    if (signalled || free < 0.10) {
-        g.memoryOkSince = 0;
-        if (!(g.pauseMask & PR_LOW_MEMORY)) {
-            Log(L"low on memory (%.0f%% free): pausing", free * 100);
-            SetPause(PR_LOW_MEMORY, true);
-        }
-    } else if (g.pauseMask & PR_LOW_MEMORY) {
-        const ULONGLONG now = GetTickCount64();
-        if (free < 0.15) g.memoryOkSince = 0;
-        else if (!g.memoryOkSince) g.memoryOkSince = now;
-        else if (now - g.memoryOkSince >= 30000) {
-            Log(L"memory is free again (%.0f%%): playing", free * 100);
-            SetPause(PR_LOW_MEMORY, false);
-        }
-    }
-}
-
 void HealthCheck() {
     if (!IsWindow(g.host)) { Exit(0); return; }
     if (!IsWindow(g.progman)) { Exit(EXIT_RENDER_RESTART); return; }
@@ -1778,7 +1747,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             RequestRedraw();
             return 0;
         case WM_TIMER:
-            if (w == TIMER_HEALTH) { HealthCheck(); CheckCovered(); CheckMemory(); }
+            if (w == TIMER_HEALTH) { HealthCheck(); CheckCovered(); }
             else if (w == TIMER_RECHECK) { KillTimer(h, TIMER_RECHECK); CheckCovered(); }
             else if (w == TIMER_PARK) { KillTimer(h, TIMER_PARK); Park(); }
             else if (w == TIMER_MUSIC) ReportMusic();

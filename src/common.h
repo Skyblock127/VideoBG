@@ -86,7 +86,7 @@ enum : LPARAM {
 };
 
 enum RendererState : WPARAM { RS_LOADING = 0, RS_PLAYING = 1, RS_PAUSED = 2, RS_ERROR = 3 };
-enum PauseReason : LPARAM { PR_COVERED = 1, PR_LOCKED = 2, PR_DISPLAY_OFF = 4, PR_BATTERY = 8, PR_LOW_MEMORY = 16, PR_HOLD = 32 };
+enum PauseReason : LPARAM { PR_COVERED = 1, PR_LOCKED = 2, PR_DISPLAY_OFF = 4, PR_BATTERY = 8, PR_HOLD = 32 };
 
 constexpr DWORD EXIT_RENDER_RESTART = 3;  // renderer asks the host to start it again
 constexpr DWORD EXIT_RENDER_ERROR = 4;    // renderer could not play the video
