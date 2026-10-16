@@ -12,6 +12,7 @@
 #include <wincodec.h>
 #include <windowsx.h>
 #include <algorithm>
+#include <memory>
 #include <cmath>
 #include <cstdarg>
 #include <cwchar>
@@ -22,11 +23,13 @@ namespace {
 constexpr float kW = 820;  // client width in DIPs
 float kH = 660;            // client height: taller when the screen has room (set in UI_Show)
 constexpr UINT WM_UI_FRAME = WM_APP + 100, WM_UI_INFO = WM_APP + 101, WM_UI_OPT_PROGRESS = WM_APP + 103,
-               WM_UI_OPT_DONE = WM_APP + 104, WM_UI_STILL = WM_APP + 106, WM_UI_FEEDBACK = WM_APP + 107, WM_UI_FB_CLOSE = WM_APP + 108;
+               WM_UI_OPT_DONE = WM_APP + 104, WM_UI_STILL = WM_APP + 106, WM_UI_FEEDBACK = WM_APP + 107, WM_UI_FB_CLOSE = WM_APP + 108,
+               WM_UI_WALL = WM_APP + 109;  // lParam = WallpaperInfo* (the wallpapers' list)
 constexpr UINT_PTR TIMER_STATUS = 1;
 constexpr UINT_PTR TIMER_SCROLL = 2;  // the font list gliding to where the wheel sent it
 constexpr UINT_PTR TIMER_SHARPEN = 4;  // a picture drawn quickly while it kept changing: sharpen it now it's settled
 constexpr UINT_PTR TIMER_SONGS = 3;   // the playlist gliding, or scrolling by itself while a song is moved near its edge
+constexpr UINT_PTR TIMER_HOLD = 5;    // the wallpaper held on the Preview slider's frame: a second after it's let go, it plays on
 constexpr float kSongRowH = 34;       // a song's row in the playlist
 
 enum Id {
@@ -34,7 +37,7 @@ enum Id {
     ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_MUSIC_HOTKEY, ID_LAUNCH, ID_LOOK, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_MUSIC_PLAY, ID_MUSIC_PREV, ID_MUSIC_NEXT, ID_MUSIC_SHUFFLE, ID_MUSIC_REPEAT, ID_MUSIC_SEEK,
-    ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_UNMUTE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX,
+    ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_UNMUTE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX, ID_PLAYER_STYLE, ID_WALLS,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
     ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO,
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
@@ -374,6 +377,7 @@ struct UI {
     D2D1_RECT_F imgRc{};
     DWORD lastPreview = 0;
     DWORD lastSeek = 0;               // the wallpaper last moved with the Preview slider (tick)
+    bool held = false;                // the wallpaper waits on the Preview slider's frame
     struct Scaled {                   // a picture already scaled to where it's drawn (see DrawScaled)
         ID2D1Bitmap* from = nullptr;  // not held: ForgetScaled() runs before a picture is let go
         D2D1_RECT_F src{};
@@ -1052,7 +1056,7 @@ std::wstring StatusText(D2D1_COLOR_F* dot) {
         if (mask & PR_DISPLAY_OFF) return L"Paused while the screen is off";
         if (mask & PR_BATTERY) return L"Paused on battery";
         if (mask & PR_LOW_MEMORY) return L"Paused: the PC is low on memory";
-        if (mask & PR_HOLD) return L"Held on a frame in the wallpaper picker";
+        if (mask & PR_HOLD) return L"Held on the frame being picked";
         return L"Paused while an app covers the desktop";
     }
     if (st == RS_PLAYING) { *dot = u.th.good; return L"Playing"; }
@@ -1210,6 +1214,7 @@ void PaintVideoPage(float x, float w) {
     D2D1_RECT_F vc = R(x, y, x + w, box.bottom + below);
     Card(vc, L"\uE714", L"Video");
     Button(ID_CHOOSE, R(x + w - kPad - 148, y + 12, x + w - kPad, y + 44), L"Choose video", L"\uE8E5", true);
+    Button(ID_WALLS, R(x + w - kPad - 148 - 8 - 150, y + 12, x + w - kPad - 156, y + 44), L"Your wallpapers", L"\uE8B9");
     const std::wstring& video = g_settings.video;
     const bool infoCurrent = u.infoOk && _wcsicmp(u.infoPath.c_str(), video.c_str()) == 0;
     DrawComposed(box, g_settings.crop, CropMode(g_settings.crop));
@@ -1312,7 +1317,8 @@ void PaintVideoPage(float x, float w) {
     // Help line: what the control under the mouse does.
     std::wstring help;
     switch (u.drag ? u.drag : u.hot) {
-        case ID_TIMELINE: help = L"Picks the frame for the preview and the lock screen; the wallpaper jumps there too"; break;
+        case ID_TIMELINE: help = L"Picks the frame for the preview and the lock screen; the wallpaper holds on it, then plays on"; break;
+        case ID_WALLS: help = L"The videos you switch between (the same as in the modern look): click one to make it your wallpaper"; break;
         case ID_LOCK: help = L"Uses this frame as the lock screen and admin prompt background"; break;
         case ID_CROP: help = L"Choose which part of the video fills the screen"; break;
         case ID_CHOOSE: help = L"Pick a video or an animated GIF for your wallpaper"; break;
@@ -1506,12 +1512,14 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
     }
 }
 
+void FontButton(int id, const D2D1_RECT_F& r, const std::wstring& font, bool enabled, const wchar_t* icon);
+
 void PaintSoundPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const int mode = g_settings.sound;
     const float playerH = 110;
-    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 3 * kRowH + (mode == 2 ? playerH : kRowH) + 10);
+    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 4 * kRowH + (mode == 2 ? playerH : kRowH) + 10);
     Card(card, L"\uE767", L"Sound");
     float yy = y + kCardHead;
     Row(lx, yy, kLabelW, L"Play");
@@ -1526,6 +1534,17 @@ void PaintSoundPage(float x, float w) {
     Slider(ID_VOLUME, SliderRect(cx, yy, cw), g_settings.volume / 100.f, mode != 0);
     const bool muted = mode == 1 && g_settings.videoMuted;  // by the sound shortcut
     SliderValue(g_settings.volume && !muted ? Fmt(L"%d%%", g_settings.volume) : std::wstring(L"Muted"), cx, yy, cw, mode != 0);
+    yy += kRowH;
+    // The music player on the desktop (with My music): its style, picked from a list that shows each.
+    {
+        const std::vector<std::wstring> styles = Player_Styles();
+        const int k = std::clamp(g_settings.musicPlayer, 0, (int)styles.size());
+        Row(lx, yy, kLabelW, L"On the desktop", kRowH, mode == 2);
+        FontButton(ID_PLAYER_STYLE, R(cx, yy + 8, cx + std::min(cw, 260.f), yy + kRowH - 8), k ? styles[k - 1] + L" player" : L"No player",
+                   mode == 2, L"\uE8D6");
+        if (mode == 2 && k)
+            Text(L"Drag it to move it", R(cx + std::min(cw, 260.f) + 14, yy, x + w - kPad, yy + kRowH), u.fSmall, t.text2);
+    }
     yy += kRowH;
     if (mode == 2) {
         PaintPlayer(x, w, yy + 4);
@@ -1986,6 +2005,9 @@ void Badge(const std::wstring& s, float x, float y) {
 // The font a look shows: its own, or Audiowide when that font isn't on this PC any more.
 std::wstring ShownFont(const ClockLook& l) { return Clock_FontReady(l.font) ? l.font : std::wstring(L"Audiowide"); }
 
+// A font for a look's samples (a time in its own font and colours): a design's is Mond's own.
+std::wstring SampleFont(const ClockLook& l) { return l.style.empty() ? ShownFont(l) : std::wstring(L"Audiowide"); }
+
 // A button that shows the clock's font (or another choice, with its icon) and opens its list.
 void FontButton(int id, const D2D1_RECT_F& r, const std::wstring& font, bool enabled, const wchar_t* icon = L"\uE8D2") {
     const Theme& t = u.th;
@@ -2110,8 +2132,8 @@ void PaintClockPage(float x, float w) {
         Slider(id, SliderRect(cx0 + labW, yy, cw), frac, en);
         SliderValue(value, cx0 + labW, yy, cw, en, rowH);
     };
-    Row(lx, yy, labW, L"Font", rowH, on);
-    FontButton(ID_CLK_FONT, R(lx + labW, yy + 3, lx + colW, yy + rowH - 3), ShownFont(*look), on);
+    Row(lx, yy, labW, L"Style", rowH, on);
+    FontButton(ID_CLK_FONT, R(lx + labW, yy + 3, lx + colW, yy + rowH - 3), Clock_StyleName(*look), on, L"\uE790");
     Row(rx, yy, labW, L"Colour", rowH, on);
     ColorPairButton(ID_CLK_CUSTOM, R(rx + labW, yy + 3, rx + colW, yy + rowH - 3), look->color,
                     look->glowColor.empty() ? look->color : look->glowColor, on);
@@ -2122,10 +2144,12 @@ void PaintClockPage(float x, float w) {
     sliderRow(lx, ID_CLK_OPACITY, L"Opacity", (look->opacity - 0.2f) / 0.8f, Fmt(L"%.0f%%", look->opacity * 100), on);
     sliderRow(rx, ID_CLK_GLOWSIZE, L"Glow size", (look->glowSize - 2) / 38, Fmt(L"%.0f", look->glowSize), glowOn);
     yy += rowH;
-    Row(lx, yy, labW, L"Date", rowH, on);
-    DateButton(ID_CLK_DATE, R(lx + labW, yy + 3, lx + colW, yy + rowH - 3), *look, on);
-    Row(rx, yy, labW, L"Time", rowH, on);
-    Seg(ID_CLK_HOURS, SegRect(rx + labW, yy, cw, rowH), {L"12-hour", L"24-hour"}, look->h24 ? 1 : 0, on);
+    // (What the style doesn't show greys out: a dial has no 12- or 24-hour time.)
+    const bool dated = on && Clock_UsesDate(*look), hours = on && Clock_UsesHours(*look);
+    Row(lx, yy, labW, L"Date", rowH, dated);
+    DateButton(ID_CLK_DATE, R(lx + labW, yy + 3, lx + colW, yy + rowH - 3), *look, dated);
+    Row(rx, yy, labW, L"Time", rowH, hours);
+    Seg(ID_CLK_HOURS, SegRect(rx + labW, yy, cw, rowH), {L"12-hour", L"24-hour"}, look->h24 ? 1 : 0, hours);
     yy += rowH + 4;
 
     // Help line.
@@ -2142,7 +2166,7 @@ void PaintClockPage(float x, float w) {
                                     : L"This video's own clock, or the one every video shares (this video keeps its own)";
             break;
         case ID_CLK_CUSTOM: help = L"The text's and the glow's colours: any colour, a code, your saved ones or the wallpaper's"; break;
-        case ID_CLK_FONT: help = L"The clock's font, and the language of its words, in this look"; break;
+        case ID_CLK_FONT: help = L"The clock's style (Mond in any font, a dial, a ring...), and the language of its words"; break;
         case ID_CLK_SIZE: help = L"The clock's size in this look"; break;
         case ID_CLK_OPACITY: help = L"How solid the clock is; lower lets the wallpaper show through (glow included)"; break;
         case ID_CLK_HOURS: help = L"12-hour (1:30 PM) or 24-hour (13:30) time"; break;
@@ -2527,11 +2551,11 @@ void PaintVersionsDialog() {
 }
 
 // ---------------------------------------------------------------------------------------
-// Font picker: every font, each drawn as the clock in it (just the letters, in the page's text
-// colour); a font VideoBG can't include has a link to get it and a button to add its file instead.
-// At the end, the user can add any font of their own; VideoBG keeps a copy in its fonts folder.
-// Clicking a font uses it at once for the look being edited. Each font is loaded only while its
-// sample is drawn.
+// Style picker: every clock style, each drawn as the clock (in the page's text colour): Mond, the
+// designs, then Mond in each of the other fonts. A font VideoBG can't include has a link to get it
+// and a button to add its file instead. At the end, the user can add any font of their own (for
+// Mond); VideoBG keeps a copy in its fonts folder. Clicking a style uses it at once for the look
+// being edited. Each font is loaded only while its sample is drawn.
 
 void ClockEdited();
 
@@ -2542,11 +2566,13 @@ const float kLangRowH = 40;                     // a language's row
 struct FontDialog {
     bool open = false;
     bool dates = false;  // the date styles instead of the fonts
+    bool players = false;  // the desktop player's styles instead
+    bool walls = false;    // the wallpapers instead (WallRow each)
     int confirm = -1;      // a font's Remove was clicked: asking first
     float scrollBack = 0;  // where the font list was, for coming back from the languages
     bool langs = false;  // within the date styles: the list of languages
     std::vector<ClockLanguage> langList;
-    std::vector<ClockFontInfo> list;
+    std::vector<ClockStyleInfo> list;
     std::vector<ID2D1Bitmap*> samples;
     std::vector<D2D1_SIZE_F> sizes;  // in DIPs
     std::vector<bool> tried;
@@ -2557,6 +2583,16 @@ struct FontDialog {
     float viewH = 0;                                       // the list's visible height
     D2D1_RECT_F view{};                                    // and where it is
 } fnt;
+
+// A wallpaper in the list: one per video (a lighter version joins its original's row).
+struct WallRow {
+    std::wstring path, play;  // the video; the version it plays (the wallpaper's, if it's one of them)
+    WallpaperInfo info;       // from the library worker (no pictures kept in it)
+    bool ready = false;
+    std::vector<uint32_t> thumb;
+    int tw = 0, th = 0;
+};
+std::vector<WallRow> g_walls;
 
 // The wheel and the arrow keys glide the list to `to`; dragging the bar moves it at once.
 void FontScrollTo(float to, bool glide) {
@@ -2573,9 +2609,15 @@ void FontBarDrag(float y, bool start) {
     FontScrollTo((y - fnt.grab - fnt.trackTop) / (fnt.trackH - fnt.thumbH) * fnt.maxScroll, false);
 }
 
-// The rows: date styles, or fonts.
-int PickerRows() { return fnt.langs ? (int)fnt.langList.size() : fnt.dates ? Clock_DateStyleCount() : (int)fnt.list.size(); }
-float PickerRowH() { return fnt.langs ? kLangRowH : fnt.dates ? kDateRowH : kFontRowH; }
+// The rows: languages, date styles, the player's styles (and none), wallpapers, or the clock's styles.
+int PickerRows() {
+    return fnt.langs     ? (int)fnt.langList.size()
+           : fnt.dates   ? Clock_DateStyleCount()
+           : fnt.players ? 1 + (int)Player_Styles().size()
+           : fnt.walls   ? (int)g_walls.size()
+                         : (int)fnt.list.size();
+}
+float PickerRowH() { return fnt.langs ? kLangRowH : fnt.dates ? kDateRowH : fnt.players ? 124.f : fnt.walls ? 88.f : kFontRowH; }
 
 void ReleaseFontSamples() {
     for (ID2D1Bitmap*& b : fnt.samples) SafeRelease(b);
@@ -2586,22 +2628,22 @@ void ReleaseFontSamples() {
 }
 
 void RefreshFontList() {
-    fnt.list = Clock_Fonts();
+    fnt.list = Clock_Styles();
     ReleaseFontSamples();
 }
 
-int FontIndex(const std::wstring& key) {
+int FontIndex(const std::wstring& key) {  // Mond in that font
     for (size_t i = 0; i < fnt.list.size(); i++)
-        if (!_wcsicmp(fnt.list[i].key.c_str(), key.c_str())) return (int)i;
+        if (fnt.list[i].style.empty() && !_wcsicmp(fnt.list[i].font.key.c_str(), key.c_str())) return (int)i;
     return -1;
 }
 
 // Fonts VideoBG can't include that were just downloaded: added from the Downloads folder.
 void FindDownloadedFonts() {
     bool added = false;
-    for (const ClockFontInfo& f : fnt.list)
-        if (f.getUrl && !f.ready && Clock_FindDownloadedFont(f.key)) {
-            fnt.note = L"Found " + f.key + L" in your Downloads and added it";
+    for (const ClockStyleInfo& s : fnt.list)
+        if (s.font.getUrl && !s.font.ready && Clock_FindDownloadedFont(s.font.key)) {
+            fnt.note = L"Found " + s.font.key + L" in your Downloads and added it";
             added = true;
         }
     if (added) RefreshFontList();
@@ -2618,6 +2660,125 @@ void OpenDateDialog() {
     fnt = FontDialog{};
     fnt.open = fnt.dates = true;
     ReleaseFontSamples();
+}
+
+// The wallpapers (the modern look's list): the videos in it, a picture of each made by the library's
+// worker (posted back as WM_UI_WALL).
+void OpenWallpapers() {
+    fnt = FontDialog{};
+    fnt.open = fnt.walls = true;
+    g_walls.clear();
+    const std::wstring copies = LocalDataDir() + L"\\Light copies\\";
+    int current = 0;
+    for (const std::wstring& p : LoadWallpapers(g_settings.video)) {
+        const bool copy = p.size() > copies.size() && !_wcsnicmp(p.c_str(), copies.c_str(), copies.size());
+        const std::wstring orig = copy ? LightCopyOriginalPath(p) : L"";
+        const std::wstring& key = orig.empty() ? p : orig;
+        int at = -1;
+        for (size_t i = 0; i < g_walls.size(); i++)
+            if (SamePath(g_walls[i].path, key)) at = (int)i;
+        if (at < 0) {
+            WallRow w;
+            w.path = w.play = key;
+            g_walls.push_back(w);
+            at = (int)g_walls.size() - 1;
+        }
+        if (SamePath(p, g_settings.video)) {
+            g_walls[at].play = p;
+            current = at;
+        }
+    }
+    ReleaseFontSamples();
+    Library_Start(u.hwnd, WM_UI_WALL, u.screenW, u.screenH);
+    for (const WallRow& w : g_walls) Library_Request(w.path, false, false);
+    fnt.scroll = fnt.target = std::max(0, current - 1) * 88.f;  // the next paint keeps it in range
+}
+
+// A video's picture and facts, from the worker.
+void WallInfo(WallpaperInfo* raw) {
+    std::unique_ptr<WallpaperInfo> info(raw);
+    if (!fnt.open || !fnt.walls) return;
+    for (size_t i = 0; i < g_walls.size(); i++) {
+        WallRow& w = g_walls[i];
+        if (!SamePath(w.path, info->path)) continue;
+        w.ready = true;
+        w.thumb.swap(info->thumb);
+        w.tw = info->tw;
+        w.th = info->th;
+        info->frame.clear();
+        w.info = std::move(*info);
+        if (i < fnt.samples.size()) {
+            SafeRelease(fnt.samples[i]);
+            fnt.tried[i] = false;
+        }
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return;
+    }
+}
+
+// Adds videos to the list (the same file dialog as the picker's).
+void WallsAdd() {
+    IFileOpenDialog* dlgBox = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlgBox)))) return;
+    const COMDLG_FILTERSPEC types[] = {{L"Videos", kVideoPatterns}, {L"All files", L"*.*"}};
+    dlgBox->SetFileTypes((UINT)std::size(types), types);
+    dlgBox->SetTitle(L"Add video wallpapers (Ctrl+A picks a whole folder)");
+    dlgBox->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_ALLOWMULTISELECT);
+    std::vector<std::wstring> picked;
+    IShellItemArray* items = nullptr;
+    if (SUCCEEDED(dlgBox->Show(u.hwnd)) && SUCCEEDED(dlgBox->GetResults(&items))) {
+        DWORD n = 0;
+        items->GetCount(&n);
+        for (DWORD i = 0; i < n; i++) {
+            IShellItem* it = nullptr;
+            PWSTR path = nullptr;
+            if (SUCCEEDED(items->GetItemAt(i, &it)) && SUCCEEDED(it->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                picked.push_back(path);
+                CoTaskMemFree(path);
+            }
+            if (it) it->Release();
+        }
+        items->Release();
+    }
+    dlgBox->Release();
+    int added = 0;
+    for (const std::wstring& p : picked) {
+        bool have = false;
+        for (const WallRow& w : g_walls) have = have || SamePath(w.path, p);
+        if (have) continue;
+        WallRow w;
+        w.path = w.play = p;
+        g_walls.push_back(w);
+        Library_Request(p, false, true);
+        added++;
+    }
+    if (!added) return;
+    std::vector<std::wstring> list;
+    for (const WallRow& w : g_walls) list.push_back(w.path);
+    SaveWallpapers(list);
+    ReleaseFontSamples();
+    fnt.note = added == 1 ? L"1 video added" : Fmt(L"%d videos added", added);
+    Log(L"ui: %d video(s) added to the wallpapers", added);
+    FontScrollTo(1e6f, true);  // to the new ones, at the end
+}
+
+// Takes a wallpaper off the list (the file stays where it is).
+void WallsRemove(int i) {
+    if (i < 0 || i >= (int)g_walls.size() || SamePath(g_walls[i].play, g_settings.video)) return;
+    Log(L"ui: %ls taken off the wallpapers", g_walls[i].path.c_str());
+    fnt.note = L"\u201C" + SongName(g_walls[i].path) + L"\u201D is off the list (the file is still there)";
+    g_walls.erase(g_walls.begin() + i);
+    std::vector<std::wstring> list;
+    for (const WallRow& w : g_walls) list.push_back(w.path);
+    SaveWallpapers(list);
+    ReleaseFontSamples();
+}
+
+void OpenPlayerDialog() {
+    fnt = FontDialog{};
+    fnt.open = fnt.players = true;
+    ReleaseFontSamples();
+    fnt.scroll = fnt.target = std::max(0, g_settings.musicPlayer - 1) * 124.f;  // the next paint keeps it in range
 }
 
 // The languages, in place of the fonts (Back, Esc or picking one goes back to them).
@@ -2655,11 +2816,17 @@ void LanguageJump(wchar_t letter) {
 void CloseFontDialog() {
     if (!fnt.open) return;
     ReleaseFontSamples();
+    if (fnt.players) Player_FreePreview();
+    if (fnt.walls) {
+        Library_Stop();
+        g_walls.clear();
+    }
     fnt.open = false;
     Clock_ReleasePainter();  // the samples' fonts
 }
 
-void UseFontInLook(const std::wstring& key) {
+void UseFontInLook(const std::wstring& key) {  // Mond, in that font
+    EditedLook()->style.clear();
     EditedLook()->font = key;
     Log(L"ui: clock font %ls", key.c_str());
     ClockEdited();
@@ -2676,19 +2843,38 @@ void FontPick(int i) {
         CloseLanguageList();
         return;
     }
-    if (fnt.dates) {
+    if (fnt.walls) {  // it's the wallpaper now
+        if (i >= (int)g_walls.size()) return;
+        const WallRow& w = g_walls[i];
+        if (w.ready && !w.info.ok) {
+            fnt.note = w.info.fault == VF_GIF ? L"Turn the GIF into a video first (Choose video does it)" : L"This one can't be used as a wallpaper";
+            return;
+        }
+        if (SamePath(w.play, g_settings.video)) return;
+        Log(L"ui: %ls is the wallpaper now", w.play.c_str());
+        Host_SetVideo(w.play);
+        fnt.note = L"Your wallpaper is \u201C" + SongName(w.path) + L"\u201D now";
+        return;
+    }
+    if (fnt.players) {
+        g_settings.musicPlayer = i;
+        Log(L"ui: desktop music player %ls", i ? Player_Styles()[i - 1].c_str() : L"off");
+        Host_SettingsChanged();
+    } else if (fnt.dates) {
         EditedLook()->date = i;
         Log(L"ui: date style %d", i);
         ClockEdited();
-    } else if (i < (int)fnt.list.size() && fnt.list[i].ready) {
-        UseFontInLook(fnt.list[i].key);
+    } else if (i < (int)fnt.list.size() && fnt.list[i].font.ready) {
+        Clock_UseStyle(*EditedLook(), fnt.list[i]);
+        Log(L"ui: clock style %ls", fnt.list[i].name.c_str());
+        ClockEdited();
     }
 }
 
 void FontGet(int i) {
-    if (i >= (int)fnt.list.size() || !fnt.list[i].getUrl) return;
-    ShellExecuteW(u.hwnd, L"open", fnt.list[i].getUrl, nullptr, nullptr, SW_SHOWNORMAL);
-    fnt.note = L"Download " + fnt.list[i].key + L", then come back: VideoBG looks for it in your Downloads";
+    if (i >= (int)fnt.list.size() || !fnt.list[i].font.getUrl) return;
+    ShellExecuteW(u.hwnd, L"open", fnt.list[i].font.getUrl, nullptr, nullptr, SW_SHOWNORMAL);
+    fnt.note = L"Download " + fnt.list[i].font.key + L", then come back: VideoBG looks for it in your Downloads";
 }
 
 // A font file (or a .zip with one) from the file dialog; "" if cancelled.
@@ -2713,7 +2899,7 @@ std::wstring PickFontFile(const std::wstring& title) {
 
 void FontAddFile(int i) {
     if (i >= (int)fnt.list.size()) return;
-    const std::wstring key = fnt.list[i].key;
+    const std::wstring key = fnt.list[i].font.key;
     const std::wstring file = PickFontFile(L"Choose the " + key + L" font file");
     if (file.empty()) return;
     HRESULT hr = Clock_AddFontFile(key, file);
@@ -2745,8 +2931,12 @@ void FontAddOwn() {
 
 // Deletes VideoBG's copy; looks that used it go back to Audiowide (other videos' do when drawn).
 void FontRemove(int i) {
-    if (i >= (int)fnt.list.size() || !fnt.list[i].removable) return;
-    const std::wstring key = fnt.list[i].key;
+    if (fnt.walls) {
+        WallsRemove(i);
+        return;
+    }
+    if (i >= (int)fnt.list.size() || !fnt.list[i].font.removable) return;
+    const std::wstring key = fnt.list[i].font.key;
     if (!Clock_RemoveFont(key)) {
         fnt.note = L"Couldn't remove " + key;
         return;
@@ -2776,14 +2966,29 @@ void EnsureDateSample(int i) {
     fnt.sizes[i] = D2D1::SizeF(img.w / k, img.h / k);
 }
 
-// Draws font i as the clock, just the letters, at exactly the size it's shown (so it stays sharp),
-// as big as fits in maxW x maxH DIPs.
+// The player's style i as it looks with the song now, at exactly the size it's shown, as big as fits.
+void EnsurePlayerSample(int i, float maxW, float maxH) {
+    if (fnt.samples[i] || fnt.tried[i] || !u.rt || i < 1) return;
+    fnt.tried[i] = true;
+    float sw = 0, sh = 0;
+    Player_Size(i, &sw, &sh);
+    if (sw <= 0) return;
+    const float k = u.dpi / 96, s = std::min({1.f, maxW / sw, maxH / sh});
+    ClockImage img;
+    if (!Player_Paint(i, s * k, false, &img)) return;
+    D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    u.rt->CreateBitmap(D2D1::SizeU((UINT32)img.w, (UINT32)img.h), img.px.data(), (UINT32)img.w * 4, &bp, &fnt.samples[i]);
+    fnt.sizes[i] = D2D1::SizeF(img.w / k, img.h / k);
+}
+
+// Draws style i as the clock, at exactly the size it's shown (so it stays sharp), as big as fits in
+// maxW x maxH DIPs.
 void EnsureFontSample(int i, float maxW, float maxH) {
     if (fnt.samples[i] || fnt.tried[i] || !u.rt) return;
     fnt.tried[i] = true;
-    if (!fnt.list[i].ready) return;
+    if (!fnt.list[i].font.ready) return;
     ClockLook l;
-    l.font = fnt.list[i].key;
+    Clock_UseStyle(l, fnt.list[i]);
     l.date = EditedLook()->date;
     l.lang = EditedLook()->lang;
     l.nativeDigits = EditedLook()->nativeDigits;
@@ -2811,7 +3016,8 @@ void PaintFontDialog() {
     AddHit(ID_FNT_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
     const int n = PickerRows();
     const float rowH = PickerRowH(), W = kDialogW, content = n * rowH;
-    const float listH = std::min(content, fnt.dates || fnt.langs ? 9.4f * rowH : 3.4f * rowH), H = 84 + listH + 8 + 64;
+    const float listH = std::min(content, fnt.dates || fnt.langs ? 9.4f * rowH : fnt.players ? 3.6f * rowH : fnt.walls ? 5.5f * rowH : 3.4f * rowH);
+    const float H = 84 + listH + 8 + 64;
     const float L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2), k = u.dpi / 96;
     const D2D1_RECT_F panel = R(L, T, L + W, T + H);
     const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
@@ -2823,19 +3029,24 @@ void PaintFontDialog() {
     PopRounded(clip);
     Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
 
-    Text(fnt.langs ? L"Clock language" : fnt.dates ? L"Date style" : L"Clock font", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle,
-         t.text);
-    Text(fnt.langs ? L"The day, month and AM/PM words come from Windows. Type a letter to jump."
-                   : L"Click one to use it; your desktop shows it right away.",
+    Text(fnt.langs ? L"Clock language" : fnt.dates ? L"Date style" : fnt.players ? L"Music player on the desktop" : fnt.walls ? L"Your wallpapers" : L"Clock style",
+         R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
+    Text(fnt.langs     ? L"The day, month and AM/PM words come from Windows. Type a letter to jump."
+         : fnt.players ? L"It shows while My music plays with the video wallpaper. Click one to use it."
+         : fnt.walls   ? L"The videos you switch between (the modern look's too). Click one to make it your wallpaper."
+                       : L"Click one to use it; your desktop shows it right away.",
          R(L + 24, T + 50, L + W - 24, T + 72), u.fBody, t.text2);
-    if (!fnt.dates && !fnt.langs) {  // the clock's language, and its own digits when it has them
+    if (!fnt.dates && !fnt.langs && !fnt.players && !fnt.walls) {  // the clock's language, and its own digits when it has them
+        // (Greyed while the style shows no words, or no digits.)
         const ClockLook* look = EditedLook();
         const float bl = L + W - 24 - 190;
-        FontButton(ID_FNT_LANG, R(bl, T + 14, L + W - 24, T + 46), Clock_LanguageName(look->lang), true, L"\uE774");
+        const bool words = Clock_UsesWords(*look), digitsOn = Clock_UsesDigits(*look);
+        FontButton(ID_FNT_LANG, R(bl, T + 14, L + W - 24, T + 46), Clock_LanguageName(look->lang), words, L"\uE774");
         const std::wstring digits = Clock_NativeDigits(look->lang);
         if (!digits.empty()) {
-            Text(digits.substr(1, 3) + L" digits", R(L + 170, T + 16, bl - 16 - 40 - 10, T + 46), u.fBody, t.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
-            Toggle(ID_FNT_DIGITS, bl - 16 - 40, T + 30, look->nativeDigits);
+            Text(digits.substr(1, 3) + L" digits", R(L + 170, T + 16, bl - 16 - 40 - 10, T + 46), u.fBody, digitsOn ? t.text : t.text3,
+                 DWRITE_TEXT_ALIGNMENT_TRAILING);
+            Toggle(ID_FNT_DIGITS, bl - 16 - 40, T + 30, look->nativeDigits, digitsOn);
         }
     }
 
@@ -2844,12 +3055,11 @@ void PaintFontDialog() {
     fnt.scroll = std::clamp(fnt.scroll, 0.f, fnt.maxScroll);
     fnt.target = std::clamp(fnt.target, 0.f, fnt.maxScroll);
     const float barW = fnt.maxScroll > 0 ? 14 : 0;
-    const float boxW = W - 32 - barW - 150 - 16, boxH = rowH - 20;  // room for a sample, right of the name
+    const float boxW = W - 32 - barW - 190 - 16, boxH = rowH - 20;  // room for a sample, right of the name
     if (boxW != fnt.boxW) {
         ReleaseFontSamples();
         fnt.boxW = boxW;
     }
-    const std::wstring shown = ShownFont(*EditedLook());
     const size_t firstHit = u.hits.size();
     u.rt->PushAxisAlignedClip(view, D2D1_ANTIALIAS_MODE_ALIASED);
     float y = view.top - fnt.scroll;
@@ -2878,6 +3088,68 @@ void PaintFontDialog() {
             Text(lg.native, R(r.left + 300, r.top, r.right - 14, r.bottom), u.fBody, t.text2, DWRITE_TEXT_ALIGNMENT_TRAILING);
             continue;
         }
+        if (fnt.walls) {  // a wallpaper: its picture, its name and facts; Current, or a bin to take it off
+            WallRow& wr = g_walls[i];
+            const D2D1_RECT_F r = R(L + 16, y + 3, L + W - 16 - barW, y + rowH - 3);
+            const bool cur = SamePath(wr.play, g_settings.video), hot = IsHot(ID_FNT_ROW0 + i);
+            if (cur) {
+                Fill(r, Mix(face, t.accent, 0.14f), 6);
+                Stroke(r, t.accent, 6);
+            } else if (hot) {
+                Fill(r, Mix(face, t.text, 0.05f), 6);
+            }
+            AddHit(ID_FNT_ROW0 + i, K_BUTTON, r);
+            const D2D1_RECT_F pic = R(r.left + 10, r.top + 8, r.left + 10 + (r.bottom - r.top - 16) * 16 / 9, r.bottom - 8);
+            if (!fnt.samples[i] && !fnt.tried[i] && !wr.thumb.empty()) {
+                fnt.tried[i] = true;
+                D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+                u.rt->CreateBitmap(D2D1::SizeU((UINT32)wr.tw, (UINT32)wr.th), wr.thumb.data(), (UINT32)wr.tw * 4, &bp, &fnt.samples[i]);
+            }
+            Fill(pic, Mix(face, t.text, 0.08f), 5);
+            if (fnt.samples[i]) {  // the middle of the picture, filling its box
+                const D2D1_SIZE_F sz = fnt.samples[i]->GetSize();
+                const float bw = pic.right - pic.left, bh = pic.bottom - pic.top, s = std::max(bw / sz.width, bh / sz.height);
+                const float sw = bw / s, sh = bh / s;
+                ID2D1RoundedRectangleGeometry* pclip = PushRounded(pic, 5);
+                DrawScaled(fnt.samples[i], pic, R((sz.width - sw) / 2, (sz.height - sh) / 2, (sz.width + sw) / 2, (sz.height + sh) / 2));
+                PopRounded(pclip);
+            }
+            const float tx = pic.right + 14, cy = (r.top + r.bottom) / 2;
+            Text(SongName(wr.path), R(tx, cy - 22, r.right - 120, cy), u.fStrong, t.text);
+            std::wstring about;
+            if (!wr.ready) about = L"Reading the video\u2026";
+            else if (!wr.info.ok) about = wr.info.fault == VF_GIF ? L"A GIF: turn it into a video first" : wr.info.fault == VF_MISSING ? L"The file isn't there" : L"Can't be used as a wallpaper";
+            else about = Fmt(L"%u\u00D7%u  \u00B7  %ls  \u00B7  %.0f MB", wr.info.vw, wr.info.vh, Clock(wr.info.duration).c_str(), wr.info.bytes / 1048576.0);
+            if (!SamePath(wr.play, wr.path)) about += L"  \u00B7  a lighter version";
+            Text(about, R(tx, cy, r.right - 120, cy + 20), u.fSmall, t.text2);
+            if (cur) Text(L"Current", R(r.right - 110, r.top, r.right - 14, r.bottom), u.fSmall, t.good, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            else Button(ID_FNT_DEL0 + i, R(r.right - 44, cy - 15, r.right - 12, cy + 15), L"", L"\uE74D");
+            continue;
+        }
+        if (fnt.players) {  // a style: its name and what it is, then how it looks
+            const D2D1_RECT_F r = R(L + 16, y + 3, L + W - 16 - barW, y + rowH - 3);
+            const bool sel = std::clamp(g_settings.musicPlayer, 0, n - 1) == i, hot = IsHot(ID_FNT_ROW0 + i);
+            if (sel) {
+                Fill(r, Mix(face, t.accent, 0.14f), 6);
+                Stroke(r, t.accent, 6);
+            } else if (hot) {
+                Fill(r, Mix(face, t.text, 0.05f), 6);
+            }
+            AddHit(ID_FNT_ROW0 + i, K_BUTTON, r);
+            const float cy = (r.top + r.bottom) / 2;
+            Circle(r.left + 22, cy, 8, sel ? t.accent : t.text2);
+            Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
+            Text(i ? Player_Styles()[i - 1] : L"None", R(r.left + 42, cy - 22, r.left + 150, cy), u.fStrong, t.text);
+            Text(TwoLines(Player_About(i), u.fSmall), R(r.left + 42, cy, r.left + 190, cy + 34), u.fSmall, t.text2);
+            EnsurePlayerSample(i, r.right - r.left - 216, rowH - 16);
+            if (fnt.samples[i]) {  // 1:1 on whole pixels
+                const D2D1_SIZE_F sz = fnt.sizes[i];
+                const float x0 = roundf((r.right - 12 - sz.width) * k) / k, y0 = roundf((cy - sz.height / 2) * k) / k;
+                D2D1_RECT_F dst = R(x0, y0, x0 + sz.width, y0 + sz.height);
+                u.rt->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr);
+            }
+            continue;
+        }
         if (fnt.dates) {  // just the date, as it reads today
             const D2D1_RECT_F r = R(L + 16, y + 2, L + W - 16 - barW, y + rowH - 2);
             const bool sel = EditedLook()->date == i, hot = IsHot(ID_FNT_ROW0 + i);
@@ -2900,8 +3172,9 @@ void PaintFontDialog() {
             }
             continue;
         }
-        const ClockFontInfo& f = fnt.list[i];
-        const bool sel = !_wcsicmp(shown.c_str(), f.key.c_str());
+        const ClockStyleInfo& st = fnt.list[i];
+        const ClockFontInfo& f = st.font;
+        const bool sel = Clock_IsStyle(*EditedLook(), st);
         const D2D1_RECT_F r = R(L + 16, y + 3, L + W - 16 - barW, y + rowH - 3);
         const bool hot = f.ready && IsHot(ID_FNT_ROW0 + i);
         if (sel) {
@@ -2916,12 +3189,8 @@ void PaintFontDialog() {
         Circle(r.left + 22, cy, sel ? 3.5f : 6.8f, sel ? t.onAccent : hot ? Mix(face, t.text, 0.05f) : face);
         // The name and what it is (then Remove, for the user's copies), centred on the row.
         const float aboutH = f.ready ? 20.f : 38.f, blockH = 22 + aboutH + (f.removable ? 34 : 0), ny = cy - blockH / 2;
-        Text(f.key, R(r.left + 42, ny, r.left + 150, ny + 22), u.fStrong, f.ready ? t.text : t.text2);
-        const wchar_t* about = !f.getUrl && !f.removable ? L"Included"
-                               : !f.getUrl               ? L"Added by you"
-                               : f.ready                 ? L"Your copy"
-                                                         : L"Free for personal use only, so not included";
-        Text(about, R(r.left + 42, ny + 22, r.left + (f.ready ? 150 : 290), ny + 22 + aboutH), f.ready ? u.fSmall : u.fWrap, t.text2);
+        Text(st.name, R(r.left + 42, ny, r.left + 190, ny + 22), u.fStrong, f.ready ? t.text : t.text2);
+        Text(st.about, R(r.left + 42, ny + 22, r.left + (f.ready ? 190 : 290), ny + 22 + aboutH), f.ready ? u.fSmall : u.fWrap, t.text2);
         if (f.removable) Button(ID_FNT_DEL0 + i, R(r.left + 38, ny + 50, r.left + 134, ny + 78), L"Remove", L"\uE74D");
         if (f.ready) {
             EnsureFontSample(i, boxW, boxH);
@@ -2955,19 +3224,29 @@ void PaintFontDialog() {
     }
 
     const float by = T + H - 48;
-    if (fnt.confirm >= 0 && fnt.confirm < (int)fnt.list.size()) {  // before removing a font
-        Text(L"Remove " + fnt.list[fnt.confirm].key + L"? Clocks using it go back to Audiowide.", R(L + 24, by - 4, L + W - 24 - 236, by + 36),
+    if (fnt.walls && fnt.confirm >= 0 && fnt.confirm < (int)g_walls.size()) {  // before taking a wallpaper off
+        Text(L"Take \u201C" + SongName(g_walls[fnt.confirm].path) + L"\u201D off the list? The file stays where it is.",
+             R(L + 24, by - 4, L + W - 24 - 236, by + 36), u.fWrap, t.text);
+        Button(ID_FNT_NO, R(L + W - 24 - 228, by, L + W - 24 - 126, by + 32), L"Cancel");
+        Button(ID_FNT_YES, R(L + W - 24 - 118, by, L + W - 24, by + 32), L"Take off", nullptr, true);
+        return;
+    }
+    if (!fnt.walls && fnt.confirm >= 0 && fnt.confirm < (int)fnt.list.size()) {  // before removing a font
+        Text(L"Remove " + fnt.list[fnt.confirm].font.key + L"? Clocks using it go back to Audiowide.", R(L + 24, by - 4, L + W - 24 - 236, by + 36),
              u.fWrap, t.text);
         Button(ID_FNT_NO, R(L + W - 24 - 228, by, L + W - 24 - 126, by + 32), L"Cancel");
         Button(ID_FNT_YES, R(L + W - 24 - 118, by, L + W - 24, by + 32), L"Remove", nullptr, true);
         return;
     }
     float noteL = L + 24;
-    if (!fnt.dates && !fnt.langs) {  // any font of the user's own, always at hand
+    if (fnt.walls) {  // more videos for the list
+        Button(ID_FNT_OWN, R(L + 24, by, L + 24 + 150, by + 32), L"Add videos\u2026", L"\uE710");
+        noteL += 166;
+    } else if (!fnt.dates && !fnt.langs && !fnt.players) {  // any font of the user's own, always at hand
         Button(ID_FNT_OWN, R(L + 24, by, L + 24 + 196, by + 32), L"Add your own font\u2026", L"\uE710");
         noteL += 212;
     }
-    const bool hint = fnt.note.empty() && !fnt.dates && !fnt.langs;
+    const bool hint = fnt.note.empty() && !fnt.dates && !fnt.langs && !fnt.players && !fnt.walls;
     Text(hint ? std::wstring(L"A .ttf or .otf file, or a .zip with one") : fnt.note, R(noteL, by - 2, L + W - 24 - 126, by + 34), u.fWrap,
          t.text3);
     Button(ID_FNT_DONE, R(L + W - 24 - 110, by, L + W - 24, by + 32), fnt.langs ? L"Back" : L"Done", nullptr, true);
@@ -2978,7 +3257,7 @@ void PaintFontDialog() {
 // page's choices pick (after asking); Edit changes one on the page itself.
 
 std::wstring PresetDetails(const ClockLook& l) {
-    return ShownFont(l) + L" \u00B7 " + Fmt(L"%.0f%%", l.size * 100) + L" \u00B7 " + Clock_LanguageName(l.lang);
+    return Clock_StyleName(l) + L" \u00B7 " + Fmt(L"%.0f%%", l.size * 100) + L" \u00B7 " + Clock_LanguageName(l.lang);
 }
 
 // Each preset's time, in its own font, colours and glow (redrawn when the minute or the preset changes).
@@ -3009,7 +3288,7 @@ void EnsurePresetSample(int i, float maxW, float maxH) {
     ClockImage img;
     float pt = 14;
     for (int pass = 0; pass < 2; pass++) {  // smaller when it doesn't fit
-        if (!Clock_PaintLine(text, ShownFont(l), pt, l.color, k, &img, &l) || img.w <= 0) return;
+        if (!Clock_PaintLine(text, SampleFont(l), pt, l.color, k, &img, &l) || img.w <= 0) return;
         const float fit = std::min(maxW / (img.w / k), maxH / (img.h / k));
         if (fit >= 1) break;
         pt *= fit;
@@ -3914,6 +4193,17 @@ void SetPreviewTimeFromFrac(float frac) {
     RequestFrame();
 }
 
+// The wallpaper waits on the frame being picked (and plays on when the timer lets it go).
+void HoldWallpaper() {
+    KillTimer(u.hwnd, TIMER_HOLD);
+    if (!u.held) Host_HoldWallpaper(u.held = true);
+}
+
+void ReleaseWallpaper() {
+    KillTimer(u.hwnd, TIMER_HOLD);
+    if (u.held) Host_HoldWallpaper(u.held = false);
+}
+
 void OnSlider(int id, float frac, bool final) {
     switch (id) {
         case ID_SPEED: {
@@ -3937,12 +4227,18 @@ void OnSlider(int id, float frac, bool final) {
             }
             break;
         case ID_TIMELINE:
+            // The wallpaper shows that frame and holds still on it while the slider moves; it plays on a
+            // second after it's let go.
             SetPreviewTimeFromFrac(frac);
-            if (final || GetTickCount() - u.lastSeek >= 60) {  // the wallpaper follows, and plays on from there
+            HoldWallpaper();
+            if (final || GetTickCount() - u.lastSeek >= 60) {
                 u.lastSeek = GetTickCount();
                 if (u.infoOk && u.info.duration > 0) Host_SeekWallpaper(PreviewTime(), final);
             }
-            if (final) Host_FrameChanged();  // this video's frame: saved, and the lock screen follows
+            if (final) {
+                Host_FrameChanged();  // this video's frame: saved, and the lock screen follows
+                SetTimer(u.hwnd, TIMER_HOLD, 1000, nullptr);
+            }
             break;
         case ID_CLK_SIZE:
         case ID_CLK_OPACITY:
@@ -3982,6 +4278,7 @@ bool StepSlider(int dir) {
             double step = u.info.fps > 0 ? 1 / u.info.fps : 0.1;  // one frame
             g_settings.previewTime = std::clamp(PreviewTime() + dir * step, 0.0, std::max(0.0, u.info.duration - step));
             RequestFrame();
+            HoldWallpaper();
             Host_SeekWallpaper(PreviewTime(), true);
             break;
         }
@@ -4010,7 +4307,10 @@ void FinishStep() {
     switch (u.keySlider) {
         case ID_SPEED:
         case ID_VOLUME: Host_SettingsChanged(); break;
-        case ID_TIMELINE: Host_FrameChanged(); break;
+        case ID_TIMELINE:
+            Host_FrameChanged();
+            SetTimer(u.hwnd, TIMER_HOLD, 1000, nullptr);
+            break;
         default: ClockEdited();
     }
 }
@@ -4544,11 +4844,16 @@ void OnClick(int id) {
         case ID_PRS_CANCEL: PresetEditEnd(false); break;
         case ID_PRS_CURRENT: PresetFromCurrent(); break;
         case ID_CLK_DATE: OpenDateDialog(); break;
+        case ID_PLAYER_STYLE: OpenPlayerDialog(); break;
+        case ID_WALLS: OpenWallpapers(); break;
         case ID_FNT_DONE:
             if (fnt.langs) CloseLanguageList();
             else CloseFontDialog();
             break;
-        case ID_FNT_OWN: FontAddOwn(); break;
+        case ID_FNT_OWN:
+            if (fnt.walls) WallsAdd();
+            else FontAddOwn();
+            break;
         case ID_FNT_NO: fnt.confirm = -1; break;
         case ID_FNT_YES:
             FontRemove(fnt.confirm);
@@ -5204,6 +5509,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_TIMER:
             if (w == TIMER_STATUS) InvalidateRect(h, nullptr, FALSE);  // status, memory, the clock's minute
             if (w == TIMER_SONGS) SongTick();
+            if (w == TIMER_HOLD) ReleaseWallpaper();
             if (w == TIMER_SHARPEN) {
                 KillTimer(h, TIMER_SHARPEN);
                 InvalidateRect(h, nullptr, FALSE);
@@ -5216,6 +5522,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
                 InvalidateRect(h, nullptr, FALSE);
             }
+            return 0;
+        case WM_UI_WALL:
+            if (u.hwnd) WallInfo((WallpaperInfo*)l);
+            else delete (WallpaperInfo*)l;
             return 0;
         case WM_UI_STILL: {
             auto* sm = (StillMsg*)l;
@@ -5347,6 +5657,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_DESTROY: {
             if (u.page == 1) Host_PreviewCrop(nullptr);
+            ReleaseWallpaper();  // (closed while a frame was being picked)
+            if (fnt.players) Player_FreePreview();
+            if (fnt.walls) {  // its worker stops; what it had sent is let go
+                Library_Stop();
+                MSG msg;
+                while (PeekMessageW(&msg, h, WM_UI_WALL, WM_UI_WALL, PM_REMOVE)) delete (WallpaperInfo*)msg.lParam;
+            }
             CloseVersions();
             if (dlg.open) {  // closed with the colour dialog open: as Cancel
                 EditedLook()->color = dlg.beforeText;

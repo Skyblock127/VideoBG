@@ -1,7 +1,8 @@
 // Desktop clock: day name, date and time in the design of the "Mond" Rainmeter clock (its sizes and
-// spacing; see Credits in README.md), drawn by VideoBG itself: one small see-through, click-through
-// window on the desktop that redraws once a minute. Each look picks the clock's font. DirectWrite and
-// Direct2D, and only the font being drawn, are loaded only while drawing.
+// spacing; see Credits in README.md), or in a design of VideoBG's own (a dial, a ring, flip tiles...),
+// drawn by VideoBG itself: one small see-through, click-through window on the desktop that redraws
+// once a minute. Each look picks the clock's style (and Mond's font). DirectWrite and Direct2D, and
+// only the fonts being drawn, are loaded only while drawing.
 #include "common.h"
 #include "resource.h"
 #include <d2d1.h>
@@ -207,6 +208,10 @@ struct Painter {
     std::wstring family, smallFamily;         // its family, and the one for the date and time
     float dayCap = 0.7f, smallCap = 0.7f;     // their capital letters' height, per em
     float dayScale = 1, smallScale = 1;
+    struct Face {
+        std::wstring family;
+        float cap = 0.7f;  // capitals' height per em
+    } faces[5];            // the designs' fonts (UseDesignFonts)
     bool failed = false;
 } P;
 
@@ -515,15 +520,527 @@ void AddGlow(uint32_t* px, int w, int h, float radius, float strength, D2D1_COLO
     }
 }
 
+// ---- Designs ----------------------------------------------------------------------------------
+// Clocks of their own shape, beside the Mond clock (the text one, in any font). Each lays its parts
+// out in pixels around 0,0 on a canvas, in the clock's colour at some strength; the canvas is then
+// drawn once into a picture just big enough (and gets the look's glow and opacity like Mond).
+
+enum DesignFace { F_MICHROMA, F_SYNCOPATE, F_QUICKSAND, F_ORBITRON, F_AUDIOWIDE };
+
+// The designs' fonts (all in the exe, read where they are), loaded together.
+bool UseDesignFonts() {
+    if (P.fonts && P.fontKey == L"|designs") return true;
+    Rel(P.fonts);
+    P.fontKey.clear();
+    IDWriteFontSetBuilder1* b = nullptr;
+    IDWriteFontSet* set = nullptr;
+    HRESULT hr = P.f->CreateFontSetBuilder(&b);
+    for (int id : {IDR_FONT_MICHROMA, IDR_FONT_SYNCOPATE, IDR_FONT_QUICKSAND, IDR_FONT_ORBITRON, IDR_FONT_AUDIOWIDE})
+        if (SUCCEEDED(hr) && !AddResFont(b, id)) hr = E_FAIL;
+    if (SUCCEEDED(hr)) hr = b->CreateFontSet(&set);
+    if (SUCCEEDED(hr)) hr = P.f->CreateFontCollectionFromFontSet(set, &P.fonts);
+    Rel(set);
+    Rel(b);
+    if (FAILED(hr)) return false;
+    const wchar_t* names[] = {L"Michroma", L"Syncopate", L"Quicksand", L"Orbitron", L"Audiowide"};
+    for (UINT32 i = 0; i < 5; i++) {
+        UINT32 at = i;
+        BOOL found = FALSE;
+        bool digits = false;
+        if (FAILED(P.fonts->FindFamilyName(names[i], &at, &found)) || !found) at = i;
+        if (!FamilyInfo(P.fonts, at, &P.faces[i].family, &P.faces[i].cap, &digits)) {
+            Rel(P.fonts);
+            return false;
+        }
+    }
+    P.fontKey = L"|designs";
+    return true;
+}
+
+struct Item {
+    enum Kind { TEXT, LINE, CIRCLE, RECT, ARC, TILE } kind = TEXT;
+    D2D1_POINT_2F p{}, q{};       // line: its ends; circle, arc: the centre (q.x: the radius); rect, tile: corners; text: top left
+    float width = 0;              // a stroke's width (0: filled)
+    float radius = 0;             // rect, tile: corners; arc: where it starts (degrees clockwise from 12 o'clock)
+    float sweep = 0;              // arc: degrees clockwise; tile: the split across its middle
+    float a = 1;                  // how strong the clock's colour is
+    IDWriteTextLayout* text = nullptr;
+};
+
+struct Canvas {
+    std::vector<Item> items;
+    float l = 1e9f, t = 1e9f, r = -1e9f, b = -1e9f;  // what's drawn, all of it
+    ~Canvas() {
+        for (Item& i : items) Rel(i.text);
+    }
+    void Grow(float x0, float y0, float x1, float y1) {
+        l = std::min(l, x0);
+        t = std::min(t, y0);
+        r = std::max(r, x1);
+        b = std::max(b, y1);
+    }
+    void Line(D2D1_POINT_2F p, D2D1_POINT_2F q, float w, float a) {
+        Item i;
+        i.kind = Item::LINE;
+        i.p = p;
+        i.q = q;
+        i.width = w;
+        i.a = a;
+        items.push_back(i);
+        Grow(std::min(p.x, q.x) - w, std::min(p.y, q.y) - w, std::max(p.x, q.x) + w, std::max(p.y, q.y) + w);
+    }
+    void Circle(float cx, float cy, float rad, float w, float a) {  // w 0: filled
+        Item i;
+        i.kind = Item::CIRCLE;
+        i.p = D2D1::Point2F(cx, cy);
+        i.q.x = rad;
+        i.width = w;
+        i.a = a;
+        items.push_back(i);
+        Grow(cx - rad - w, cy - rad - w, cx + rad + w, cy + rad + w);
+    }
+    void Rect(const D2D1_RECT_F& rc, float radius, float a) {
+        Item i;
+        i.kind = Item::RECT;
+        i.p = D2D1::Point2F(rc.left, rc.top);
+        i.q = D2D1::Point2F(rc.right, rc.bottom);
+        i.radius = radius;
+        i.a = a;
+        items.push_back(i);
+        Grow(rc.left, rc.top, rc.right, rc.bottom);
+    }
+    void Tile(const D2D1_RECT_F& rc, float radius, float split, float a) {  // a flip tile: two halves
+        Rect(rc, radius, a);
+        items.back().kind = Item::TILE;
+        items.back().sweep = split;
+    }
+    void Arc(float cx, float cy, float rad, float from, float sweep, float w, float a) {
+        Item i;
+        i.kind = Item::ARC;
+        i.p = D2D1::Point2F(cx, cy);
+        i.q.x = rad;
+        i.radius = from;
+        i.sweep = sweep;
+        i.width = w;
+        i.a = a;
+        items.push_back(i);
+        Grow(cx - rad - w, cy - rad - w, cx + rad + w, cy + rad + w);
+    }
+};
+
+// A line of text in one of the designs' fonts, px pixels high, its letters `gap` pixels apart.
+struct Run {
+    IDWriteTextLayout* layout = nullptr;
+    float w = 0, h = 0, base = 0, cap = 0;  // its width and height, its baseline (from its top), its capitals' height
+};
+
+bool Lay(const std::wstring& s, int face, float px, float gap, bool rtl, Run* r) {
+    if (s.empty() || px <= 0) return false;
+    IDWriteTextFormat* fmt = nullptr;
+    if (FAILED(P.f->CreateTextFormat(P.faces[face].family.c_str(), P.fonts, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                     DWRITE_FONT_STRETCH_NORMAL, px, L"en-us", &fmt)))
+        return false;
+    fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    if (rtl) fmt->SetReadingDirection(DWRITE_READING_DIRECTION_RIGHT_TO_LEFT);
+    HRESULT hr = P.f->CreateTextLayout(s.c_str(), (UINT32)s.size(), fmt, 8192, 8192, &r->layout);
+    Rel(fmt);
+    if (FAILED(hr)) return false;
+    if (gap > 0) {  // half before each letter, half after: the line stays centred
+        IDWriteTextLayout1* l1 = nullptr;
+        if (SUCCEEDED(r->layout->QueryInterface(__uuidof(IDWriteTextLayout1), (void**)&l1))) {
+            l1->SetCharacterSpacing(gap / 2, gap / 2, 0, DWRITE_TEXT_RANGE{0, (UINT32)s.size()});
+            l1->Release();
+        }
+    }
+    DWRITE_TEXT_METRICS m{};
+    DWRITE_LINE_METRICS lm{};
+    UINT32 n = 0;
+    if (FAILED(r->layout->GetMetrics(&m)) || FAILED(r->layout->SetMaxWidth(m.widthIncludingTrailingWhitespace)) ||
+        FAILED(r->layout->GetMetrics(&m)) || FAILED(r->layout->GetLineMetrics(&lm, 1, &n))) {
+        Rel(r->layout);
+        return false;
+    }
+    r->w = m.widthIncludingTrailingWhitespace;
+    r->h = m.height;
+    r->base = lm.baseline;
+    r->cap = P.faces[face].cap * px;
+    return true;
+}
+
+float Width(const std::wstring& s, int face, float px, float gap) {
+    Run r;
+    if (!Lay(s, face, px, gap, false, &r)) return 0;
+    Rel(r.layout);
+    return r.w;
+}
+
+// Where a text's ink starts and ends, from its layout's left (fonts leave room either side).
+bool Ink(const std::wstring& s, int face, float px, float* left, float* right) {
+    Run r;
+    DWRITE_OVERHANG_METRICS o{};
+    if (!Lay(s, face, px, 0, false, &r)) return false;
+    const bool ok = SUCCEEDED(r.layout->GetOverhangMetrics(&o));
+    *left = -o.left;
+    *right = r.w + o.right;
+    Rel(r.layout);
+    return ok;
+}
+
+// Puts a line of text with its capitals' top at capTop: centred on x (align 0), starting at x (1) or
+// ending at x (-1). Returns its width.
+float Put(Canvas& cv, const std::wstring& s, int face, float px, float gap, float x, float capTop, int align, float a,
+          bool rtl = false) {
+    Run r;
+    if (!Lay(s, face, px, gap, rtl, &r)) return 0;
+    Item i;
+    i.p = D2D1::Point2F(align == 0 ? x - r.w / 2 : align > 0 ? x : x - r.w, capTop - (r.base - r.cap));
+    i.a = a;
+    i.text = r.layout;
+    cv.items.push_back(i);
+    cv.Grow(i.p.x, i.p.y, i.p.x + r.w, i.p.y + r.h);
+    return r.w;
+}
+
+// What a design writes: the day, the date (in the look's date style; "" for none), the time's parts.
+struct Says {
+    std::wstring day, date, hh, mm, mark;  // mark: AM / PM (12-hour)
+    bool rtl = false, joined = false;      // its script reads right to left; its letters join (no spacing)
+};
+
+Says SaysFor(const ClockLook& l, const SYSTEMTIME& t) {
+    const Words& w = WordsFor(l.lang, l.nativeDigits);
+    Says s;
+    s.day = w.days[t.wDayOfWeek % 7];
+    s.date = Clock_DateText(l, l.date, t);
+    wchar_t b[16];
+    swprintf(b, 16, l.h24 ? L"%02d" : L"%d", l.h24 ? t.wHour : (t.wHour + 11) % 12 + 1);
+    s.hh = WithDigits(w, b);
+    swprintf(b, 16, L"%02d", t.wMinute);
+    s.mm = WithDigits(w, b);
+    if (!l.h24) s.mark = t.wHour < 12 ? w.am : w.pm;
+    s.rtl = w.rtl;
+    s.joined = w.joined;
+    return s;
+}
+
+constexpr float kPi = 3.14159265f;
+
+D2D1_POINT_2F Polar(float rad, float deg) {  // from 0,0: degrees clockwise from 12 o'clock
+    return D2D1::Point2F(rad * sinf(deg * kPi / 180), -rad * cosf(deg * kPi / 180));
+}
+
+// The day's name, then the date (if any), centred under y.
+float DayAndDate(Canvas& cv, const Says& s, float u, float y, bool day = true) {
+    if (day) {
+        Put(cv, s.day, F_SYNCOPATE, 16 * u, s.joined ? 0 : 5 * u, 0, y, 0, 0.9f, s.rtl);
+        y += 16 * u * 0.72f + 14 * u;
+    }
+    if (!s.date.empty()) {
+        Put(cv, s.date, F_QUICKSAND, 20 * u, 1.5f * u, 0, y, 0, 0.95f, s.rtl);
+        y += 20 * u * 0.72f + 14 * u;
+    }
+    return y;
+}
+
+// Dial: hands on a round face with its minutes marked; the date under it, if one is chosen.
+void Dial(Canvas& cv, const ClockLook&, const SYSTEMTIME& t, const Says& s, float u) {
+    const float R = 120 * u;
+    cv.Circle(0, 0, R, 3.2f * u, 0.95f);
+    for (int i = 0; i < 60; i++) {
+        const bool hour = i % 5 == 0, quarter = i % 15 == 0;
+        const float len = (quarter ? 22 : hour ? 15 : 6) * u, w = (quarter ? 5.5f : hour ? 3.6f : 1.6f) * u;
+        cv.Line(Polar(R - 11 * u, i * 6.f), Polar(R - 11 * u - len, i * 6.f), w, hour ? 1 : 0.45f);
+    }
+    const float hourDeg = ((t.wHour % 12) + t.wMinute / 60.f) * 30, minDeg = t.wMinute * 6.f;
+    cv.Line(Polar(-14 * u, hourDeg), Polar(R * 0.5f, hourDeg), 9 * u, 1);
+    cv.Line(Polar(-18 * u, minDeg), Polar(R * 0.8f, minDeg), 5.5f * u, 1);
+    cv.Circle(0, 0, 9 * u, 0, 1);
+    DayAndDate(cv, s, u, R + 30 * u, false);
+}
+
+// Ring: the hour fills a ring around the time; the day above the time, the date under the ring.
+void RingDesign(Canvas& cv, const ClockLook&, const SYSTEMTIME& t, const Says& s, float u) {
+    const float R = 118 * u, w = 7 * u;
+    cv.Circle(0, 0, R, w, 0.2f);
+    const float sweep = t.wMinute * 6.f;
+    if (sweep > 0) cv.Arc(0, 0, R, 0, sweep, w, 1);
+    const D2D1_POINT_2F end = Polar(R, sweep);
+    cv.Circle(end.x, end.y, 6.5f * u, 0, 1);
+    const float px = 46 * u, cap = P.faces[F_MICHROMA].cap * px;
+    Put(cv, s.hh + L":" + s.mm, F_MICHROMA, px, 0, 0, -cap / 2, 0, 1);
+    Put(cv, s.day, F_SYNCOPATE, 12 * u, s.joined ? 0 : 4 * u, 0, -cap / 2 - 30 * u, 0, 0.85f, s.rtl);
+    if (!s.mark.empty()) Put(cv, s.mark, F_SYNCOPATE, 12 * u, s.joined ? 0 : 3 * u, 0, cap / 2 + 20 * u, 0, 0.85f, s.rtl);
+    DayAndDate(cv, s, u, R + 34 * u, false);
+}
+
+// Flip: the hours and minutes on two split tiles; AM/PM in the corner; the day and date under them.
+void Flip(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
+    const float W = 148 * u, H = 168 * u, gap = 14 * u, px = 84 * u, cap = P.faces[F_ORBITRON].cap * px;
+    for (int i = 0; i < 2; i++) {
+        const float x0 = i ? gap / 2 : -gap / 2 - W;
+        cv.Tile(D2D1::RectF(x0, -H / 2, x0 + W, H / 2), 20 * u, 3 * u, 0.18f);
+        Put(cv, i ? s.mm : s.hh, F_ORBITRON, px, 0, x0 + W / 2, -cap / 2, 0, 1);
+    }
+    if (!s.mark.empty()) Put(cv, s.mark, F_SYNCOPATE, 11 * u, s.joined ? 0 : 3 * u, -gap / 2 - W + 16 * u, -H / 2 + 16 * u, 1, 0.85f, s.rtl);
+    DayAndDate(cv, s, u, H / 2 + 36 * u);
+}
+
+// Stack: big hours over fainter minutes; AM/PM beside the hours; the date under them.
+void Stack(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
+    const float px = 118 * u, cap = P.faces[F_MICHROMA].cap * px, gap = 24 * u;
+    const float hw = Put(cv, s.hh, F_MICHROMA, px, 0, 0, -cap - gap / 2, 0, 1);
+    Put(cv, s.mm, F_MICHROMA, px, 0, 0, gap / 2, 0, 0.55f);
+    if (!s.mark.empty()) Put(cv, s.mark, F_SYNCOPATE, 14 * u, s.joined ? 0 : 3 * u, hw / 2 + 14 * u, -cap - gap / 2, 1, 0.85f, s.rtl);
+    DayAndDate(cv, s, u, cap + gap / 2 + 36 * u, false);
+}
+
+// Line: the time, a bar, then the day over the date, all on one line.
+void LineDesign(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
+    const float px = 64 * u, cap = P.faces[F_MICHROMA].cap * px;
+    const std::wstring time = s.hh + L":" + s.mm;
+    const float tw = Width(time, F_MICHROMA, px, 0);
+    const float mw = s.mark.empty() ? 0 : Width(s.mark, F_SYNCOPATE, 14 * u, 3 * u) + 10 * u;
+    const float dayPx = 17 * u, datePx = 19 * u;
+    const float rw = std::max(Width(s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u), s.date.empty() ? 0 : Width(s.date, F_QUICKSAND, datePx, 1.5f * u));
+    const float x0 = -(tw + mw + 52 * u + rw) / 2, top = -cap / 2;
+    Put(cv, time, F_MICHROMA, px, 0, x0, top, 1, 1);
+    if (mw > 0) Put(cv, s.mark, F_SYNCOPATE, 14 * u, s.joined ? 0 : 3 * u, x0 + tw + 10 * u, top, 1, 0.85f, s.rtl);
+    const float bar = x0 + tw + mw + 26 * u;
+    cv.Line(D2D1::Point2F(bar, top - 8 * u), D2D1::Point2F(bar, top + cap + 8 * u), 3 * u, 0.8f);
+    const float rx = bar + 26 * u;
+    if (s.date.empty()) {
+        Put(cv, s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u, rx, -dayPx * 0.36f, 1, 0.9f, s.rtl);
+    } else {
+        Put(cv, s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u, rx, top, 1, 0.9f, s.rtl);
+        Put(cv, s.date, F_QUICKSAND, datePx, 1.5f * u, rx, top + cap - datePx * 0.72f, 1, 0.95f, s.rtl);
+    }
+}
+
+// Big: the day and the date over a big, round time (its colon set by its ink, evenly between the
+// hours and minutes: the font gives it room on one side only).
+void Big(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float u) {
+    const float y = DayAndDate(cv, s, u, 0) + 6 * u;
+    const float px = 150 * u, gap = 0.1f * px;
+    const std::wstring part[3] = {s.hh, L":", s.mm};
+    float l[3], r[3], tw = 2 * gap;
+    for (int i = 0; i < 3; i++) {
+        if (!Ink(part[i], F_QUICKSAND, px, &l[i], &r[i])) return;
+        tw += r[i] - l[i];
+    }
+    float x = -tw / 2;
+    for (int i = 0; i < 3; i++) {
+        Put(cv, part[i], F_QUICKSAND, px, 0, x - l[i], y, 1, 1);
+        x += r[i] - l[i] + gap;
+    }
+    if (!s.mark.empty()) Put(cv, s.mark, F_SYNCOPATE, 16 * u, s.joined ? 0 : 3 * u, tw / 2 + 12 * u, y, 1, 0.85f, s.rtl);
+}
+
+struct Design {
+    const wchar_t* key;
+    const wchar_t* name;
+    const wchar_t* about;
+    bool day, digital, date;
+    void (*lay)(Canvas&, const ClockLook&, const SYSTEMTIME&, const Says&, float u);
+};
+
+const Design kDesigns[] = {
+    {L"dial", L"Dial", L"Hands on a dial", false, false, true, Dial},
+    {L"ring", L"Ring", L"The hour fills a ring", true, true, true, RingDesign},
+    {L"flip", L"Flip", L"Flip-clock tiles", true, true, true, Flip},
+    {L"stack", L"Stack", L"Hours over minutes", false, true, true, Stack},
+    {L"line", L"Line", L"Time, then day and date", true, true, true, LineDesign},
+    {L"big", L"Big", L"The date over a big time", true, true, true, Big},
+};
+
+const Design* FindDesign(const std::wstring& key) {
+    for (const Design& d : kDesigns)
+        if (!key.empty() && !_wcsicmp(d.key, key.c_str())) return &d;
+    return nullptr;
+}
+
+ID2D1PathGeometry* ArcGeometry(const Item& i) {
+    ID2D1PathGeometry* g = nullptr;
+    ID2D1GeometrySink* sink = nullptr;
+    if (FAILED(P.d2f->CreatePathGeometry(&g)) || FAILED(g->Open(&sink))) {
+        Rel(g);
+        return nullptr;
+    }
+    const float rad = i.q.x, sweep = std::min(i.sweep, 359.9f);
+    const D2D1_POINT_2F a = Polar(rad, i.radius), b = Polar(rad, i.radius + sweep);
+    sink->BeginFigure(D2D1::Point2F(i.p.x + a.x, i.p.y + a.y), D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(i.p.x + b.x, i.p.y + b.y), D2D1::SizeF(rad, rad), 0, D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                                  sweep > 180 ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL));
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    sink->Close();
+    sink->Release();
+    return g;
+}
+
+// A design's canvas, drawn into the picture (with the look's glow and opacity, as Mond).
+bool PaintDesign(const Design& d, const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out) {
+    if (!UseDesignFonts()) return false;
+    Canvas cv;
+    const float u = k * look.size;
+    d.lay(cv, look, t, SaysFor(look, t), u);
+    if (cv.items.empty()) return false;
+    const float glowR = look.glow > 0 ? look.glowSize * look.size * k : 0;
+    const int pad = (int)ceilf(glowR);
+    const float margin = ceilf(4 * k) + pad;
+    const int w = (int)ceilf(cv.r - cv.l + 2 * margin), h = (int)ceilf(cv.b - cv.t + 2 * margin);
+    if (w <= 0 || h <= 0 || w >= 16384 || h >= 16384) return false;
+    const float ox = margin - cv.l, oy = margin - cv.t;
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void* bits = nullptr;
+    HDC dc = CreateCompatibleDC(nullptr);
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ID2D1DCRenderTarget* rt = nullptr;
+    ID2D1SolidColorBrush* brush = nullptr;
+    ID2D1StrokeStyle* round = nullptr;
+    bool ok = false;
+    BYTE r = 255, g = 255, b = 255;
+    ParseColor(look.color, &r, &g, &b);
+    if (bmp) {
+        HGDIOBJ old = SelectObject(dc, bmp);
+        D2D1_RENDER_TARGET_PROPERTIES rp = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
+        RECT rc{0, 0, w, h};
+        D2D1_COLOR_F c = D2D1::ColorF(r / 255.f, g / 255.f, b / 255.f);
+        P.d2f->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0,
+                                 &round);
+        if (SUCCEEDED(P.d2f->CreateDCRenderTarget(&rp, &rt)) && SUCCEEDED(rt->BindDC(dc, &rc)) &&
+            SUCCEEDED(rt->CreateSolidColorBrush(&c, nullptr, &brush))) {
+            rt->BeginDraw();
+            rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+            rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            rt->SetTransform(D2D1::Matrix3x2F::Translation(ox, oy));
+            for (const Item& i : cv.items) {
+                brush->SetOpacity(i.a);
+                switch (i.kind) {
+                    case Item::TEXT: rt->DrawTextLayout(i.p, i.text, brush, D2D1_DRAW_TEXT_OPTIONS_NONE); break;
+                    case Item::LINE: rt->DrawLine(i.p, i.q, brush, i.width, round); break;
+                    case Item::CIRCLE:
+                        if (i.width > 0) rt->DrawEllipse(D2D1::Ellipse(i.p, i.q.x, i.q.x), brush, i.width);
+                        else rt->FillEllipse(D2D1::Ellipse(i.p, i.q.x, i.q.x), brush);
+                        break;
+                    case Item::RECT: rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(i.p.x, i.p.y, i.q.x, i.q.y), i.radius, i.radius), brush); break;
+                    case Item::TILE: {  // two halves: the tile without a thin band across its middle
+                        ID2D1RoundedRectangleGeometry* tile = nullptr;
+                        ID2D1RectangleGeometry* band = nullptr;
+                        ID2D1GeometryGroup* both = nullptr;
+                        const float mid = (i.p.y + i.q.y) / 2;
+                        P.d2f->CreateRoundedRectangleGeometry(D2D1::RoundedRect(D2D1::RectF(i.p.x, i.p.y, i.q.x, i.q.y), i.radius, i.radius), &tile);
+                        P.d2f->CreateRectangleGeometry(D2D1::RectF(i.p.x, mid - i.sweep / 2, i.q.x, mid + i.sweep / 2), &band);
+                        if (tile && band) {
+                            ID2D1Geometry* parts[2] = {tile, band};
+                            if (SUCCEEDED(P.d2f->CreateGeometryGroup(D2D1_FILL_MODE_ALTERNATE, parts, 2, &both))) rt->FillGeometry(both, brush);
+                        }
+                        Rel(both);
+                        Rel(band);
+                        Rel(tile);
+                        break;
+                    }
+                    case Item::ARC:
+                        if (ID2D1PathGeometry* arc = ArcGeometry(i)) {
+                            rt->DrawGeometry(arc, brush, i.width, round);
+                            arc->Release();
+                        }
+                        break;
+                }
+            }
+            ok = SUCCEEDED(rt->EndDraw());
+        }
+        if (ok) {
+            GdiFlush();
+            out->px.assign((uint32_t*)bits, (uint32_t*)bits + (size_t)w * h);
+            out->w = w;
+            out->h = h;
+            out->pad = pad;
+            BYTE gr = r, gg = g, gb = b;
+            if (!look.glowColor.empty()) ParseColor(look.glowColor, &gr, &gg, &gb);
+            if (look.glow > 0 || look.opacity < 1)
+                AddGlow(out->px.data(), w, h, glowR, look.glow, D2D1::ColorF(gr / 255.f, gg / 255.f, gb / 255.f), std::clamp(look.opacity, 0.f, 1.f));
+        }
+        SelectObject(dc, old);
+        DeleteObject(bmp);
+    }
+    Rel(round);
+    Rel(brush);
+    Rel(rt);
+    DeleteDC(dc);
+    return ok;
+}
+
+bool DateHasWords(int date) { return date <= 4 || (date >= 10 && date <= 12); }  // the month's name
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------
 
 std::wstring Clock_StyleKey(const ClockLook& l) {
-    wchar_t b[160];
-    swprintf(b, 160, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls|%d|%ls|%d", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
-             l.glowColor.c_str(), l.h24, l.font.c_str(), l.date, l.lang.c_str(), l.nativeDigits);
+    wchar_t b[200];
+    swprintf(b, 200, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls|%ls|%d|%ls|%d", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
+             l.glowColor.c_str(), l.h24, l.style.c_str(), l.font.c_str(), l.date, l.lang.c_str(), l.nativeDigits);
     return b;
+}
+
+std::vector<ClockStyleInfo> Clock_Styles() {
+    std::vector<ClockStyleInfo> list;
+    const std::vector<ClockFontInfo> fonts = Clock_Fonts();
+    auto mond = [&](const ClockFontInfo& f) {
+        const bool first = !_wcsicmp(f.key.c_str(), kFonts[0].key);
+        const wchar_t* about = first ? L"The Mond clock" : !f.getUrl && !f.removable ? L"Included" : !f.getUrl ? L"Added by you"
+                             : f.ready ? L"Your copy" : L"Free for personal use only, so not included";
+        list.push_back({L"", first ? std::wstring(L"Mond") : L"Mond \u00B7 " + f.key, about, f, true, true, true});
+    };
+    mond(fonts[0]);
+    for (const Design& d : kDesigns) list.push_back({d.key, d.name, d.about, ClockFontInfo{L"", nullptr, false, true}, d.day, d.digital, d.date});
+    for (size_t i = 1; i < fonts.size(); i++) mond(fonts[i]);
+    return list;
+}
+
+bool Clock_IsStyle(const ClockLook& l, const ClockStyleInfo& s) {
+    const Design* d = FindDesign(l.style);
+    if (!s.style.empty()) return d && !_wcsicmp(d->key, s.style.c_str());
+    if (d) return false;
+    const std::wstring shown = Clock_FontReady(l.font) ? l.font : std::wstring(kFonts[0].key);
+    return !_wcsicmp(shown.c_str(), s.font.key.c_str());
+}
+
+void Clock_UseStyle(ClockLook& l, const ClockStyleInfo& s) {
+    l.style = s.style;
+    if (s.style.empty()) l.font = s.font.key;
+}
+
+std::wstring Clock_StyleName(const ClockLook& l) {
+    if (const Design* d = FindDesign(l.style)) return d->name;
+    const std::wstring shown = Clock_FontReady(l.font) ? l.font : std::wstring(kFonts[0].key);
+    return !_wcsicmp(shown.c_str(), kFonts[0].key) ? std::wstring(L"Mond") : L"Mond \u00B7 " + shown;
+}
+
+bool Clock_UsesWords(const ClockLook& l) {
+    const Design* d = FindDesign(l.style);
+    if (!d) return true;
+    return d->day || (d->digital && !l.h24) || (d->date && DateHasWords(l.date));
+}
+
+bool Clock_UsesDigits(const ClockLook& l) {
+    const Design* d = FindDesign(l.style);
+    return !d || d->digital || (d->date && l.date != 14);
+}
+
+bool Clock_UsesHours(const ClockLook& l) {
+    const Design* d = FindDesign(l.style);
+    return !d || d->digital;
+}
+
+bool Clock_UsesDate(const ClockLook& l) {
+    const Design* d = FindDesign(l.style);
+    return !d || d->date;
 }
 
 bool ParseColor(const std::wstring& s, BYTE* r, BYTE* g, BYTE* b) {
@@ -585,6 +1102,7 @@ void Clock_ReleasePainter() {
 bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out) {
     const float size = look.size;
     if (!OpenPainter()) return false;
+    if (const Design* d = FindDesign(look.style)) return PaintDesign(*d, look, k, t, out);
     if (!UseFont(look.font) && !UseFont(kFonts[0].key)) return false;  // a font that's gone: the default
     const Words& words = WordsFor(look.lang, look.nativeDigits);
     const std::wstring day = words.days[t.wDayOfWeek % 7], date = Clock_DateText(look, look.date, t);

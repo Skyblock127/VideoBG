@@ -88,10 +88,19 @@ struct State {
     HWND showcaseUnder = nullptr;        // the picker window; nullptr = no showcase
     std::atomic<bool> showcaseUp{false}; // the showcase has had its first frame (told the host)
     // A wallpaper being chosen: the showcase dims (the video blended over black) and plays the video
-    // again in a box that grows to fill it. Written under the lock.
+    // again in a box that grows to fill it. The plan comes from the picker; the render thread works
+    // out where it is at each refresh (scLook, scBright, scBox). Written under the lock.
+    struct {
+        bool on = false;
+        float bright = 1;
+        double dimAt = 0, dimFor = 0.5;
+        RECT box{};
+        double growAt = 0, growFor = 0.6;
+    } plan;
     bool scLook = false;
     float scBright = 1;
     RECT scBox{};
+    Crop fitCrop;                        // the crop the video is shown with now (UpdateRects)
     std::wstring preview;                // the video being previewed, "" = the wallpaper's own
     Crop previewVideoCrop;               // its crop
     double returnPos = 0;                // where the wallpaper's own video was when previewing began
@@ -200,21 +209,27 @@ void RequestRedraw() {
     if (g.wake) SetEvent(g.wake);
 }
 
+// The chosen video's box on the showcase (under the lock): it fills the box as it would the screen.
+void FitBox(Target& t) {
+    t.boxDst = {};
+    const RECT& b = g.scBox;
+    if (!t.showcase || !g.scLook || b.right <= b.left || b.bottom <= b.top) return;
+    const Crop& c = g.fitCrop;
+    FitRect bf = ComputeFit(g.aspect, c, CropMode(c), b.right - b.left, b.bottom - b.top);
+    t.boxSrc = {bf.sl, bf.st, bf.sr, bf.sb};
+    t.boxDst = {b.left + lroundf(bf.dl), b.top + lroundf(bf.dt), b.left + lroundf(bf.dr), b.top + lroundf(bf.db)};
+}
+
 void UpdateRects() {
     const Crop& c = !g.preview.empty() ? g.previewVideoCrop : g.previewing ? g.previewCrop : g.s.crop;
     AcquireSRWLockExclusive(&g.lock);
+    g.fitCrop = c;
     for (auto& t : g.targets) {
         FitRect f = ComputeFit(g.aspect, c, CropMode(c), t.w, t.h);
         t.src = {f.sl, f.st, f.sr, f.sb};
         t.dst = {lroundf(f.dl), lroundf(f.dt), lroundf(f.dr), lroundf(f.db)};
         t.letterbox = t.dst.left > 0 || t.dst.top > 0 || t.dst.right < t.w || t.dst.bottom < t.h;
-        t.boxDst = {};
-        const RECT& b = g.scBox;
-        if (t.showcase && g.scLook && b.right > b.left && b.bottom > b.top) {  // fills the box as it would the screen
-            FitRect bf = ComputeFit(g.aspect, c, CropMode(c), b.right - b.left, b.bottom - b.top);
-            t.boxSrc = {bf.sl, bf.st, bf.sr, bf.sb};
-            t.boxDst = {b.left + lroundf(bf.dl), b.top + lroundf(bf.dt), b.left + lroundf(bf.dr), b.top + lroundf(bf.db)};
-        }
+        FitBox(t);
     }
     ReleaseSRWLockExclusive(&g.lock);
 }
@@ -235,6 +250,59 @@ double Now() {
     LARGE_INTEGER c;
     QueryPerformanceCounter(&c);
     return c.QuadPart / freq;
+}
+
+float EaseInOut(float t) {  // the picker's
+    t = std::clamp(t, 0.f, 1.f);
+    return t < 0.5f ? 4 * t * t * t : 1 - powf(-2 * t + 2, 3) / 2;
+}
+
+// Where the chosen wallpaper's look is now (render thread): the dimming and the box, from the plan.
+// True while it's still changing (then a picture is drawn at every refresh).
+bool StepLook() {
+    AcquireSRWLockShared(&g.lock);
+    const auto p = g.plan;
+    ReleaseSRWLockShared(&g.lock);
+    if (!p.on) return false;
+    const double now = Now();
+    const float bright = 1 - (1 - p.bright) * EaseInOut((float)((now - p.dimAt) / std::max(0.01, p.dimFor)));
+    RECT box = p.box;
+    const float grow = p.growAt > 0 ? EaseInOut((float)((now - p.growAt) / std::max(0.01, p.growFor))) : 0;
+    AcquireSRWLockExclusive(&g.lock);
+    for (auto& t : g.targets) {
+        if (!t.showcase) continue;
+        if (box.right > box.left && grow > 0) {  // towards the whole screen
+            box.left = lroundf(box.left * (1 - grow));
+            box.top = lroundf(box.top * (1 - grow));
+            box.right = lroundf(box.right + (t.w - box.right) * grow);
+            box.bottom = lroundf(box.bottom + (t.h - box.bottom) * grow);
+        }
+        g.scLook = true;
+        g.scBright = bright;
+        g.scBox = box;
+        FitBox(t);
+    }
+    ReleaseSRWLockExclusive(&g.lock);
+    return now < p.dimAt + p.dimFor || (p.growAt > 0 && now < p.growAt + p.growFor);
+}
+
+// Until the next refresh, while the look moves.
+void WaitRefresh() {
+    if (FAILED(DwmFlush())) Nap(1 / 60.0);
+}
+
+// The first frame of a new video: once it's really on the screen (the GPU has drawn it and the
+// desktop has shown it), so the picker doesn't fade its picture into the frame before.
+void WaitShown() {
+    ID3D11Query* q = nullptr;
+    D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT, 0};
+    if (SUCCEEDED(g.dev->CreateQuery(&qd, &q))) {
+        g.ctx->End(q);
+        BOOL done = FALSE;
+        for (int i = 0; i < 200 && g.ctx->GetData(q, &done, sizeof done, 0) != S_OK; i++) Sleep(1);
+        q->Release();
+    }
+    for (int i = 0; i < 2; i++) WaitRefresh();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -435,8 +503,8 @@ ID3D11VideoProcessorInputView* ViewFor(IMFSample* s) {
     return view;
 }
 
-// Returns false on device loss.
-bool BlitAll(ID3D11VideoProcessorInputView* view) {
+// Returns false on device loss. showcaseOnly: the same frame again, for the chosen wallpaper's look.
+bool BlitAll(ID3D11VideoProcessorInputView* view, bool showcaseOnly = false) {
     bool ok = true;
     const float aw = (float)(g.ap.right - g.ap.left), ah = (float)(g.ap.bottom - g.ap.top);
     D3D11_VIDEO_PROCESSOR_STREAM st{};
@@ -483,6 +551,7 @@ bool BlitAll(ID3D11VideoProcessorInputView* view) {
         return ok;
     }
     for (auto& t : g.targets) {
+        if (showcaseOnly && !t.showcase) continue;
         RECT src{g.ap.left + lroundf(t.src.left * aw), g.ap.top + lroundf(t.src.top * ah), g.ap.left + lroundf(t.src.right * aw),
                  g.ap.top + lroundf(t.src.bottom * ah)};
         RECT full{0, 0, t.w, t.h};
@@ -540,14 +609,23 @@ DWORD WINAPI SilentThread(void*) {
         }
         if (g.paused && !first && !jumped) {
             if (!wasPaused) { wasPaused = true; pausedVt = clock ? videoTime(Now()) : 0; }
-            if (redraw && curView) { if (!BlitAll(curView)) { result = 1; break; } }
-            else WaitForSingleObject(g.wake, INFINITE);
+            if (curView && StepLook()) {  // the chosen wallpaper's look moving: a picture each refresh
+                if (!BlitAll(curView, true)) { result = 1; break; }
+                WaitRefresh();
+            } else if (redraw && curView) {
+                if (!BlitAll(curView)) { result = 1; break; }
+            } else {
+                WaitForSingleObject(g.wake, INFINITE);
+            }
             continue;
         }
         if (wasPaused) { wasPaused = false; baseVt = pausedVt; baseClock = Now(); }
         double r = g.rate;
         if (r != lastRate) { double n = Now(); baseVt = videoTime(n); baseClock = n; lastRate = r; }
-        if (redraw && curView && !BlitAll(curView)) { result = 1; break; }
+        if (redraw && curView) {
+            StepLook();
+            if (!BlitAll(curView)) { result = 1; break; }
+        }
 
         if (!next) {
             DWORD flags = 0, idx = 0;
@@ -590,6 +668,11 @@ DWORD WINAPI SilentThread(void*) {
         double vt = videoTime(now), due = nextTs / 1e7;
         if (due > vt + 0.0005 && !first) {
             if (g.seekTo >= 0) continue;  // a jump asked for meanwhile: don't wait for this frame
+            if (curView && StepLook()) {  // the chosen wallpaper's look moving: the frame again, each refresh
+                if (!BlitAll(curView, true)) { result = 1; break; }
+                WaitRefresh();
+                continue;
+            }
             Nap((due - vt) / lastRate);
             continue;
         }
@@ -599,7 +682,9 @@ DWORD WINAPI SilentThread(void*) {
 
         ID3D11VideoProcessorInputView* view = ViewFor(next);
         if (!view) { Log(L"silent pipeline: frame is not a GPU surface"); result = 2; break; }
+        const bool moving = StepLook();
         if (!BlitAll(view)) { result = 1; break; }
+        if (moving) WaitRefresh();
         lastPresent = now;
         g.readerPos = nextFileTs / 1e7;
         SafeRelease(cur);  // keep the frame on screen alive for redraws (crop edits while paused)
@@ -607,7 +692,11 @@ DWORD WINAPI SilentThread(void*) {
         curView = view;
         next = nullptr;
         jumped = false;
-        if (first) { first = false; PostMessageW(g.ctl, WM_FIRST_FRAME, 0, 0); }
+        if (first) {
+            first = false;
+            if (g.announce) WaitShown();  // a preview: the picker shows it once it's on the screen
+            PostMessageW(g.ctl, WM_FIRST_FRAME, 0, 0);
+        }
     }
     SafeRelease(next);
     SafeRelease(cur);
@@ -649,7 +738,8 @@ DWORD WINAPI EngineThread(void*) {
     while (!g.quit) {
         bool redraw = g.redraw.exchange(false);
         bool active = g.playing && !g.paused;
-        if (!active && !redraw) {
+        const bool moving = g.metadata && StepLook();  // the chosen wallpaper's look: a picture each refresh
+        if (!active && !redraw && !moving) {
             if (g.playing && g.engineRun) {
                 // Picture paused but the video's sound keeps playing: drain frames, don't draw them.
                 LONGLONG pts = 0;
@@ -663,7 +753,7 @@ DWORD WINAPI EngineThread(void*) {
         const int cap = g.fpsCap;
         const double minGap = cap > 0 ? 1.0 / cap : 0.0, r = g.rate > 0.05 ? g.rate.load() : 1.0, frameDur = g.frameDur;
         double wait = 0.002;
-        bool present = redraw;
+        bool present = redraw || moving;
         if (active) {
             double since = Now() - lastPresent;
             if (cap > 0 && since < minGap - 0.001 && !redraw) {
@@ -690,10 +780,15 @@ DWORD WINAPI EngineThread(void*) {
             }
             if (transferred) {
                 lastPresent = Now();
-                if (!firstFrame) { firstFrame = true; PostMessageW(g.ctl, WM_FIRST_FRAME, 0, 0); }
+                if (!firstFrame) {
+                    firstFrame = true;
+                    if (g.announce) WaitShown();
+                    PostMessageW(g.ctl, WM_FIRST_FRAME, 0, 0);
+                }
             }
         }
-        if (active) Nap(wait);
+        if (moving) WaitRefresh();
+        else if (active) Nap(wait);
     }
     CoUninitialize();
     return 0;
@@ -1463,6 +1558,7 @@ void ShowcaseOff() {
     if (!g.showcaseUnder) return;
     g.showcaseUnder = nullptr;
     AcquireSRWLockExclusive(&g.lock);
+    g.plan = {};
     g.scLook = false;
     g.scBox = {};
     ReleaseSRWLockExclusive(&g.lock);
@@ -1596,16 +1692,35 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (w) ShowcaseOn((HWND)l);
             else ShowcaseOff();
             return 0;
-        case WM_VBG_SHOWCASE_LOOK:  // the picker choosing a wallpaper: sent each of its frames while it moves
+        case WM_VBG_SHOWCASE_DIM:  // the picker choosing a wallpaper: the plan (the render thread animates it)
+        case WM_VBG_SHOWCASE_BOX:
+        case WM_VBG_SHOWCASE_GROW: {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            const double at = (double)l / (double)f.QuadPart;
             AcquireSRWLockExclusive(&g.lock);
-            g.scLook = w != 0;
-            g.scBright = w ? std::clamp((float)(w - 1) / 1000.f, 0.f, 1.f) : 1.f;
-            g.scBox = w ? UnpackBox(l) : RECT{};
+            if (m == WM_VBG_SHOWCASE_DIM && !w) {  // as usual again
+                g.plan = {};
+                g.scLook = false;
+                g.scBright = 1;
+                g.scBox = {};
+            } else if (m == WM_VBG_SHOWCASE_DIM) {
+                g.plan.on = true;
+                g.plan.bright = (w & 0xFFFF) / 1000.f;
+                g.plan.dimFor = (w >> 16) / 1000.0;
+                g.plan.dimAt = at;
+            } else if (m == WM_VBG_SHOWCASE_BOX) {
+                g.plan.box = UnpackBox(l);
+            } else {
+                g.plan.growFor = w / 1000.0;
+                g.plan.growAt = at;
+            }
             ReleaseSRWLockExclusive(&g.lock);
             UpdateRects();
             if (g.parked) { Unpark(); ApplyPauseState(); }
             RequestRedraw();
             return 0;
+        }
         case WM_VBG_HOLD:  // a frame being picked: the video waits there
             SetPause(PR_HOLD, w != 0);
             return 0;

@@ -44,19 +44,20 @@ enum Id {
     ID_M_SETTINGS, ID_M_ADD, ID_M_LOCK, ID_M_OFF, ID_M_NATIVE,
     ID_A_BIN, ID_A_VERSIONS, ID_A_CROP, ID_A_ZONE, ID_V_MORE, ID_C_RESET, ID_C_FRAME, ID_E_SAVE, ID_E_CANCEL, ID_E_EYE,
     // the clock's settings
-    ID_P_BG, ID_P_LIST, ID_P_SIDE, ID_P_SHOW, ID_P_HIDE, ID_P_STYLE, ID_P_SIZE, ID_P_OPACITY, ID_P_GLOW, ID_P_GLOWSIZE,
+    ID_P_BG, ID_P_LIST, ID_P_SIDE, ID_P_SHOW, ID_P_HIDE, ID_P_STYLE_PREV, ID_P_STYLE_NEXT, ID_P_LANG, ID_P_DIG_LATIN, ID_P_DIG_OWN,
+    ID_P_SIZE, ID_P_OPACITY, ID_P_GLOW, ID_P_GLOWSIZE,
     ID_P_DATE_PREV, ID_P_DATE_NEXT, ID_P_H12, ID_P_H24, ID_P_PICK_TEXT, ID_P_PICK_GLOW, ID_P_GRID_TEXT, ID_P_GRID_GLOW,
     // the music's
     ID_MU_PREV, ID_MU_PLAY, ID_MU_NEXT, ID_MU_SEEK, ID_MU_VOLUME, ID_MU_SHUFFLE, ID_MU_REPEAT, ID_MU_PICK, ID_MU_LIST,
-    ID_MU_STYLE0 = 480,  // + the desktop player's style (0: none)
+    ID_MU_STYLE_PREV, ID_MU_STYLE_NEXT,
     ID_P_COLOR0 = 500,  // + swatch
     ID_P_GLOWC0 = 530,  // + swatch (0: the text's colour)
-    ID_P_STYLE0 = 600,  // + style
     ID_P_GRID0 = 700,   // + colour in the grid (40 on: the saved ones)
     ID_V0 = 900,        // + version (0: the original)
     ID_CARD = 1000,     // + card index
     ID_SONG0 = 2000,    // + song (in the playlist)
     ID_GRIP0 = 6000,    // + song: its grip
+    ID_P_LANG0 = 10000, // + language
 };
 
 // ---------------------------------------------------------------------------------------
@@ -82,6 +83,8 @@ struct Gfx {
                       *fHero = nullptr, *fWrap = nullptr;
     ID2D1Bitmap* shadow = nullptr;  // a soft shadow for a card (drawn under each)
     ID2D1Bitmap* glow = nullptr;    // the same in white: the chosen card's glow
+    ID2D1Geometry* cardHole = nullptr;  // a card without its picture (the chosen one: its video plays there)
+    ID2D1Geometry* glowMask = nullptr;  // around a card, all but its picture
     ID2D1Bitmap* logo = nullptr;
 } G;
 
@@ -116,21 +119,13 @@ struct Hit {
     D2D1_RECT_F r;
 };
 
-// The clock's styles. For now each is the clock's one design in a font VideoBG has; designs of their
-// own will join the list (a style will then set more of the look than its font).
-struct ClockStyle {
-    std::wstring name, font;
-};
-
-std::vector<ClockStyle> ClockStyles() {
-    std::vector<ClockStyle> v;
-    for (const ClockFontInfo& f : Clock_Fonts())
-        if (f.ready) v.push_back({f.key, f.key});
+// The clock's styles on offer: the ones whose fonts are on this PC.
+std::vector<ClockStyleInfo> ReadyStyles() {
+    std::vector<ClockStyleInfo> v;
+    for (const ClockStyleInfo& s : Clock_Styles())
+        if (s.font.ready) v.push_back(s);
     return v;
 }
-
-bool HasStyle(const ClockLook& l, const ClockStyle& s) { return _wcsicmp(l.font.c_str(), s.font.c_str()) == 0; }
-void ApplyStyle(ClockLook& l, const ClockStyle& s) { l.font = s.font; }
 
 struct Picker {
     HWND hwnd = nullptr;
@@ -194,10 +189,9 @@ struct Picker {
     float chosenRot = 0, chosenScale = 1;
     bool used = false;
     bool chosenClose = false;         // closing once the chosen video fills the screen (no dip to black)
+    double holeAt = 0;                // when its picture gave way to its video, playing in its place
     double revealAt = 0;              // when the card started fading away around its playing picture
-    bool lookOn = false;              // the renderer's showcase as told (SendLook)
-    float lookBright = 1;
-    RECT lookBox{};
+    int lookSent = 0;                 // how much of the choosing the renderer has been told (SendLook)
     // Clock
     ClockLook look;                   // the clock that shows (the focused card's, or the one being placed)
     std::wstring clockKey;
@@ -213,9 +207,10 @@ struct Picker {
     int panelSide = 0;
     bool panelHidden = false;         // the eye: just the clock on the wallpaper, to take a look
     float panelA = 0, hideA = 0;
-    bool stylesOpen = false;
-    float styleScroll = 0;
-    std::vector<ClockStyle> styles;   // the styles on offer
+    std::vector<ClockStyleInfo> styles;  // the styles on offer
+    bool langsOpen = false;           // the languages' list
+    float langScroll = 0;
+    std::vector<ClockLanguage> langs;
     int gridFor = 0;                  // any colour's grid, open for the text (1) or the glow (2)
     int picking = 0;                  // the eyedropper, for the text (1) or the glow (2)
     float pickA = 0;
@@ -233,6 +228,9 @@ struct Picker {
     float songScroll = 0;
     int songDrag = -1, songIns = 0;   // a song being moved, and where it would land
     float songGrab = 0, songY = 0;
+    ID2D1Bitmap* player = nullptr;    // the desktop player's style, as it looks (redrawn while it turns)
+    int playerStyle = 0;
+    double playerAt = 0;
     // How long drawing takes (logged when it closes)
     int frames = 0;
     double drawTime = 0, drawMax = 0;
@@ -568,6 +566,27 @@ bool CreateGraphics() {
     }
     G.shadow = MakeShadow(Col(0x000000, 0.75f), 14);
     G.glow = MakeShadow(Col(0xFFFFFF, 0.9f), 10);
+    {
+        ID2D1RoundedRectangleGeometry *card = nullptr, *pic = nullptr;
+        ID2D1RectangleGeometry* around = nullptr;
+        const D2D1_RECT_F c = R(-kCardW / 2, -kCardH / 2, kCardW / 2, kCardH / 2);
+        const D2D1_RECT_F p = R(c.left + kPad, c.top + kPad, c.right - kPad, c.top + kPad + kThumbH);
+        G.d2d->CreateRoundedRectangleGeometry(D2D1::RoundedRect(c, kCardR, kCardR), &card);
+        G.d2d->CreateRoundedRectangleGeometry(D2D1::RoundedRect(p, 10, 10), &pic);
+        G.d2d->CreateRectangleGeometry(R(-kCardW * 2, -kCardH * 2, kCardW * 2, kCardH * 2), &around);
+        ID2D1GeometryGroup* group = nullptr;
+        if (card && pic) {
+            ID2D1Geometry* parts[2] = {card, pic};
+            if (SUCCEEDED(G.d2d->CreateGeometryGroup(D2D1_FILL_MODE_ALTERNATE, parts, 2, &group))) G.cardHole = group;
+        }
+        if (around && pic) {
+            ID2D1Geometry* parts[2] = {around, pic};
+            if (SUCCEEDED(G.d2d->CreateGeometryGroup(D2D1_FILL_MODE_ALTERNATE, parts, 2, &group))) G.glowMask = group;
+        }
+        SafeRelease(card);
+        SafeRelease(pic);
+        SafeRelease(around);
+    }
     G.logo = LogoBitmap();
     return true;
 }
@@ -587,11 +606,14 @@ void ReleaseCardBitmaps(Card& c) {
 void ReleaseGraphics() {
     for (auto& c : P.cards) ReleaseCardBitmaps(c);
     SafeRelease(P.clockBmp);
+    SafeRelease(P.player);
     P.clockKey.clear();
     for (IDWriteTextFormat** f : {&G.fHero, &G.fTitle, &G.fBody, &G.fBold, &G.fSmall, &G.fIcon, &G.fSmallIcon, &G.fIconBig, &G.fCardTitle, &G.fCardMeta,
                                   &G.fRowLabel, &G.fRowValue, &G.fWrap})
         SafeRelease(*f);
     SafeRelease(G.logo);
+    SafeRelease(G.cardHole);
+    SafeRelease(G.glowMask);
     SafeRelease(G.glow);
     SafeRelease(G.shadow);
     SafeRelease(G.dash);
@@ -658,9 +680,10 @@ void FillRows(Card& c) {
     const WallpaperInfo& i = c.info;
     wchar_t b[64];
     const UINT32 vw = c.playW ? c.playW : i.vw, vh = c.playW ? c.playH : i.vh;  // the version it plays
-    const UINT32 big = std::max(vw, vh);
-    const wchar_t* tag = big >= 3800 ? L"4K  \u00B7  " : big >= 2500 ? L"1440p  \u00B7  " : big >= 1900 ? L"1080p  \u00B7  " : L"";
-    swprintf(b, 64, L"%ls%u\u00D7%u", tag, vw, vh);
+    const UINT32 big = std::max(vw, vh), small = std::min(vw, vh);  // 4K, else its lines: 1440p, 1080p, 900p...
+    if (big >= 3800) swprintf(b, 64, L"4K  \u00B7  %u\u00D7%u", vw, vh);
+    else if (small >= 240) swprintf(b, 64, L"%up  \u00B7  %u\u00D7%u", small, vw, vh);
+    else swprintf(b, 64, L"%u\u00D7%u", vw, vh);
     c.rows[0][0] = L"RESOLUTION";
     c.rows[0][1] = b;
     swprintf(b, 64, i.fps > 0 ? L"%ls  \u00B7  %.0f fps" : L"%ls", Duration(i.duration).c_str(), i.fps);
@@ -1012,21 +1035,27 @@ void DrawBadge(Card& c, const D2D1_RECT_F& pic, float a, bool cached) {
 }
 
 // What a card shows (its picture, facts and name), in its own coordinates: the centre at 0,0.
-void DrawCardContent(int i, float a, float infoA) {
+// The chosen card: its picture fades (picA) to a hole where its video plays, and its badge is its own.
+void DrawCardContent(int i, float a, float infoA, float picA = 1, bool badge = true, bool hole = false) {
     Card& c = P.cards[i];
     const D2D1_RECT_F card = R(-kCardW / 2, -kCardH / 2, kCardW / 2, kCardH / 2);
-    Fill(card, Col(0x141417, 0.96f * a), kCardR);
+    if (hole && G.cardHole) {
+        G.br->SetColor(Col(0x141417, 0.96f * a));
+        G.ctx->FillGeometry(G.cardHole, G.br);
+    } else {
+        Fill(card, Col(0x141417, 0.96f * a), kCardR);
+    }
     const D2D1_RECT_F pic = R(card.left + kPad, card.top + kPad, card.right - kPad, card.top + kPad + kThumbH);
     PictureBrush(c, pic);
-    if (c.brush) {
-        c.brush->SetOpacity(a);
+    if (picA > 0 && c.brush) {
+        c.brush->SetOpacity(a * picA);
         G.ctx->FillRoundedRectangle(D2D1::RoundedRect(pic, 10, 10), c.brush);
-    } else {
-        Fill(pic, Col(0x222226, a), 10);
+    } else if (picA > 0) {
+        Fill(pic, Col(0x222226, a * picA), 10);
         const bool bad = c.ready && !c.info.ok;
-        Text(bad ? L"\uE783" : L"\uE714", pic, G.fIconBig, Col(0xFFFFFF, 0.35f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+        Text(bad ? L"\uE783" : L"\uE714", pic, G.fIconBig, Col(0xFFFFFF, 0.35f * a * picA), DWRITE_TEXT_ALIGNMENT_CENTER);
     }
-    if (i == P.applied) DrawBadge(c, pic, a, true);  // the wallpaper now
+    if (badge && i == P.applied) DrawBadge(c, pic, a, true);  // the wallpaper now
     // The facts, each row in one of the picture's colours.
     float y = pic.bottom + kPad;
     const float ia = a * infoA;
@@ -1353,9 +1382,12 @@ void DrawLoupe(float a) {
     Ring(x, y, 16, Col(0xFFFFFF, 0.9f * a), 2);
 }
 
+// The panel's rows: the language's own digits only for a language that has them.
+bool HasOwnDigits() { return !Clock_NativeDigits(P.look.lang).empty(); }
+
 void DrawClockPanel(float a) {
     if (a <= 0.01f) return;
-    const float x = PanelX(), y = 92, h = 64 + 10 * kRow + 10;
+    const float x = PanelX(), y = 92, h = 64 + (HasOwnDigits() ? 12 : 11) * kRow + 10;
     const D2D1_RECT_F box = R(x, y, x + kPanelW, y + h);
     PanelBox(box, a);
     P.hits.push_back({ID_P_BG, box});
@@ -1374,17 +1406,33 @@ void DrawClockPanel(float a) {
     Label(L"Clock", lx, yy, a);
     Segs(ID_P_SHOW, ctl(yy), {L"Show", L"Hide"}, on ? 0 : 1, a);
     yy += kRow;
+    // A row that steps through the choices, like the date's.
+    auto stepper = [&](float top, int prev, int next, const std::wstring& s, bool en, IDWriteTextFormat* f) {
+        const D2D1_RECT_F r = ctl(top);
+        Fill(r, Col(0xFFFFFF, 0.06f * a), 8);
+        Text(s, R(r.left + 26, r.top, r.right - 26, r.bottom), f, Col(0xFFFFFF, (en ? 0.9f : 0.35f) * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+        IconBtn(prev, r.left + 14, (r.top + r.bottom) / 2, 12, L"\uE76B", a, en);
+        IconBtn(next, r.right - 14, (r.top + r.bottom) / 2, 12, L"\uE76C", a, en);
+    };
     Label(L"Style", lx, yy, a, on);
-    const D2D1_RECT_F fb = ctl(yy);
-    Fill(fb, Col(0xFFFFFF, (on && (P.hot == ID_P_STYLE || P.stylesOpen) ? 0.11f : 0.06f) * a), 8);
-    std::wstring style = L.font;
-    for (const ClockStyle& cs : P.styles)
-        if (HasStyle(L, cs)) style = cs.name;
-    Text(style, R(fb.left + 12, fb.top, fb.right - 30, fb.bottom), G.fBody, Col(0xFFFFFF, (on ? 0.92f : 0.35f) * a));
-    Text(P.stylesOpen ? L"\uE70E" : L"\uE70D", R(fb.right - 28, fb.top, fb.right - 8, fb.bottom), G.fSmallIcon, Col(0xFFFFFF, 0.6f * a),
-         DWRITE_TEXT_ALIGNMENT_CENTER);
-    if (on) P.hits.push_back({ID_P_STYLE, fb});
+    stepper(yy, ID_P_STYLE_PREV, ID_P_STYLE_NEXT, Clock_StyleName(L), on, G.fBody);
     yy += kRow;
+    // The language of its words (greyed when the style has none), and its own digits when it has them.
+    const bool words = on && Clock_UsesWords(L);
+    Label(L"Language", lx, yy, a, words);
+    const D2D1_RECT_F lb = ctl(yy);
+    Fill(lb, Col(0xFFFFFF, (words && (P.hot == ID_P_LANG || P.langsOpen) ? 0.11f : 0.06f) * a), 8);
+    Text(Clock_LanguageName(L.lang), R(lb.left + 12, lb.top, lb.right - 30, lb.bottom), G.fBody, Col(0xFFFFFF, (words ? 0.92f : 0.35f) * a));
+    Text(P.langsOpen ? L"\uE70E" : L"\uE70D", R(lb.right - 28, lb.top, lb.right - 8, lb.bottom), G.fSmallIcon,
+         Col(0xFFFFFF, (words ? 0.6f : 0.3f) * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+    if (words) P.hits.push_back({ID_P_LANG, lb});
+    yy += kRow;
+    if (HasOwnDigits()) {
+        const bool digits = on && Clock_UsesDigits(L);
+        Label(L"Digits", lx, yy, a, digits);
+        Segs(ID_P_DIG_LATIN, ctl(yy), {std::wstring(L"123"), Clock_NativeDigits(L.lang).substr(1, 3)}, L.nativeDigits ? 1 : 0, a, digits);
+        yy += kRow;
+    }
     // The text's colour, then the glow's: the eyedropper, any colour (a grid), then quick ones (the
     // glow's first: the same as the text's).
     const UINT32 ink = RgbOf(L.color), glowInk = L.glowColor.empty() ? ink : RgbOf(L.glowColor);
@@ -1430,44 +1478,55 @@ void DrawClockPanel(float a) {
     swprintf(v, 32, L"%.0f", L.glowSize);
     SliderCtl(ID_P_GLOWSIZE, ctl(yy), (L.glowSize - 2) / 38, v, a, on && L.glow > 0);
     yy += kRow;
-    Label(L"Date", lx, yy, a, on);
-    const D2D1_RECT_F db = ctl(yy);
-    Fill(db, Col(0xFFFFFF, 0.06f * a), 8);
+    const bool dated = on && Clock_UsesDate(L);
+    Label(L"Date", lx, yy, a, dated);
     SYSTEMTIME now;
     GetLocalTime(&now);
-    std::wstring date = Clock_DateText(L, L.date, now);
-    Text(date.empty() ? L"No date" : date, R(db.left + 26, db.top, db.right - 26, db.bottom), G.fSmall,
-         Col(0xFFFFFF, (on ? 0.9f : 0.35f) * a), DWRITE_TEXT_ALIGNMENT_CENTER);
-    IconBtn(ID_P_DATE_PREV, db.left + 14, (db.top + db.bottom) / 2, 12, L"\uE76B", a, on);
-    IconBtn(ID_P_DATE_NEXT, db.right - 14, (db.top + db.bottom) / 2, 12, L"\uE76C", a, on);
+    const std::wstring date = Clock_DateText(L, L.date, now);
+    stepper(yy, ID_P_DATE_PREV, ID_P_DATE_NEXT, date.empty() ? L"No date" : date, dated, G.fSmall);
     yy += kRow;
-    Label(L"Time", lx, yy, a, on);
-    Segs(ID_P_H12, ctl(yy), {L"12-hour", L"24-hour"}, L.h24 ? 1 : 0, a, on);
+    const bool hours = on && Clock_UsesHours(L);
+    Label(L"Time", lx, yy, a, hours);
+    Segs(ID_P_H12, ctl(yy), {L"12-hour", L"24-hour"}, L.h24 ? 1 : 0, a, hours);
 
-    // Any colour's grid, under its row; or the styles, over the rows under the style's row.
+    // Any colour's grid, under its row; or the languages, over the rows under theirs.
     if (P.gridFor && (P.gridFor == 1 ? on : glowOn)) {
         DrawColourGrid(a, cx + 19, P.gridFor == 1 ? textRow : glowRow, P.gridFor == 1 ? ink : glowInk);
         return;
     }
-    if (!P.stylesOpen || !on) return;
-    const float rh = 30, shown = (float)std::min<size_t>(P.styles.size(), 8);
-    const D2D1_RECT_F lb = R(fb.left - 4, fb.bottom + 4, fb.right + 4, fb.bottom + 4 + shown * rh + 8);
-    PanelBox(lb, a, 10);
-    P.hits.push_back({ID_P_LIST, lb});
-    const D2D1_RECT_F view = R(lb.left, lb.top + 4, lb.right, lb.bottom - 4);
-    P.styleScroll = std::clamp(P.styleScroll, 0.f, std::max(0.f, P.styles.size() * rh - shown * rh));
+    if (!P.langsOpen || !words) return;
+    const float rh = 32, shown = (float)std::min<size_t>(P.langs.size(), 9);
+    const D2D1_RECT_F list = R(lb.left - 4 - 60, lb.bottom + 4, lb.right + 4, lb.bottom + 4 + shown * rh + 8);
+    PanelBox(list, a, 10);
+    P.hits.push_back({ID_P_LIST, list});
+    const D2D1_RECT_F view = R(list.left, list.top + 4, list.right, list.bottom - 4);
+    P.langScroll = std::clamp(P.langScroll, 0.f, std::max(0.f, P.langs.size() * rh - shown * rh));
     G.ctx->PushAxisAlignedClip(view, D2D1_ANTIALIAS_MODE_ALIASED);
-    for (size_t i = 0; i < P.styles.size(); i++) {
-        const float ry = view.top + i * rh - P.styleScroll;
+    for (size_t i = 0; i < P.langs.size(); i++) {
+        const float ry = view.top + i * rh - P.langScroll;
         if (ry + rh <= view.top || ry >= view.bottom) continue;
         const D2D1_RECT_F r = R(view.left + 4, ry, view.right - 4, ry + rh);
-        if (P.hot == ID_P_STYLE0 + (int)i) Fill(r, Col(0xFFFFFF, 0.08f * a), 7);
-        if (HasStyle(L, P.styles[i]))
-            Text(L"\uE73E", R(r.left + 4, r.top, r.left + 26, r.bottom), G.fSmallIcon, g_accent * a, DWRITE_TEXT_ALIGNMENT_CENTER);
-        Text(P.styles[i].name, R(r.left + 30, r.top, r.right - 8, r.bottom), G.fBody, Col(0xFFFFFF, 0.9f * a));
-        P.hits.push_back({ID_P_STYLE0 + (int)i, R(r.left, std::max(r.top, view.top), r.right, std::min(r.bottom, view.bottom))});
+        const ClockLanguage& lg = P.langs[i];
+        if (P.hot == ID_P_LANG0 + (int)i) Fill(r, Col(0xFFFFFF, 0.08f * a), 7);
+        if (lg.code == L.lang) Text(L"\uE73E", R(r.left + 4, r.top, r.left + 26, r.bottom), G.fSmallIcon, g_accent * a, DWRITE_TEXT_ALIGNMENT_CENTER);
+        Text(lg.english, R(r.left + 30, r.top, r.left + 170, r.bottom), G.fBody, Col(0xFFFFFF, 0.9f * a));
+        Text(lg.native, R(r.left + 170, r.top, r.right - 10, r.bottom), G.fSmall, Col(0xFFFFFF, 0.5f * a), DWRITE_TEXT_ALIGNMENT_TRAILING);
+        P.hits.push_back({ID_P_LANG0 + (int)i, R(r.left, std::max(r.top, view.top), r.right, std::min(r.bottom, view.bottom))});
     }
     G.ctx->PopAxisAlignedClip();
+}
+
+// A letter typed while the languages are open: the next one starting with it.
+void LanguageJump(wchar_t letter) {
+    const int n = (int)P.langs.size(), from = (int)(P.langScroll / 32);
+    for (int k = 1; k <= n; k++) {
+        const int i = (from + k) % n;
+        if (!P.langs[i].english.empty() && towupper(P.langs[i].english[0]) == letter) {
+            P.langScroll = i * 32.f;
+            P.dirty = true;
+            return;
+        }
+    }
 }
 
 // The playlist, in play order: a click plays a song; its grip moves it (drag it up or down, the
@@ -1524,8 +1583,30 @@ void DrawSongs(const D2D1_RECT_F& view, float a) {
     G.ctx->PopAxisAlignedClip();
 }
 
-// The dropdown under Music: the song and its controls, the volume, and the player on the desktop.
-// (Songs and the playlist are chosen in the settings window.)
+// The desktop player's style as it looks now, w DIPs wide at most (it turns while the music plays).
+float PlayerPreview(float maxW, float* drawnW) {
+    const int style = g_settings.musicPlayer;
+    float sw = 0, sh = 0;
+    Player_Size(style, &sw, &sh);
+    if (style < 1 || sw <= 0) {
+        SafeRelease(P.player);
+        return 0;
+    }
+    const float s = std::min(1.f, maxW / sw);
+    const double now = Now();
+    if (!P.player || P.playerStyle != style || now - P.playerAt > (Player_Turns() ? 0.03 : 0.5)) {
+        ClockImage img;
+        SafeRelease(P.player);
+        if (Player_Paint(style, s * P.scale, true, &img)) P.player = BitmapFrom(img.px, img.w, img.h, true);
+        P.playerStyle = style;
+        P.playerAt = now;
+    }
+    *drawnW = sw * s;
+    return sh * s;
+}
+
+// The dropdown under Music: the song and its controls, the volume, and the player on the desktop
+// (its style, and how it looks). Songs are chosen in the settings window.
 void DrawMusicPanel() {
     if (P.musicA <= 0) return;
     const float a = P.musicA;
@@ -1534,8 +1615,12 @@ void DrawMusicPanel() {
         if (h.id == ID_MUSIC) anchor = h.r;
     const bool mine = g_settings.sound == 2, any = g_settings.sound != 0;
     const int n = (int)P.songs.size();
-    const float w = 340, x = std::clamp(anchor.right - w, 20.f, P.W - 20 - w), y = anchor.bottom + 10 - (1 - a) * 8;
-    const float h = 60 + (mine && n ? 112 : 52) + 2 * kRow + 34 + (mine ? 34 + std::min(n, 7) * kSongRow + (n ? 10 : 0) : 0);
+    const float w = 360, x = std::clamp(anchor.right - w, 20.f, P.W - 20 - w), y = anchor.bottom + 10 - (1 - a) * 8;
+    float shownW = 0;
+    const float ph = PlayerPreview(w - 36, &shownW);
+    const float fixed = 60 + (mine && n ? 112 : 52) + 2 * kRow + (ph > 0 ? ph + 12 : 0) + 34;
+    const int rows = std::clamp((int)((P.H - 20 - y - fixed - 44) / kSongRow), 3, 7);  // the playlist: as much as fits
+    const float h = fixed + (mine ? 34 + std::min(n, rows) * kSongRow + (n ? 10 : 0) : 0);
     const D2D1_RECT_F box = R(x, y, x + w, y + h);
     PanelBox(box, a, 14);
     P.hits.push_back({ID_P_BG, box});
@@ -1583,11 +1668,23 @@ void DrawMusicPanel() {
     Label(L"Volume", x + 18, yy, a, any);
     SliderCtl(ID_MU_VOLUME, R(x + 18 + kLabelW, yy + 6, box.right - 16, yy + kRow - 6), g_settings.volume / 100.f, v, a, any);
     yy += kRow;
+    // The player on the desktop: off, or a style (step through them), shown as it looks.
     Label(L"Desktop", x + 18, yy, a);
-    std::vector<std::wstring> styles = Player_Styles();
-    styles.insert(styles.begin(), L"Nothing");
-    Segs(ID_MU_STYLE0, R(x + 18 + kLabelW, yy + 6, box.right - 16, yy + kRow - 6), styles, g_settings.musicPlayer, a);
+    {
+        const std::vector<std::wstring> styles = Player_Styles();
+        const int k = std::clamp(g_settings.musicPlayer, 0, (int)styles.size());
+        const D2D1_RECT_F r = R(x + 18 + kLabelW, yy + 6, box.right - 16, yy + kRow - 6);
+        Fill(r, Col(0xFFFFFF, 0.06f * a), 8);
+        Text(k ? styles[k - 1] : L"Off", R(r.left + 26, r.top, r.right - 26, r.bottom), G.fBody, Col(0xFFFFFF, 0.9f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+        IconBtn(ID_MU_STYLE_PREV, r.left + 14, (r.top + r.bottom) / 2, 12, L"\uE76B", a);
+        IconBtn(ID_MU_STYLE_NEXT, r.right - 14, (r.top + r.bottom) / 2, 12, L"\uE76C", a);
+    }
     yy += kRow;
+    if (ph > 0 && P.player) {
+        const float px0 = x + (w - shownW) / 2;
+        G.ctx->DrawBitmap(P.player, R(px0, yy + 2, px0 + shownW, yy + 2 + ph), a, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        yy += ph + 12;
+    }
     Text(mine ? L"On the desktop, behind your apps: drag it to move it" : L"The player shows on your desktop while My music plays",
          R(x + 18, yy + 2, box.right - 16, yy + 24), G.fSmall, Col(0xFFFFFF, 0.42f * a));
     if (!mine) return;
@@ -1599,7 +1696,7 @@ void DrawMusicPanel() {
     Text(pick, pr, G.fBody, P.hot == ID_MU_PICK ? Col(0xFFFFFF, a) : g_accent * a);
     P.hits.push_back({ID_MU_PICK, pr});
     yy += 30;
-    if (n) DrawSongs(R(x + 8, yy, box.right - 8, yy + std::min(n, 7) * kSongRow), a);
+    if (n) DrawSongs(R(x + 8, yy, box.right - 8, yy + std::min(n, rows) * kSongRow), a);
 }
 
 // A small mouse with its right button lit: "right-click" in a tip.
@@ -1914,11 +2011,14 @@ void DrawCropEdit(float a) {
 }
 
 // Choosing (Step keeps the time): the chosen card comes up to the middle of the screen, bigger,
-// and glows while the rest dims; its "Current" badge pops in. Then the card fades away around its
-// picture, and the picture, the video itself playing (the renderer draws it in that box), grows to
-// fill the screen. (In the middle, it waits for its video if that's still starting.)
-constexpr float kSelRise0 = 0.05f, kSelRise1 = 0.8f, kSelPill = 1.05f, kSelReveal = 1.4f;  // from the click
-constexpr float kSelFade = 0.15f, kSelGrow = 0.55f, kSelEnd = kSelFade + kSelGrow + 0.08f;  // from the reveal
+// and glows while the rest dims; its picture gives way to its video, playing in its place, and its
+// "Current" badge pops in. A moment later the card fades away around the video, which grows to fill
+// the screen. (In the middle, it waits for its video if that's still starting.) The renderer draws
+// the video and the dimming by itself, at every refresh, on the same clock (SendLook).
+constexpr float kSelRise0 = 0.05f, kSelRise1 = 0.8f, kSelPill = 1.05f, kSelReveal = 1.55f;  // from the click
+constexpr float kSelDim = 0.45f, kSelDimFor = 0.5f;  // the rest of the screen: how dark, how quickly
+constexpr float kSelHole = 0.2f;                      // the picture giving way to the video
+constexpr float kSelFade = 0.38f, kSelGrowAt = 0.1f, kSelGrow = 0.6f, kSelEnd = kSelGrowAt + kSelGrow + 0.04f;  // from the reveal
 
 Pose ChosenPose(float t) {
     const float lift = EaseInOut((t - kSelRise0) / (kSelRise1 - kSelRise0));
@@ -1927,58 +2027,80 @@ Pose ChosenPose(float t) {
                 Lerp(P.chosenScale, big, lift), 1, 0};
 }
 
-float SelBright(float t) { return 1 - 0.55f * EaseInOut(t / 0.5f); }  // the rest of the screen, dimming
+float SelBright(float t) { return 1 - (1 - kSelDim) * EaseInOut(t / kSelDimFor); }  // the rest of the screen, dimming (as the renderer does)
 
 float SelReveal() { return P.revealAt > 0 ? (float)(Now() - P.revealAt) : -1; }
 
-// Where the chosen video plays (DIPs): its card's picture box in the middle, growing to the screen.
-D2D1_RECT_F SelBox(float r) {
+// The chosen card's picture, in the middle of the screen (DIPs): where its video plays.
+D2D1_RECT_F PicBox() {
     const D2D1_MATRIX_3X2_F m = CardMatrix(ChosenPose(kSelRise1));
     const D2D1_POINT_2F tl = Apply(m, D2D1::Point2F(-kCardW / 2 + kPad, -kCardH / 2 + kPad));
     const D2D1_POINT_2F br = Apply(m, D2D1::Point2F(kCardW / 2 - kPad, -kCardH / 2 + kPad + kThumbH));
-    const float o = EaseInOut((r - kSelFade) / kSelGrow);
-    return R(Lerp(tl.x, 0, o), Lerp(tl.y, 0, o), Lerp(br.x, P.W, o), Lerp(br.y, P.H, o));
+    return R(tl.x, tl.y, br.x, br.y);
+}
+
+// The renderer's part, told as each stage starts: 1 the rest dims, 2 the video plays in the card's
+// picture, 3 that grows to fill the screen; 0 the showcase as usual.
+void SendLook(int stage) {
+    if (stage == P.lookSent) return;
+    P.lookSent = stage;
+    if (!stage) {
+        Host_ShowcaseLook(nullptr);
+        return;
+    }
+    ShowcaseLook l;
+    l.bright = kSelDim;
+    l.dimAt = P.chosenAt;
+    l.dimFor = kSelDimFor;
+    if (stage >= 2) {  // a pixel bigger all round: the card's edge covers it
+        const D2D1_RECT_F b = PicBox();
+        l.box = RECT{(LONG)floorf(b.left * P.scale) - 1, (LONG)floorf(b.top * P.scale) - 1, (LONG)ceilf(b.right * P.scale) + 1,
+                     (LONG)ceilf(b.bottom * P.scale) + 1};
+    }
+    if (stage >= 3) {
+        l.growAt = P.revealAt + kSelGrowAt;
+        l.growFor = kSelGrow;
+    }
+    Host_ShowcaseLook(&l);
 }
 
 void DrawChosen(float t) {
     Card& c = P.cards[P.chosen];
     const float r = SelReveal();
-    const float a = r < 0 ? 1 : 1 - Clamp01(r / kSelFade);  // the card fades away around its playing picture
+    const float a = r < 0 ? 1 : 1 - EaseInOut(r / kSelFade);  // the card fades away around its playing video
     if (a <= 0) return;  // just the video now, growing
     const Pose p = ChosenPose(t);
     const D2D1_MATRIX_3X2_F m = CardMatrix(p);
     const D2D1_RECT_F card = R(-kCardW / 2, -kCardH / 2, kCardW / 2, kCardH / 2);
-    // A soft light around it, breathing while it waits.
+    const D2D1_RECT_F pic = R(card.left + kPad, card.top + kPad, card.right - kPad, card.top + kPad + kThumbH);
+    const bool hole = P.holeAt > 0;
+    const float picA = hole ? 1 - Clamp01((float)(Now() - P.holeAt) / kSelHole) : 1;
+    G.ctx->SetTransform(m);
+    // Its shadow, and a soft light around it, breathing while it waits: never over its video.
+    if (hole && G.glowMask) G.ctx->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), G.glowMask), nullptr);
+    if (G.shadow) {
+        const D2D1_SIZE_F s = G.shadow->GetSize();
+        G.ctx->DrawBitmap(G.shadow, R(-s.width / 2, -s.height / 2 + 10, s.width / 2, s.height / 2 + 10), 0.85f * a);
+    }
     const float glow = Clamp01((t - kSelRise1 + 0.2f) / 0.35f) * a;
     if (glow > 0 && G.glow) {
-        G.ctx->SetTransform(m);
         const D2D1_SIZE_F s = G.glow->GetSize();
         const float g = 1.03f + 0.02f * sinf((t - kSelRise1) * 6);
         G.ctx->DrawBitmap(G.glow, R(-s.width / 2 * g, -s.height / 2 * g, s.width / 2 * g, s.height / 2 * g), 0.7f * glow);
     }
-    DrawCard(P.chosen, p, m, a);
+    if (hole && G.glowMask) G.ctx->PopLayer();
+    DrawCardContent(P.chosen, a, 1, picA, false, hole);
+    Stroke(card, Col(0xFFFFFF, 0.85f * a), kCardR, 1.6f);
     if (glow > 0) Stroke(card, Col(0xFFFFFF, 0.85f * glow), kCardR, 1.8f);
-    // Its "Current" badge pops in once it's there.
+    // Its "Current" badge pops in once it's there (the wallpaper's own goes first, and comes back).
     const float pill = Clamp01((t - kSelPill) / 0.22f);
-    if (pill > 0 && P.chosen != P.applied) {
-        const D2D1_RECT_F pic = R(card.left + kPad, card.top + kPad, card.right - kPad, card.top + kPad + kThumbH);
-        const float s = EaseBack(pill);
+    const float out = P.chosen == P.applied ? 1 - Clamp01(t / 0.12f) : 0;
+    if (pill > 0 || out > 0) {
+        const float s = pill > 0 ? EaseBack(pill) : 0.7f + 0.3f * out;
         G.ctx->SetTransform(D2D1::Matrix3x2F::Scale(s, s, D2D1::Point2F(pic.left + 41, pic.bottom - 15)) * m);
-        DrawBadge(c, pic, a * Clamp01(pill * 2), false);
+        DrawBadge(c, pic, a * (pill > 0 ? Clamp01(pill * 2) : out), false);
     }
     G.ctx->SetTransform(D2D1::Matrix3x2F::Identity());
-}
-
-// The renderer's showcase while choosing (told only when it changes).
-void SendLook(float bright, const D2D1_RECT_F* box) {
-    RECT px{};
-    if (box) px = RECT{lroundf(box->left * P.scale), lroundf(box->top * P.scale), lroundf(box->right * P.scale), lroundf(box->bottom * P.scale)};
-    const bool on = bright < 1 || box;
-    if (on == P.lookOn && fabsf(bright - P.lookBright) < 0.002f && EqualRect(&px, &P.lookBox)) return;
-    P.lookOn = on;
-    P.lookBright = bright;
-    P.lookBox = px;
-    Host_ShowcaseLook(bright, box ? &px : nullptr);
 }
 
 void Paint() {
@@ -2083,7 +2205,7 @@ void Choose(int i) {
     const Pose p = CardPose(i);
     P.chosen = i;
     P.chosenAt = P.phaseAt = Now();  // (the timeline in Step runs from here)
-    P.revealAt = 0;
+    P.revealAt = P.holeAt = 0;
     P.chosenFrom = D2D1::Point2F(p.x, p.y);
     P.chosenRot = p.rot;
     P.chosenScale = p.s;
@@ -2094,6 +2216,8 @@ void Choose(int i) {
     KillTimer(P.hwnd, TIMER_DWELL);
     AskPreview(c.play, c.info.time);  // its video plays behind it while it comes up: then the change is seamless
     AskPictures();
+    P.lookSent = 0;
+    SendLook(1);
     P.dirty = true;
 }
 
@@ -2337,10 +2461,10 @@ void StartClockEdit() {
     P.look = g_settings.clockVideoOwn ? g_settings.clockVideo : g_settings.clockLive;
     const std::wstring orig = OriginalOfCopy(g_settings.video);
     P.clockFor = L"Just for " + FileTitle(orig.empty() ? g_settings.video : orig);
-    P.styles = ClockStyles();
-    P.stylesOpen = P.panelHidden = false;
+    P.styles = ReadyStyles();
+    P.langsOpen = P.panelHidden = false;
     P.gridFor = P.picking = 0;
-    P.styleScroll = 0;
+    P.langScroll = 0;
     P.panelSide = g_panelSide;
     P.panelPos = (float)P.panelSide;
     P.panelV = 0;
@@ -2358,7 +2482,7 @@ void EndClockEdit() {
     if (P.mode != 1) return;
     P.mode = 0;
     P.clockDrag = P.clockHot = P.snapX = P.snapY = false;
-    P.stylesOpen = false;
+    P.langsOpen = false;
     P.gridFor = P.picking = 0;
     P.slide = ID_NONE;
     P.enter = 0;
@@ -2443,7 +2567,7 @@ void StartPick(int row) {
     POINT pt;
     GetCursorPos(&pt);
     P.pickAt = D2D1::Point2F((pt.x - P.mon.left) / P.scale, (pt.y - P.mon.top) / P.scale);
-    P.stylesOpen = false;
+    P.langsOpen = false;
     P.gridFor = 0;
     ShowToast(L"Point at a colour on your wallpaper and click (Esc cancels)");
 }
@@ -2503,6 +2627,15 @@ void Command(int id) {
             if (P.music) P.songs = LoadPlaylist();
             break;
         case ID_MU_PLAY: Host_PlayMusic(!g_settings.musicPlaying); break;
+        case ID_MU_STYLE_PREV:
+        case ID_MU_STYLE_NEXT: {  // off, then each style, round again
+            const int n = (int)Player_Styles().size() + 1;
+            g_settings.musicPlayer = (std::clamp(g_settings.musicPlayer, 0, n - 1) + (id == ID_MU_STYLE_NEXT ? 1 : n - 1)) % n;
+            Log(L"picker: desktop music player %ls", g_settings.musicPlayer ? Player_Styles()[g_settings.musicPlayer - 1].c_str() : L"off");
+            Host_SettingsChanged();
+            UI_Refresh();
+            break;
+        }
         case ID_MU_PREV:
         case ID_MU_NEXT: Host_SkipMusic(id == ID_MU_NEXT); break;
         case ID_MU_SHUFFLE:
@@ -2583,18 +2716,41 @@ void Command(int id) {
             break;
         case ID_E_EYE:
             P.panelHidden = !P.panelHidden;
-            P.stylesOpen = false;
+            P.langsOpen = false;
             break;
         case ID_P_SIDE: P.panelSide = g_panelSide = 1 - P.panelSide; break;
         case ID_P_SHOW:
         case ID_P_HIDE:
             P.look.show = id == ID_P_SHOW;
-            P.stylesOpen = false;
+            P.langsOpen = false;
             ClockEdited();
             break;
-        case ID_P_STYLE:
-            P.stylesOpen = !P.stylesOpen;
+        case ID_P_STYLE_PREV:
+        case ID_P_STYLE_NEXT: {  // the next style (or the one before), round the list
+            const int n = (int)P.styles.size();
+            if (!n) break;
+            int at = -1;
+            for (int i = 0; i < n; i++)
+                if (Clock_IsStyle(P.look, P.styles[i])) at = i;
+            at = at < 0 ? 0 : (at + (id == ID_P_STYLE_NEXT ? 1 : n - 1)) % n;
+            Clock_UseStyle(P.look, P.styles[at]);
+            P.langsOpen = false;
+            ClockEdited();
+            break;
+        }
+        case ID_P_LANG:
+            P.langsOpen = !P.langsOpen;
             P.gridFor = 0;
+            if (P.langsOpen) {  // opened at the language it has
+                if (P.langs.empty()) P.langs = Clock_Languages();
+                for (size_t i = 0; i < P.langs.size(); i++)
+                    if (P.langs[i].code == P.look.lang) P.langScroll = std::max(0.f, (i - 3.f) * 32);
+            }
+            break;
+        case ID_P_DIG_LATIN:
+        case ID_P_DIG_OWN:
+            P.look.nativeDigits = id == ID_P_DIG_OWN;
+            ClockEdited();
             break;
         case ID_P_PICK_TEXT:
         case ID_P_PICK_GLOW: StartPick(id == ID_P_PICK_TEXT ? 1 : 2); break;
@@ -2602,7 +2758,7 @@ void Command(int id) {
         case ID_P_GRID_GLOW: {
             const int row = id == ID_P_GRID_TEXT ? 1 : 2;
             P.gridFor = P.gridFor == row ? 0 : row;
-            P.stylesOpen = false;
+            P.langsOpen = false;
             break;
         }
         case ID_P_DATE_PREV:
@@ -2621,16 +2777,12 @@ void Command(int id) {
             if (id >= ID_SONG0 && id < ID_SONG0 + (int)P.songs.size()) {  // a song: it plays
                 Host_MusicCommand(MC_PLAY_INDEX, id - ID_SONG0);
                 Host_PlayMusic(true);
-            } else if (id >= ID_MU_STYLE0 && id <= ID_MU_STYLE0 + (int)Player_Styles().size()) {
-                g_settings.musicPlayer = id - ID_MU_STYLE0;
-                Log(L"picker: desktop music player %ls", g_settings.musicPlayer ? Player_Styles()[g_settings.musicPlayer - 1].c_str() : L"off");
-                Host_SettingsChanged();
-                UI_Refresh();
             } else if (id >= ID_V0 && id <= ID_V0 + (int)P.versionList.size() && P.actionsCard >= 0) {
                 UseVersion(id - ID_V0);
-            } else if (id >= ID_P_STYLE0 && id < ID_P_STYLE0 + (int)P.styles.size()) {
-                ApplyStyle(P.look, P.styles[id - ID_P_STYLE0]);
-                P.stylesOpen = false;
+            } else if (id >= ID_P_LANG0 && id < ID_P_LANG0 + (int)P.langs.size()) {
+                P.look.lang = P.langs[id - ID_P_LANG0].code;
+                if (!HasOwnDigits()) P.look.nativeDigits = false;
+                P.langsOpen = false;
                 ClockEdited();
             } else if (UINT32 c; id >= ID_P_GRID0 && GridColourAt(id - ID_P_GRID0, &c)) {
                 (P.gridFor == 2 ? P.look.glowColor : P.look.color) = RgbText(c);
@@ -2761,10 +2913,10 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 break;
             }
             if (P.mode == 1) {
-                const bool inPopup = P.press == ID_P_STYLE || P.press == ID_P_LIST || P.press == ID_P_GRID_TEXT || P.press == ID_P_GRID_GLOW ||
-                                     (P.press >= ID_P_STYLE0 && P.press < ID_P_GRID0 + 48);
-                if ((P.stylesOpen || P.gridFor) && !inPopup) {  // a click elsewhere puts the list (or the grid) away
-                    P.stylesOpen = false;
+                const bool inPopup = P.press == ID_P_LANG || P.press == ID_P_LIST || P.press == ID_P_GRID_TEXT || P.press == ID_P_GRID_GLOW ||
+                                     (P.press >= ID_P_GRID0 && P.press < ID_P_GRID0 + 48) || P.press >= ID_P_LANG0;
+                if ((P.langsOpen || P.gridFor) && !inPopup) {  // a click elsewhere puts the list (or the grid) away
+                    P.langsOpen = false;
                     P.gridFor = 0;
                     P.dirty = true;
                 }
@@ -2892,8 +3044,8 @@ void OnWheel(int delta, LPARAM l) {
             return;
         }
     }
-    if (P.mode == 1 && P.stylesOpen) {  // the styles' list
-        P.styleScroll -= delta / 120.f * 60;  // kept inside the list when drawn
+    if (P.mode == 1 && P.langsOpen) {  // the languages' list
+        P.langScroll -= delta / 120.f * 64;  // kept inside the list when drawn
         P.dirty = true;
         return;
     }
@@ -2928,6 +3080,12 @@ void OnKey(WPARAM vk) {
     }
     if (P.mode == 1 && P.picking) {
         if (vk == VK_ESCAPE || vk == VK_RETURN) EndPick(vk == VK_RETURN);
+        return;
+    }
+    if (P.mode == 1 && P.langsOpen) {  // the languages: a letter jumps, Esc puts them away
+        if (vk >= 'A' && vk <= 'Z') LanguageJump((wchar_t)vk);
+        else if (vk == VK_ESCAPE) P.langsOpen = false;
+        P.dirty = true;
         return;
     }
     if (P.mode == 1) {
@@ -2977,7 +3135,8 @@ void Destroy();
 
 // True while anything still moves.
 bool Step(double now) {
-    const float dt = (float)std::clamp(now - P.last, 0.0, 0.05);
+    const double gap = now - P.last;  // after a while still, a frame's worth (not a jump in what fades)
+    const float dt = gap > 0.1 ? 1 / 60.f : (float)std::max(0.0, gap);
     P.last = now;
     bool moving = false;
     const float t = (float)(now - P.phaseAt);
@@ -3015,19 +3174,24 @@ bool Step(double now) {
             moving = true;
             Card& c = P.cards[P.chosen];
             if (c.failed) {  // its video couldn't play: back to the deck
-                SendLook(1, nullptr);
+                SendLook(0);
                 P.chosen = -1;
-                P.revealAt = 0;
+                P.revealAt = P.holeAt = 0;
                 P.phase = BROWSING;
                 ShowToast(L"This video can't play here");
                 break;
             }
-            // The picture comes alive once its video plays on the showcase (the pictures over it gone).
+            // In the middle, its picture gives way to its video once that plays on the showcase (the
+            // pictures over it gone); then the card fades around it, and it grows.
             const bool live = focusLive && P.stills[0].a <= 0.01f && P.stills[1].a <= 0.01f;
-            if (P.revealAt <= 0 && t > kSelReveal && (live || t > kSelReveal + 3)) P.revealAt = now;
+            if (t >= kSelRise1) SendLook(std::max(P.lookSent, 2));
+            if (P.holeAt <= 0 && t >= kSelRise1 && live) P.holeAt = now;
+            const bool playing = P.holeAt > 0 && now - P.holeAt >= kSelHole;
+            if (P.revealAt <= 0 && t > kSelReveal && (playing || t > kSelReveal + 3)) {
+                P.revealAt = now;
+                SendLook(3);
+            }
             const float r = P.revealAt > 0 ? (float)(now - P.revealAt) : -1;
-            const D2D1_RECT_F box = SelBox(r);
-            SendLook(SelBright(t), t >= kSelRise1 ? &box : nullptr);  // (under the card's picture until it fades)
             P.chrome = std::max(0.f, 1 - t * 4);
             if (r > kSelEnd) {  // the video fills the screen: it's the wallpaper, back to the apps
                 P.used = true;
@@ -3035,13 +3199,13 @@ bool Step(double now) {
                     Log(L"picker: %ls is the wallpaper now", c.play.c_str());
                     Host_SetVideo(c.play);  // the renderer keeps playing it: it's the preview
                 }
-                SendLook(1, nullptr);
+                SendLook(0);
                 if (P.applied >= 0 && P.applied != P.chosen) SafeRelease(P.cards[P.applied].image);
                 P.applied = P.chosen;
                 SafeRelease(c.image);
                 P.stills[0] = P.stills[1] = Still{};
                 P.chosen = -1;
-                P.revealAt = 0;
+                P.revealAt = P.holeAt = 0;
                 P.chosenClose = true;
                 P.phase = CLOSING;
                 P.phaseAt = now;
@@ -3093,6 +3257,7 @@ bool Step(double now) {
     }
     moving |= Approach(P.menuA, P.menu ? 1.f : 0.f, 8, dt);
     moving |= Approach(P.musicA, P.music ? 1.f : 0.f, 8, dt);
+    moving |= P.music && g_settings.musicPlayer > 0 && Player_Turns();  // its player, turning
     moving |= Approach(P.actionsA, P.actions ? 1.f : 0.f, P.actions ? 3.5f : 7.f, dt);
     moving |= Approach(P.versionsA, P.actions && P.versions ? 1.f : 0.f, 8, dt);
     moving |= Approach(P.binTick, P.binArmed ? 1.f : 0.f, 5, dt);
@@ -3124,6 +3289,7 @@ void Destroy() {
     if (P.showcaseAsked) Host_Showcase(nullptr);
     if (!P.used) AskPreview(g_settings.video, 0);  // back to the wallpaper's own video
     Library_Stop();
+    Player_FreePreview();
     HWND h = P.hwnd;
     P.hwnd = nullptr;
     MSG msg;

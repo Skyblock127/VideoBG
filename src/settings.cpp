@@ -552,6 +552,7 @@ static ClockLook ReadLook(const wchar_t* ini, const wchar_t* sec, const std::wst
     l.nativeDigits = GetPrivateProfileIntW(sec, (prefix + L"NativeDigits").c_str(), 0, ini) != 0;
     l.font = ReadStr(ini, sec, (prefix + L"Font").c_str());
     if (l.font.empty()) l.font = base.font;
+    l.style = ReadStr(ini, sec, (prefix + L"Style").c_str());
     return l;
 }
 
@@ -579,6 +580,7 @@ static void WriteLook(IniBatch& ini, const wchar_t* sec, const std::wstring& pre
     ini.Set(sec, prefix + L"Language", l && !l->lang.empty() ? l->lang.c_str() : nullptr);
     ini.Set(sec, prefix + L"NativeDigits", l && l->nativeDigits ? L"1" : nullptr);
     ini.Set(sec, prefix + L"Font", l && l->font != ClockLook{}.font ? l->font.c_str() : nullptr);
+    ini.Set(sec, prefix + L"Style", l && !l->style.empty() ? l->style.c_str() : nullptr);
 }
 
 // Clock presets: [Presets] Preset1Name, Preset1X, Preset1Color... (a look's keys); an empty one has none.

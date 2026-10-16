@@ -69,9 +69,9 @@ ClockLook WantedLook() {
     return g_settings.clockVideoOwn ? g_settings.clockVideo : g_settings.clockLive;
 }
 
-// The modern look's music player on the desktop: there with the video wallpaper, while My music is on.
+// The music player on the desktop (in either look): there with the video wallpaper, while My music is on.
 void SyncPlayer(bool force) {
-    if (g_settings.look != 1 || g_settings.musicPlayer < 1 || g_settings.sound != 2 || !WallpaperShowing()) {
+    if (g_settings.musicPlayer < 1 || g_settings.sound != 2 || !WallpaperShowing()) {
         Player_Hide();
         return;
     }
@@ -95,7 +95,7 @@ void SyncClock(bool force = false) {
     Clock_Show(g_wnd, look);
     g_clockShown = key;
     Log(L"clock: %ls look (%.1f%%, %.1f%%, %ls, colour %ls, size %.0f%%, opacity %.0f%%, glow %.0f%%)",
-        WallpaperShowing() ? L"video wallpaper" : L"still wallpaper", look.x * 100, look.y * 100, look.font.c_str(), look.color.c_str(),
+        WallpaperShowing() ? L"video wallpaper" : L"still wallpaper", look.x * 100, look.y * 100, Clock_StyleName(look).c_str(), look.color.c_str(),
         look.size * 100, look.opacity * 100, look.glow * 100);
 }
 // The lock screen and desktop background, while they follow the wallpaper: the video's frame while
@@ -738,11 +738,20 @@ void Host_Showcase(HWND under) {
     if (g_ctl) PostMessageW(g_ctl, WM_VBG_SHOWCASE, under ? 1 : 0, (LPARAM)under);
 }
 
-void Host_ShowcaseLook(float brightness, const RECT* box) {
+void Host_ShowcaseLook(const ShowcaseLook* look) {
     if (!g_ctl) return;
-    const bool usual = brightness >= 1 && !box;
-    PostMessageW(g_ctl, WM_VBG_SHOWCASE_LOOK, usual ? 0 : 1 + (WPARAM)(std::clamp(brightness, 0.f, 1.f) * 1000 + 0.5f),
-                 box ? PackBox(*box) : 0);
+    if (!look) {
+        PostMessageW(g_ctl, WM_VBG_SHOWCASE_DIM, 0, 0);
+        return;
+    }
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    auto ticks = [&](double s) { return (LPARAM)(s * (double)f.QuadPart); };
+    auto ms = [](double s) { return (WPARAM)(s * 1000 + 0.5); };
+    const WPARAM bright = (WPARAM)std::clamp((int)(look->bright * 1000 + 0.5f), 1, 1000);
+    PostMessageW(g_ctl, WM_VBG_SHOWCASE_DIM, bright | ms(look->dimFor) << 16, ticks(look->dimAt));
+    if (look->box.right > look->box.left) PostMessageW(g_ctl, WM_VBG_SHOWCASE_BOX, 0, PackBox(look->box));
+    if (look->growAt > 0) PostMessageW(g_ctl, WM_VBG_SHOWCASE_GROW, ms(look->growFor), ticks(look->growAt));
 }
 
 void Host_HoldWallpaper(bool hold) {

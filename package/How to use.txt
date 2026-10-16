@@ -32,8 +32,9 @@ Using it
       * Scroll (a touchpad works too), drag the deck or use the arrow keys:
         the wallpaper shows each one's picture at once, and its video plays
         after a moment on it. Enter, or a click on the middle card once the
-        deck has stopped on it, makes it your wallpaper; Esc or Ctrl+Alt+B
-        closes and keeps the one you had.
+        deck has stopped on it, makes it your wallpaper: it comes forward,
+        its picture turns into the video playing, and the video grows to
+        fill the screen. Esc or Ctrl+Alt+B closes and keeps the one you had.
       * Right-click the middle card: the red bin (click it again, once it's
         a tick, to take the video off the list; the file isn't touched), its
         versions (the original and any lighter ones), and for your wallpaper,
@@ -41,12 +42,13 @@ Using it
         your lock screen). Delete brings up the bin too. Each card shows the
         size of the version it plays.
       * Clock (top right): drag the clock right on your desktop, with all its
-        settings beside it (an eyedropper and any colour for both colours);
-        it's this video's own clock. The arrow sends the panel to the other
+        settings beside it (style, language, an eyedropper and any colour for
+        both colours); it's this video's own clock. The arrow sends the panel to the other
         side, the eye hides it. Save or Cancel takes you back.
       * Music (top right): play, pause, skip, shuffle, repeat, the volume,
         your playlist (click a song to play it, drag its grip to move it),
-        and a music player on your desktop (drag it to move it).
+        and a music player on your desktop (step through its styles and see
+        it right there; drag it on the desktop to move it).
       * Settings (top right, or right-click anywhere else): add videos, the
         lock screen, the wallpaper off, all the settings, or back to the
         classic look. The settings window is the same in both looks.
@@ -77,11 +79,15 @@ Using it
   - Show on lock screen (switch under the preview, on by default): while
     the video wallpaper is on, the lock screen and the Windows desktop
     background (seen behind admin prompts and at sign-in) show a frame of
-    the video (pick it with the Preview slider, which also moves the
-    wallpaper to that spot to play on from there); while it's off, your own
+    the video (pick it with the Preview slider: the wallpaper holds on that
+    frame, and plays on a second after you let go); while it's off, your own
     pictures. Exiting VideoBG from the tray puts your own pictures back.
     (The desktop background only follows with one screen and a
     single-picture background on Windows 11 24H2 or newer.)
+  - Video page: "Your wallpapers" lists the videos you switch between (the
+    modern look's too), with their pictures: click one to make it your
+    wallpaper, "Add videos" adds more, the bin takes one off the list (the
+    file isn't touched).
   - Desktop clock page:
       * The row at the top picks the clock you're editing: Video / Still
         (the video wallpaper's or the still wallpaper's), then for the
@@ -98,17 +104,23 @@ Using it
         wallpaper. Ctrl+V pastes a colour code like #72ABDE.
       * Date: how the date reads (09 OCTOBER, 2026. / OCTOBER 9, 2026 /
         09 / 10 / 26 ...), or no date at all.
-      * Language (top of the font list) writes the day, month and AM/PM in
+      * Style: the clock's design, each shown as it looks: Mond (day, date
+        and time) in any font, Dial (hands, the date under it), Ring (the
+        hour fills a ring around the time), Flip (flip-clock tiles), Stack
+        (hours over minutes), Line (time, then day and date) and Big (the
+        date over a big time). What a style doesn't show is greyed out (a
+        dial has no 12/24-hour time; with no date, it has no words at all).
+      * Language (top of the style list) writes the day, month and AM/PM in
         any language Windows knows, with its own digits if it has them. A
         font only changes the letters' shapes, so pick one that has that
         language's letters (otherwise Windows fills them in).
-      * Font: Audiowide, Michroma, Orbitron or Syncopate, for the whole
-        clock. Anurati (the original Mond font) is free for personal use
-        only, so it isn't included: in the font list, "Get it" opens its
+      * Mond's fonts: Audiowide, Michroma, Orbitron or Syncopate (each is a
+        style in the list). Anurati (the original Mond font) is free for
+        personal use only, so it isn't included: in the list, "Get it" opens its
         download; VideoBG then finds it in your Downloads and keeps its own
         copy, so you can delete the download (or use "Add font file", a .zip
         works too).
-      * "Add your own font" (at the bottom of the font list) takes any .ttf
+      * "Add your own font" (at the bottom of the style list) takes any .ttf
         or .otf font, or a .zip with one. VideoBG keeps its own copy and
         sizes it like the others; "Remove" deletes the copy (it asks first).
       * Size, opacity, glow (strength, size and colour) and 12/24-hour time.
@@ -128,6 +140,9 @@ Using it
     songs counts as shuffling; turning shuffle off goes back to the order
     you chose them in. With the video wallpaper off the music waits where it
     was, and Play/Pause decides whether it starts when the wallpaper's back.
+    "On the desktop" puts a music player on your desktop while My music
+    plays: Vinyl (a record that turns, with the song's cover), Cassette,
+    Disc or Bars (they move with the sound). Drag it to move it.
   - Sound and Playback pages: sound source, speed, frame rate, and (under
     Power saving) pausing while apps cover the desktop or on battery.
   - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.

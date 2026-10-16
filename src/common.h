@@ -52,8 +52,10 @@ enum : UINT {
     WM_VBG_SHOWCASE_UP,                  // renderer -> host   the showcase has its first frame on screen
     WM_VBG_PREVIEW_UP,                   // renderer -> host   after a preview switch: wParam 1 = its first frame is up, 0 = it couldn't play
     WM_VBG_PICKER,                       // 2nd instance -> host: open the wallpaper picker (--wallpapers)
-    WM_VBG_SHOWCASE_LOOK,                // host -> renderer   a wallpaper being chosen: wParam 0 = the showcase as usual, else
-                                         //                    1 + the brightness of the rest (0-1000); lParam = PackBox of the box its video plays in
+    WM_VBG_SHOWCASE_DIM,                 // host -> renderer   a wallpaper being chosen: wParam 0 = the showcase as usual, else the brightness the
+                                         //                    rest dims to (1-1000) | ms it takes << 16; lParam = when it starts (QueryPerformanceCounter)
+    WM_VBG_SHOWCASE_BOX,                 // host -> renderer   ... the chosen video again, full bright, in this box: lParam = PackBox (pixels)
+    WM_VBG_SHOWCASE_GROW,                // host -> renderer   ... the box grows to fill the screen: wParam = ms it takes, lParam = when it starts
     WM_VBG_HOLD,                         // host -> renderer   wParam 1 = hold the video still (the picker's frame slider), 0 = let it play
 };
 // A box on the showcase (target pixels), 16 bits a side.
@@ -108,14 +110,15 @@ struct ClockLook {
     std::wstring glowColor;          // "r,g,b", "" = the text colour
     bool show = true;                // the clock shows at all with this look
     bool h24 = false;                // 24-hour time (else 12-hour)
-    std::wstring font = L"Audiowide";  // the whole clock's font (a key from Clock_Fonts)
+    std::wstring style;              // its design (a key from Clock_Styles): "" = the Mond clock, in `font`
+    std::wstring font = L"Audiowide";  // the Mond clock's font (a key from Clock_Fonts)
     int date = 0;                    // how the date line reads (a Clock_DateText style)
     std::wstring lang;               // the language of its words (a Windows locale name, "" = English)
     bool nativeDigits = false;       // the language's own digits (when it has them) instead of 0-9
     bool operator==(const ClockLook& o) const {
         return x == o.x && y == o.y && color == o.color && size == o.size && opacity == o.opacity && glow == o.glow &&
-               glowSize == o.glowSize && glowColor == o.glowColor && show == o.show && h24 == o.h24 && font == o.font &&
-               date == o.date && lang == o.lang && nativeDigits == o.nativeDigits;
+               glowSize == o.glowSize && glowColor == o.glowColor && show == o.show && h24 == o.h24 && style == o.style &&
+               font == o.font && date == o.date && lang == o.lang && nativeDigits == o.nativeDigits;
     }
 };
 
@@ -291,7 +294,17 @@ void Host_VideoPlayable(const std::wstring& path);  // the UI could read it: res
 // The modern look's picker: the wallpaper full screen just under `under` (nullptr = stop), and another
 // video playing in its place ("" = the wallpaper's own again; seq comes back with WM_VBG_PREVIEW_UP).
 void Host_Showcase(HWND under);
-void Host_ShowcaseLook(float brightness, const RECT* box);  // choosing: the rest dims, the video plays in box (pixels); (1, nullptr) = as usual
+// Choosing a wallpaper: the showcase dims to `bright` (over dimFor seconds from dimAt), plays the
+// chosen video again in `box` (pixels; empty = no box yet), and from growAt (0 = not yet) the box
+// grows to fill the screen over growFor seconds. The renderer animates it by itself at the display's
+// refresh; times are seconds on QueryPerformanceCounter's clock, which every process shares.
+struct ShowcaseLook {
+    float bright = 1;
+    double dimAt = 0, dimFor = 0.5;
+    RECT box{};
+    double growAt = 0, growFor = 0.6;
+};
+void Host_ShowcaseLook(const ShowcaseLook* look);  // nullptr: the showcase as usual
 void Host_HoldWallpaper(bool hold);                          // the video holds still (while a frame is picked), then plays on
 void Host_SetLook(int look);  // 0 classic, 1 modern
 void Host_PreviewVideo(const std::wstring& path, double time, UINT seq);
@@ -407,11 +420,18 @@ void Clock_Refresh();   // time jumped, display changed, woke from sleep: redraw
 float Clock_PixelScale();
 std::wstring Clock_StyleKey(const ClockLook& look);  // everything that changes the picture (not the place)
 
-// Desktop music player (player.cpp), for the modern look: the song and its controls, on the desktop.
+// Desktop music player (player.cpp): the song and its controls, on the desktop, in a style.
 void Player_Show(const std::vector<std::wstring>& songs, bool force);  // create / update (songs: the playlist)
 void Player_Update();  // the song or its place changed: redrawn if it shows something new
 void Player_Hide();
 std::vector<std::wstring> Player_Styles();  // by name: Settings::musicPlayer is 0 for none, else 1 + one of these
+// A style's picture (style 1-based, scale: pixels per DIP) with the song as it is now, for the
+// settings windows; live: what turns, turned by the clock (a still one shows it mid-song).
+bool Player_Paint(int style, float scale, bool live, ClockImage* out);
+void Player_Size(int style, float* w, float* h);  // DIPs
+std::wstring Player_About(int style);             // what it is, in a few words (0: none)
+bool Player_Turns();        // the music plays: a live preview moves
+void Player_FreePreview();  // done with previews (what drew them goes, unless the player shows)
 // The clock's fonts. Fonts VideoBG can't include (free for personal use only) are used once they're
 // on the PC: installed, or added through VideoBG (kept in %LOCALAPPDATA%\VideoBG\Fonts).
 struct ClockFontInfo {
@@ -420,6 +440,27 @@ struct ClockFontInfo {
     bool removable;         // VideoBG has a copy in its fonts folder, which can be deleted
     bool ready;             // included, or its file is on this PC
 };
+// Clock styles: the Mond clock (day, date, time) in any of the fonts, and clocks of their own design,
+// each with its own fonts and its own place for the date. A look keeps its style (ClockLook::style,
+// "" = Mond) and, for Mond, its font. Mond in Audiowide comes first, then the designs, then Mond in
+// the other fonts (some not on this PC yet: see their font).
+struct ClockStyleInfo {
+    std::wstring style;      // ClockLook::style
+    std::wstring name;       // as shown
+    std::wstring about;      // what it is, in a few words
+    ClockFontInfo font;      // Mond: its font; a design: ready, and no font key
+    bool day, digital, date; // what it shows: the day's name, the time in digits, a date line
+};
+std::vector<ClockStyleInfo> Clock_Styles();
+bool Clock_IsStyle(const ClockLook& l, const ClockStyleInfo& s);  // the look has this style (a font that's gone: Audiowide's)
+void Clock_UseStyle(ClockLook& l, const ClockStyleInfo& s);
+std::wstring Clock_StyleName(const ClockLook& l);
+// What a look's style shows, for the choices that only matter to some: its language (day or month
+// names, AM/PM), its digits, 12- or 24-hour time, and the date line.
+bool Clock_UsesWords(const ClockLook& l);
+bool Clock_UsesDigits(const ClockLook& l);
+bool Clock_UsesHours(const ClockLook& l);
+bool Clock_UsesDate(const ClockLook& l);
 // Date styles: how the clock's middle line reads in the look's language; "" for the style that
 // leaves it out.
 int Clock_DateStyleCount();
