@@ -523,6 +523,15 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 MusicShortcut(false);
             }
             return 0;
+        case WM_VBG_MEDIA_KEY:  // a media key (or the volume flyout's buttons), for My music
+            switch (w) {
+                case 0: Host_PlayMusic(true); break;   // Play
+                case 1:                                // Pause, Stop
+                case 2: Host_PlayMusic(false); break;
+                case 6: Host_SkipMusic(true); break;   // Next
+                case 7: Host_SkipMusic(false); break;  // Previous
+            }
+            return 0;
         case WM_INPUT: {
             RAWINPUT ri;
             UINT size = sizeof ri;
@@ -586,6 +595,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             g_music.playing = ((UINT64)l >> 48) & 1;
             Player_Update();
             Modern_MusicChanged();
+            Media_Update();
             return 0;
         case WM_VBG_MUSIC_END:  // the last song ended with repeat off: stopped, ready at the first song
             g_settings.musicPlaying = false;
@@ -645,6 +655,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_DESTROY:
             g_exiting = true;
+            Media_Stop();
             SyncClock();  // takes the clock off the desktop
             if (!g_endingSession) {
                 SyncLockScreen();  // exiting: the user's own pictures again (VideoBG no longer shows a video)
@@ -720,6 +731,7 @@ void Host_SettingsChanged() {
     SyncClock();
     SyncLockScreen();  // the video or its crop may have changed
     Modern_SettingsChanged();
+    Media_Update();
 }
 
 void Host_FrameChanged() {
@@ -1036,6 +1048,7 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker) {
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     ChangeWindowMessageFilterEx(g_wnd, g_taskbarCreated, MSGFLT_ALLOW, nullptr);
     AddTray();
+    Media_Start(g_wnd);
 
     if (!RegisterToggleHotkey(g_settings.hkMods, g_settings.hkVk)) {
         Balloon(L"VideoBG's hotkey isn't available",

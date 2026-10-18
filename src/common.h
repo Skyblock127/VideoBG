@@ -57,6 +57,7 @@ enum : UINT {
     WM_VBG_SHOWCASE_BOX,                 // host -> renderer   ... the chosen video again, full bright, in this box: lParam = PackBox (pixels)
     WM_VBG_SHOWCASE_GROW,                // host -> renderer   ... the box grows to fill the screen: wParam = ms it takes, lParam = when it starts
     WM_VBG_HOLD,                         // host -> renderer   wParam 1 = hold the video still (the picker's frame slider), 0 = let it play
+    WM_VBG_MEDIA_KEY,                    // media controls -> host: wParam = the button (a keyboard's play/pause, next, previous)
 };
 // A box on the showcase (target pixels), 16 bits a side.
 inline LPARAM PackBox(const RECT& r) {
@@ -449,7 +450,11 @@ void Player_Seek(float frac);  // the song moves there (and shows there at once)
 void Player_Size(int style, float* w, float* h);  // DIPs
 std::wstring Player_About(int style);             // what it is, in a few words (0: none)
 bool Player_Turns();        // the music plays: a live preview moves
-void Player_FreePreview();  // done with previews (what drew them goes, unless the player shows)
+void Player_FreePreview();
+// Windows' media controls (media.cpp): the keyboard's media keys and the volume flyout's card, for My music.
+void Media_Start(HWND host);
+void Media_Update();  // My music changed (song, playing, its songs or the sound source)
+void Media_Stop();  // done with previews (what drew them goes, unless the player shows)
 // The clock's fonts. Fonts VideoBG can't include (free for personal use only) are used once they're
 // on the PC: installed, or added through VideoBG (kept in %LOCALAPPDATA%\VideoBG\Fonts).
 struct ClockFontInfo {
