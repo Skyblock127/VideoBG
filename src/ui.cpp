@@ -38,13 +38,13 @@ enum Id {
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_MUSIC_PLAY, ID_MUSIC_PREV, ID_MUSIC_NEXT, ID_MUSIC_SHUFFLE, ID_MUSIC_REPEAT, ID_MUSIC_SEEK,
     ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_UNMUTE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX, ID_PLAYER_STYLE, ID_WALLS,
-    ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
+    ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_ROTATE, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
     ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO,
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_FNT_YES, ID_FNT_NO, ID_VER_YES, ID_VER_NO,
     ID_FB_IDEA, ID_FB_BUG, ID_FB_SCRIM, ID_FB_TEXT, ID_FB_STEPS, ID_FB_EMAIL, ID_FB_OFTEN, ID_FB_LOG, ID_FB_PREVIEW, ID_FB_CANCEL,
-    ID_FB_SEND, ID_MEMINFO,
+    ID_FB_SEND, ID_MEMINFO, ID_FB_PICS, ID_FB_PICS_CLEAR,
     ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
@@ -57,6 +57,7 @@ enum Id {
     ID_LANG_ROW0 = 1000,  // the clock language list: a language's row (as many as Windows has)
     ID_SONG_ROW0 = 10000,  // the playlist: a song's row, and its grip for moving it (up to 10000 songs)
     ID_SONG_GRIP0 = 20000,
+    ID_SONG_DEL0 = 30000,  // + song: take it off the playlist
     ID_PRS_USE0 = 2100,   // clock presets: a preset's Use, Edit, Rename and Delete buttons
     ID_PRS_EDIT0 = 2110,
     ID_PRS_REN0 = 2120,
@@ -351,6 +352,7 @@ struct UI {
     ID2D1Bitmap* clockBmp = nullptr;
     D2D1_RECT_F clockBox{};           // the preview (whole screen) on the page
     D2D1_POINT_2F clockGrab{};        // where in the clock the drag started
+    float rotFrom = 0, rotPointer = 0;  // turning the clock: its angle when taken, and the pointer's
     bool overClock = false, snapX = false, snapY = false;
     float snapYv = 0;
     bool picking = false;             // eyedropper on: clicking the preview takes the wallpaper's colour there
@@ -1468,7 +1470,8 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
     }
     auto row = [&](int song, size_t p, const D2D1_RECT_F& r, bool lifted) {
         const bool isCurrent = song == current;
-        const bool hot = !moving && (IsHot(ID_SONG_ROW0 + song) || IsHot(ID_SONG_GRIP0 + song) || (u.drag == ID_MUSIC_LIST && u.songPress == song));
+        const bool hot = !moving && (IsHot(ID_SONG_ROW0 + song) || IsHot(ID_SONG_GRIP0 + song) || IsHot(ID_SONG_DEL0 + song) ||
+                                     (u.drag == ID_MUSIC_LIST && u.songPress == song));
         if (lifted) {
             Fill(R(r.left, r.top + 2, r.right, r.bottom + 3), D2D1::ColorF(0, 0, 0, 0.25f), 5);  // shadow
             Fill(r, Mix(t.card, t.accent, current ? 0.22f : 0.1f), 5);
@@ -1480,12 +1483,16 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
         }
         if (isCurrent) Text(L"\uE767", R(r.left + 6, r.top, r.left + 34, r.bottom), u.fIconSmall, on ? t.accent : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
         else Text(std::to_wstring(p + 1), R(r.left + 6, r.top, r.left + 34, r.bottom), u.fSmall, t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
-        Text(SongName(u.playlist[song]), R(r.left + 42, r.top, r.right - 48, r.bottom), isCurrent ? u.fStrong : u.fBody,
+        Text(SongName(u.playlist[song]), R(r.left + 42, r.top, r.right - (hot && on ? 80 : 48), r.bottom), isCurrent ? u.fStrong : u.fBody,
              !on ? t.text3 : isCurrent || lifted ? t.text : t.text2);
         const bool gripHot = on && (IsHot(ID_SONG_GRIP0 + song) || lifted);
         Text(L"\uE76F", R(r.right - 40, r.top, r.right - 8, r.bottom), u.fIconSmall, gripHot ? t.text : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
         if (!moving) {
-            AddHit(ID_SONG_ROW0 + song, K_BUTTON, R(r.left, r.top, r.right - 44, r.bottom), on);
+            if (hot && on)  // take it off the list: shown only on its row, in the row's own grey
+                Text(L"\uE711", R(r.right - 76, r.top, r.right - 44, r.bottom), u.fIconSmall, IsHot(ID_SONG_DEL0 + song) ? t.text : t.text3,
+                     DWRITE_TEXT_ALIGNMENT_CENTER);
+            AddHit(ID_SONG_ROW0 + song, K_BUTTON, R(r.left, r.top, r.right - 76, r.bottom), on);
+            AddHit(ID_SONG_DEL0 + song, K_BUTTON, R(r.right - 76, r.top, r.right - 44, r.bottom), on);
             AddHit(ID_SONG_GRIP0 + song, K_AREA, R(r.right - 44, r.top, r.right, r.bottom), on);
         }
     };
@@ -1635,6 +1642,7 @@ struct FeedbackUI {
     DWORD sentAt = 0;
     std::wstring idea, what, doing, mail;  // drafts, kept while VideoBG runs (Cancel doesn't lose them)
     D2D1_RECT_F boxText{}, boxSteps{}, boxEmail{};
+    std::vector<FeedbackPicture> pictures;  // screenshots for it (added, or pasted with Ctrl+V)
     WNDPROC editProc = nullptr;
 } fb;
 
@@ -1653,7 +1661,7 @@ D2D1_RECT_F FeedbackLayout() {
     const float W = kDialogW, H = fb.bug ? 548 : 376, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
     float y = T + 84;
     if (!fb.bug) {
-        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 188);
+        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 144);
         fb.boxSteps = fb.boxEmail = R(0, 0, 0, 0);
     } else {
         fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 96);
@@ -2116,6 +2124,19 @@ void PaintClockPage(float x, float w) {
     PopRounded(clip);
     if (on && (u.drag == ID_CLK_AREA || u.focus == ID_CLK_AREA || (u.overClock && u.hot == ID_CLK_AREA && !u.picking)))
         Badge(Fmt(L"%.1f%% across  \u00B7  %.1f%% down", look->x * 100, look->y * 100), box.left + 8, box.bottom - 28);
+    // The handle that turns the clock, above it (below it near the top), quiet until pointed at; it
+    // shows while the pointer is on the preview. A double click puts it upright; Shift turns it freely.
+    if (on && look->show && !u.picking && (u.hot == ID_CLK_AREA || u.hot == ID_CLK_ROTATE || u.drag == ID_CLK_ROTATE || u.drag == ID_CLK_AREA)) {
+        const D2D1_RECT_F cr = ClockRectIn(box, *look);
+        const float hx = (cr.left + cr.right) / 2, hy = cr.top - 14 > box.top + 12 ? cr.top - 14 : cr.bottom + 14;
+        const bool lit = u.hot == ID_CLK_ROTATE || u.drag == ID_CLK_ROTATE;
+        Circle(hx, hy, 9, D2D1::ColorF(0, 0, 0, 0.3f));
+        u.br->SetColor(D2D1::ColorF(1, 1, 1, lit ? 0.75f : 0.4f));
+        u.rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(hx, hy), 9, 9), u.br, 1);
+        Text(L"\uE7AD", R(hx - 9, hy - 9, hx + 9, hy + 9), u.fIconSmall, D2D1::ColorF(1, 1, 1, lit ? 0.9f : 0.55f), DWRITE_TEXT_ALIGNMENT_CENTER);
+        if (u.drag == ID_CLK_ROTATE || (lit && look->rotate != 0)) Badge(Fmt(L"%.0f\u00B0", look->rotate), hx + 14, hy - 12);
+        AddHit(ID_CLK_ROTATE, K_AREA, R(hx - 12, hy - 12, hx + 12, hy + 12));
+    }
     if (!on) Fill(box, D2D1::ColorF(t.card.r, t.card.g, t.card.b, 0.55f), 6);  // greyed out
     AddHit(ID_CLK_AREA, K_AREA, box, on);
     float yy = box.bottom + 10;
@@ -3429,6 +3450,19 @@ void PaintFeedbackDialog() {
         Link(ID_FB_PREVIEW, R(L + W - 24 - 130, y + 5, L + W - 24, y + 23), L"See what's sent");
         box(ID_FB_EMAIL, fb.boxEmail, fb.email, L"Your email, if you'd like a reply (optional)");
     }
+    // Pictures: added from files, or a screenshot pasted into a text box.
+    {
+        const D2D1_RECT_F b = fb.bug ? R(L + 356, fb.boxEmail.top, L + 496, fb.boxEmail.bottom)
+                                     : R(L + 24, fb.boxText.bottom + 14, L + 164, fb.boxText.bottom + 46);
+        const size_t n = fb.pictures.size();
+        Button(ID_FB_PICS, b, n ? Fmt(L"Pictures (%zu)", n) : std::wstring(L"Add pictures"), L"\uEB9F", false, n < kFeedbackPictures && !fb.sending);
+        float px = b.right + 12;
+        if (n) {
+            Link(ID_FB_PICS_CLEAR, R(px, b.top + 7, px + 64, b.top + 25), L"Remove");
+            px += 76;
+        }
+        if (!fb.bug) Text(L"or paste a screenshot into the box (Ctrl+V)", R(px, b.top, L + W - 24, b.bottom), u.fSmall, t.text2);
+    }
     const float by = T + H - 48;
     const bool canSend = !fb.sending && FbGet(fb.text).size() >= 3;
     Text(fb.sending ? std::wstring(L"Sending\u2026") : fb.note, R(L + 24, by - 4, L + W - 24 - 236, by + 36), u.fWrap,
@@ -3794,6 +3828,17 @@ void ClockDrag(float mx, float my, bool start) {
     look->x = cx;
     look->y = cy;
     LiveClock();  // the real clock follows the drag
+}
+
+// Turning the clock by its handle, round the clock's centre on the preview.
+void ClockRotate(float mx, float my) {
+    ClockLook* look = EditedLook();
+    const D2D1_RECT_F cr = ClockRectIn(u.clockBox, *look);
+    const float r = Clock_RotateTo(u.rotFrom, u.rotPointer, Clock_PointerAngle((cr.left + cr.right) / 2, (cr.top + cr.bottom) / 2, mx, my),
+                                   GetKeyState(VK_SHIFT) < 0);
+    if (r == look->rotate) return;
+    look->rotate = r;
+    LiveClock();  // the real clock follows
 }
 
 void ClockNudge(UINT vk) {
@@ -4516,8 +4561,56 @@ void CloseFeedback() {
 void FeedbackSend();
 
 // The text boxes' own keys: Tab moves on through the dialog, Esc closes it, Ctrl+Enter sends.
+// A picture for the report (a file, or a screenshot from the clipboard).
+void FbAddPicture(const std::wstring& file, HBITMAP bitmap) {
+    if (fb.pictures.size() >= kFeedbackPictures) {
+        fb.note = Fmt(L"Up to %zu pictures fit in a report.", kFeedbackPictures);
+        return;
+    }
+    FeedbackPicture p;
+    if (Feedback_Picture(file, bitmap, &p)) {
+        fb.pictures.push_back(std::move(p));
+        fb.note.clear();
+    } else {
+        fb.note = L"That picture couldn't be read.";
+    }
+    InvalidateRect(u.hwnd, nullptr, FALSE);
+}
+
+void FbPickPictures() {
+    IFileOpenDialog* dlg = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return;
+    const COMDLG_FILTERSPEC types[] = {{L"Pictures", L"*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.heic"}};
+    dlg->SetFileTypes(1, types);
+    dlg->SetTitle(L"Pictures for your report");
+    dlg->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_ALLOWMULTISELECT);
+    IShellItemArray* items = nullptr;
+    if (SUCCEEDED(dlg->Show(u.hwnd)) && SUCCEEDED(dlg->GetResults(&items))) {
+        DWORD n = 0;
+        items->GetCount(&n);
+        for (DWORD i = 0; i < n; i++) {
+            IShellItem* it = nullptr;
+            PWSTR path = nullptr;
+            if (SUCCEEDED(items->GetItemAt(i, &it)) && SUCCEEDED(it->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                FbAddPicture(path, nullptr);
+                CoTaskMemFree(path);
+            }
+            if (it) it->Release();
+        }
+        items->Release();
+    }
+    dlg->Release();
+}
+
 LRESULT CALLBACK FbEditProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     const bool ctrl = GetKeyState(VK_CONTROL) < 0;
+    if (m == WM_PASTE && IsClipboardFormatAvailable(CF_BITMAP) && !IsClipboardFormatAvailable(CF_UNICODETEXT)) {  // a screenshot
+        if (OpenClipboard(u.hwnd)) {
+            if (HBITMAP bmp = (HBITMAP)GetClipboardData(CF_BITMAP)) FbAddPicture(L"", bmp);
+            CloseClipboard();
+        }
+        return 0;
+    }
     if (m == WM_KEYDOWN) {
         if (w == VK_TAB) {
             u.focus = GetDlgCtrlID(h);
@@ -4651,6 +4744,7 @@ FeedbackReport FeedbackCollect() {
         r.system = FeedbackSystem();
         if (fb.withLog) r.log = Feedback_Log();
     }
+    r.pictures = fb.pictures;
     return r;
 }
 
@@ -4714,6 +4808,12 @@ void OnClick(int id) {
         u.picking = false;
         if (id - ID_NAV == NAV_CLOCK) ShowClockPage();
         else u.nav = id - ID_NAV;
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return;
+    }
+    if (id >= ID_SONG_DEL0 && id < ID_SONG_DEL0 + 10000) {  // take it off the playlist
+        Host_RemoveSong(id - ID_SONG_DEL0);
+        u.playlist = LoadPlaylist();
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
@@ -4863,6 +4963,8 @@ void OnClick(int id) {
         case ID_FB_SEND: FeedbackSend(); break;
         case ID_FB_LOG: fb.withLog = !fb.withLog; break;
         case ID_FB_PREVIEW: FeedbackPreview(); break;
+        case ID_FB_PICS: FbPickPictures(); break;
+        case ID_FB_PICS_CLEAR: fb.pictures.clear(); break;
         case ID_PRS: OpenPresets(); break;
         case ID_PRS_CLOSE: ClosePresets(); break;
         case ID_PRS_NO: prs.confirm = -1; break;
@@ -5307,6 +5409,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                         if (ht.kind == K_SLIDER) OnSlider(ht.id, SliderFrac(ht, x), false);
                         else if (ht.id == ID_C_AREA) DragCrop(x, y);
                         else if (ht.id == ID_CLK_AREA) ClockDrag(x, y, false);
+                        else if (ht.id == ID_CLK_ROTATE) ClockRotate(x, y);
                         else if (ht.id == ID_FNT_BAR) FontBarDrag(y, false);
                         else if (ht.id == ID_DLG_SV || ht.id == ID_DLG_HUE) DlgDrag(ht.id, x, y);
                         break;
@@ -5424,6 +5527,17 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             } else if (ht->id == ID_FNT_BAR) {
                 u.drag = ht->id;
                 FontBarDrag(y, true);
+            } else if (ht->id == ID_CLK_ROTATE) {
+                ClockLook* look = EditedLook();
+                if (m == WM_LBUTTONDBLCLK) {  // upright again
+                    look->rotate = 0;
+                    ClockEdited();
+                } else {
+                    const D2D1_RECT_F cr = ClockRectIn(u.clockBox, *look);
+                    u.drag = ht->id;
+                    u.rotFrom = look->rotate;
+                    u.rotPointer = Clock_PointerAngle((cr.left + cr.right) / 2, (cr.top + cr.bottom) / 2, x, y);
+                }
             } else if (ht->id == ID_CLK_AREA) {
                 u.drag = ht->id;
                 u.overClock = true;
@@ -5459,7 +5573,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     if (ht.id == dragId) {
                         if (ht.kind == K_SLIDER) OnSlider(ht.id, SliderFrac(ht, x), true);
                         else if (ht.id == ID_C_AREA) SendPreview(true);
-                        else if (ht.id == ID_CLK_AREA) {
+                        else if (ht.id == ID_CLK_AREA || ht.id == ID_CLK_ROTATE) {
                             u.snapX = u.snapY = false;
                             ClockEdited();  // save, and put the full look on the desktop
                         } else if (ht.id == ID_DLG_SV || ht.id == ID_DLG_HUE) {
@@ -5645,6 +5759,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
                 if (bug) fb.what.clear(), fb.doing.clear();
                 else fb.idea.clear();
+                fb.pictures.clear();
                 fb.sent = L"Thanks, it's sent!";
                 fb.sentAt = GetTickCount();
             } else {

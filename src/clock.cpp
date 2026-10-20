@@ -1299,8 +1299,8 @@ bool DateHasWords(int date) { return date <= 4 || (date >= 10 && date <= 12); } 
 
 std::wstring Clock_StyleKey(const ClockLook& l) {
     wchar_t b[200];
-    swprintf(b, 200, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls|%ls|%d|%ls|%d", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
-             l.glowColor.c_str(), l.h24, l.style.c_str(), l.font.c_str(), l.date, l.lang.c_str(), l.nativeDigits);
+    swprintf(b, 200, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls|%ls|%d|%ls|%d|%.1f", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
+             l.glowColor.c_str(), l.h24, l.style.c_str(), l.font.c_str(), l.date, l.lang.c_str(), l.nativeDigits, l.rotate);
     return b;
 }
 
@@ -1352,6 +1352,19 @@ bool Clock_UsesDigits(const ClockLook& l) {
 bool Clock_UsesHours(const ClockLook& l) {
     const Design* d = FindDesign(l.style);
     return !d || d->hours;
+}
+
+float Clock_PointerAngle(float cx, float cy, float x, float y) { return atan2f(x - cx, cy - y) * 180 / 3.14159265f; }
+
+float Clock_RotateTo(float startRotate, float startPointer, float pointer, bool free) {
+    float r = startRotate + pointer - startPointer;
+    r = fmodf(r + 540.f, 360.f) - 180;  // -180..180
+    if (free) return roundf(r * 10) / 10;
+    const float quarter = roundf(r / 90) * 90, step = roundf(r / 15) * 15;
+    if (fabsf(r - quarter) < 6) r = quarter;
+    else if (fabsf(r - step) < 3) r = step;
+    if (r <= -180) r += 360;
+    return roundf(r * 10) / 10;
 }
 
 bool Clock_Flips(const ClockLook& l) {
@@ -1420,7 +1433,63 @@ void Clock_ReleasePainter() {
 // DIPs); everything is then scaled to real pixels by k. The lines are placed by their capitals, with
 // Mond's gaps measured from the skin: the date's 25.7 DIPs below the day's baseline, the time's 31.5
 // below the date's (x Scale), so every font keeps the same rhythm.
+// The clock's picture turned `deg` degrees clockwise about its centre (into a picture just big enough).
+static bool RotateImage(ClockImage* img, float deg) {
+    const float rad = deg * 3.14159265f / 180, cs = cosf(rad), sn = sinf(rad);
+    const int w = (int)ceilf(img->w * fabsf(cs) + img->h * fabsf(sn)), h = (int)ceilf(img->w * fabsf(sn) + img->h * fabsf(cs));
+    if (w <= 0 || h <= 0 || w >= 16384 || h >= 16384) return false;
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void* bits = nullptr;
+    HDC dc = CreateCompatibleDC(nullptr);
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ID2D1DCRenderTarget* rt = nullptr;
+    ID2D1Bitmap* picture = nullptr;
+    bool ok = false;
+    if (bmp) {
+        HGDIOBJ old = SelectObject(dc, bmp);
+        const D2D1_RENDER_TARGET_PROPERTIES rp = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
+        const RECT rc{0, 0, w, h};
+        const D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        if (SUCCEEDED(P.d2f->CreateDCRenderTarget(&rp, &rt)) && SUCCEEDED(rt->BindDC(dc, &rc)) &&
+            SUCCEEDED(rt->CreateBitmap(D2D1::SizeU((UINT32)img->w, (UINT32)img->h), img->px.data(), (UINT32)img->w * 4, bp, &picture))) {
+            rt->BeginDraw();
+            rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+            // Its centre to 0,0, turned, then to the middle of the new picture.
+            const float ox = img->w / 2.f, oy = img->h / 2.f;
+            rt->SetTransform(D2D1::Matrix3x2F(cs, sn, -sn, cs, w / 2.f - (ox * cs - oy * sn), h / 2.f - (ox * sn + oy * cs)));
+            rt->DrawBitmap(picture, D2D1::RectF(0, 0, (float)img->w, (float)img->h), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            ok = SUCCEEDED(rt->EndDraw());
+        }
+        if (ok) {
+            GdiFlush();
+            img->px.assign((uint32_t*)bits, (uint32_t*)bits + (size_t)w * h);
+            img->w = w;
+            img->h = h;
+        }
+        SelectObject(dc, old);
+        DeleteObject(bmp);
+    }
+    Rel(picture);
+    Rel(rt);
+    DeleteDC(dc);
+    return ok;
+}
+
+static bool PaintClock(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out, float flip);
+
 bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out, float flip) {
+    if (!PaintClock(look, k, t, out, flip)) return false;
+    const float deg = fmodf(look.rotate, 360.f);
+    return fabsf(deg) < 0.05f || RotateImage(out, deg);
+}
+
+static bool PaintClock(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out, float flip) {
     const float size = look.size;
     if (!OpenPainter()) return false;
     if (const Design* d = FindDesign(look.style)) return PaintDesign(*d, look, k, t, out, flip);

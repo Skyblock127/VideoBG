@@ -302,8 +302,22 @@ std::vector<std::wstring> LoadWallpapers(const std::wstring& current) {
         list = KnownVideos();
         changed = true;
     }
+    // A lighter version belongs on its original's line: one that got in on its own (put there when
+    // it was the wallpaper) goes, so a version change never moves the video in the list.
+    for (size_t i = 0; i < list.size();) {
+        const std::wstring orig = LightCopyOriginalPath(list[i]);
+        bool dup = false;
+        for (auto& p : list) dup = dup || (!orig.empty() && SamePath(p, orig));
+        if (dup) {
+            list.erase(list.begin() + i);
+            changed = true;
+        } else {
+            i++;
+        }
+    }
+    const std::wstring currentOrig = current.empty() ? L"" : LightCopyOriginalPath(current);
     bool has = current.empty();
-    for (auto& p : list) has = has || SamePath(p, current);
+    for (auto& p : list) has = has || SamePath(p, current) || (!currentOrig.empty() && SamePath(p, currentOrig));
     if (!has) {  // chosen some other way (the classic settings, the tray): it belongs here too
         list.insert(list.begin(), current);
         changed = true;

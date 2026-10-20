@@ -996,6 +996,36 @@ void Host_PlaceSong(size_t n, int song, int to) {
     Host_SettingsChanged();
 }
 
+void Host_RemoveSong(int song) {
+    std::vector<std::wstring> list = LoadPlaylist();
+    const int n = (int)list.size();
+    if (song < 0 || song >= n) return;
+    std::vector<int> order = MusicOrderFor(g_settings, n);
+    const auto at = std::find(order.begin(), order.end(), song);
+    if (at == order.end()) return;
+    const bool live = g_music.track >= 0 && g_music.track < n;
+    int current = live ? g_music.track : std::clamp(g_settings.musicTrack, 0, n - 1);
+    UINT pos = live ? g_music.posMs : g_settings.musicPosMs, dur = live ? g_music.durMs : g_settings.musicDurMs;
+    if (current == song) {  // the one playing: the next one takes its place, from its start
+        current = n > 1 ? *(at + 1 == order.end() ? order.begin() : at + 1) : 0;
+        pos = dur = 0;
+    }
+    Log(L"music: %ls taken off the playlist", list[song].c_str());
+    list.erase(list.begin() + song);
+    order.erase(at);
+    for (int& i : order)
+        if (i > song) i--;
+    if (current > song) current--;
+    SavePlaylist(list);
+    g_settings.musicOrder = MusicShuffled(order) ? order : std::vector<int>{};
+    g_settings.musicTrack = list.empty() ? 0 : current;
+    g_settings.musicPosMs = pos;  // (it carries on there with the list it has now)
+    g_settings.musicDurMs = dur;
+    if (list.empty()) g_settings.musicPlaying = false;
+    Host_SettingsChanged();
+    UI_Refresh();
+}
+
 void Host_LiveVolume(int volume) {
     if (g_ctl) PostMessageW(g_ctl, WM_VBG_VOLUME, (WPARAM)std::clamp(volume, 0, 100), 0);
 }

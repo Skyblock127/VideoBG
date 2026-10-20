@@ -553,6 +553,7 @@ static ClockLook ReadLook(const wchar_t* ini, const wchar_t* sec, const std::wst
     l.font = ReadStr(ini, sec, (prefix + L"Font").c_str());
     if (l.font.empty()) l.font = base.font;
     l.style = ReadStr(ini, sec, (prefix + L"Style").c_str());
+    l.rotate = ReadFloat(ini, sec, (prefix + L"Rotate").c_str(), 0, -180, 180);
     return l;
 }
 
@@ -581,6 +582,8 @@ static void WriteLook(IniBatch& ini, const wchar_t* sec, const std::wstring& pre
     ini.Set(sec, prefix + L"NativeDigits", l && l->nativeDigits ? L"1" : nullptr);
     ini.Set(sec, prefix + L"Font", l && l->font != ClockLook{}.font ? l->font.c_str() : nullptr);
     ini.Set(sec, prefix + L"Style", l && !l->style.empty() ? l->style.c_str() : nullptr);
+    swprintf(buf, 32, L"%.1f", l ? l->rotate : 0.f);
+    ini.Set(sec, prefix + L"Rotate", l && l->rotate != 0 ? buf : nullptr);
 }
 
 // Clock presets: [Presets] Preset1Name, Preset1X, Preset1Color... (a look's keys); an empty one has none.
@@ -688,6 +691,13 @@ void LoadSettings(Settings& s) {
     s.look = ReadInt(ini, L"Look", 0, 0, 1);
     s.musicPlayer = ReadInt(ini, L"MusicPlayer", 0, 0, 16);
     s.playerX = ReadFloat(ini, L"General", L"PlayerX", 0.5f, 0, 1);
+    for (int i = 1; i < (int)std::size(s.playerLooks); i++) {
+        Settings::PlayerLook& pl = s.playerLooks[i];
+        const std::wstring k = L"Style" + std::to_wstring(i);
+        pl.color = ReadStr(ini, L"Player", (k + L"Color").c_str());
+        pl.opacity = ReadFloat(ini, L"Player", (k + L"Opacity").c_str(), 1, 0.2f, 1);
+        pl.corners = ReadFloat(ini, L"Player", (k + L"Corners").c_str(), -1, -1, 60);
+    }
     s.playerY = ReadFloat(ini, L"General", L"PlayerY", 0.9f, 0, 1);
     s.lockFollow = ReadInt(ini, L"LockScreenFollows", 1, 0, 1) != 0;
     s.clockStill.size = s.clockLive.size = ReadFloat(ini, L"Clock", L"Size", 1.06f, 0.5f, 2.5f);  // older: one size for all
@@ -757,6 +767,15 @@ void SaveSettings(const Settings& s) {
     wchar_t buf[64];
     swprintf(buf, 64, L"%.4f", s.playerX);
     ini.Set(L"General", L"PlayerX", buf);
+    for (int i = 1; i < (int)std::size(s.playerLooks); i++) {  // only what isn't the style's own
+        const Settings::PlayerLook& pl = s.playerLooks[i];
+        const std::wstring k = L"Style" + std::to_wstring(i);
+        ini.Set(L"Player", k + L"Color", pl.color.empty() ? nullptr : pl.color.c_str());
+        swprintf(buf, 64, L"%.2f", pl.opacity);
+        ini.Set(L"Player", k + L"Opacity", pl.opacity < 1 ? buf : nullptr);
+        swprintf(buf, 64, L"%.1f", pl.corners);
+        ini.Set(L"Player", k + L"Corners", pl.corners >= 0 ? buf : nullptr);
+    }
     swprintf(buf, 64, L"%.4f", s.playerY);
     ini.Set(L"General", L"PlayerY", buf);
 

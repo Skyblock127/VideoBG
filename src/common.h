@@ -116,10 +116,11 @@ struct ClockLook {
     int date = 0;                    // how the date line reads (a Clock_DateText style)
     std::wstring lang;               // the language of its words (a Windows locale name, "" = English)
     bool nativeDigits = false;       // the language's own digits (when it has them) instead of 0-9
+    float rotate = 0;                // degrees clockwise (-180 .. 180)
     bool operator==(const ClockLook& o) const {
         return x == o.x && y == o.y && color == o.color && size == o.size && opacity == o.opacity && glow == o.glow &&
                glowSize == o.glowSize && glowColor == o.glowColor && show == o.show && h24 == o.h24 && style == o.style &&
-               font == o.font && date == o.date && lang == o.lang && nativeDigits == o.nativeDigits;
+               font == o.font && date == o.date && lang == o.lang && nativeDigits == o.nativeDigits && rotate == o.rotate;
     }
 };
 
@@ -160,6 +161,13 @@ struct Settings {
     int look = 0;             // 0 native (the classic settings window), 1 modern (the wallpaper picker)
     int musicPlayer = 0;      // the modern look's music player on the desktop: 0 none, else 1 + its style (with My music)
     float playerX = 0.5f, playerY = 0.9f;  // its centre, as a share of the main screen
+    struct PlayerLook {
+        std::wstring color;   // "r,g,b" for its lit parts (the play button, its place); "" = the Windows accent colour
+        float opacity = 1;    // 0.2 .. 1, the whole player
+        float corners = -1;   // its card's corner radius (DIPs); -1 = the style's own
+        bool IsDefault() const { return color.empty() && opacity >= 1 && corners < 0; }
+    };
+    PlayerLook playerLooks[17];  // each style's, by musicPlayer number ([Player] Style<n>Color, ...Opacity, ...Corners)
     Crop crop;                // crop for the current video (stored per video)
 
     // Desktop clock: one look while the video wallpaper shows, one for the still wallpaper. A video
@@ -181,10 +189,18 @@ std::wstring LogPath(bool old = false);  // the log, or the one before it (video
 std::wstring FeedbackUrl();               // where feedback goes: FEEDBACK_URL, or settings.ini [General] FeedbackUrl
 
 // feedback.cpp: a feature idea or a problem report, sent to the VideoBG-feedback server.
+struct FeedbackPicture {
+    std::wstring name;  // the file's name, or "Pasted picture"
+    std::string jpeg;   // made smaller (1600 px at most) and turned into a JPEG
+};
 struct FeedbackReport {
     bool bug = false;
     std::wstring text, steps, often, email, system, log;
+    std::vector<FeedbackPicture> pictures;
 };
+constexpr size_t kFeedbackPictures = 3;  // pictures a report can carry
+// A picture for a report, from a file or a bitmap (a pasted screenshot); false if it can't be read.
+bool Feedback_Picture(const std::wstring& file, HBITMAP bitmap, FeedbackPicture* out);
 std::wstring Feedback_Windows();                 // "Windows 11 24H2 (build 26200.6899)"
 std::wstring Feedback_Log();                     // the newest part of the log, user and file names taken out
 std::wstring Feedback_Preview(const FeedbackReport& r);  // what's sent, as plain text
@@ -279,6 +295,7 @@ void Host_PlayMusic(bool play);              // My music: play or pause (kept, a
 void Host_SkipMusic(bool next);              // the next or previous song (skipping means listening)
 void Host_ShuffleMusic(size_t songs);        // shuffle on (a new order, the song playing first) or off (the order chosen)
 void Host_PlaceSong(size_t songs, int song, int to);  // puts a song at place `to` in the play order
+void Host_RemoveSong(int song);  // takes a song off the playlist (the file stays); the next one plays if it was playing
 struct MusicState {
     int track = -1;       // playlist index playing (-1 none)
     bool playing = false; // actually playing now
@@ -418,7 +435,11 @@ struct ClockImage {
 // pixelScale: pixels per 96-DPI unit. Loads DirectWrite on first use; Clock_ReleasePainter frees it.
 // flip: a flip clock's flaps falling over to this minute, how far (0-1; 1: still).
 bool Clock_Paint(const ClockLook& look, float pixelScale, const SYSTEMTIME& t, ClockImage* out, float flip = 1);
-bool Clock_Flips(const ClockLook& look);  // its style flips over at each minute (Clock_Paint's flip)
+bool Clock_Flips(const ClockLook& look);
+// Turning the clock by its handle: the angle (degrees clockwise, -180..180) from a start, snapped to
+// 15-degree steps near them (and harder to upright and the quarter turns), unless free.
+float Clock_RotateTo(float startRotate, float startPointer, float pointer, bool free);
+float Clock_PointerAngle(float cx, float cy, float x, float y);  // the pointer's angle round the clock's centre  // its style flips over at each minute (Clock_Paint's flip)
 constexpr double kClockFlipSeconds = 0.6;
 void Clock_ReleasePainter();
 void Clock_Show(HWND host, const ClockLook& look);  // create / update / move
@@ -446,6 +467,8 @@ int Player_PartAt(int style, float x, float y);    // PlayerPart (the place only
 float Player_VolumeAt(int style, float x);         // the volume (0..1) at x on its slider
 float Player_SeekAt(int style, float x, float y);  // the place (0..1) at x, y, while it's held
 bool Player_HasVolume(int style);
+bool Player_HasCorners(int style);  // its card's corners can be changed (PlayerLook::corners)
+float Player_Corners(int style);    // its corner radius now (DIPs)
 void Player_Seek(float frac);  // the song moves there (and shows there at once)
 void Player_Size(int style, float* w, float* h);  // DIPs
 std::wstring Player_About(int style);             // what it is, in a few words (0: none)

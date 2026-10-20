@@ -75,6 +75,7 @@ struct Drawing {
     ID2D1Bitmap* art = nullptr;  // the song's cover, for this render target
     ID2D1Bitmap* still = nullptr;  // the window's style without what turns (drawn when what it shows changes)
     int layer = 0;               // what a style draws: 0 all of it, 1 what stays still, 2 what turns
+    float corners = -1;          // the card's corner radius the user chose (-1: the style's own)
 } D;
 
 bool StillPart() { return D.layer != 2; }
@@ -224,7 +225,7 @@ D2D1_POINT_2F Pt(float x, float y) { return D2D1::Point2F(x, y); }
 void Text(const std::wstring& s, const D2D1_RECT_F& r, IDWriteTextFormat* f, D2D1_COLOR_F c) {
     if (s.empty() || !f) return;
     D.br->SetColor(c);
-    D.rt->DrawText(s.c_str(), (UINT32)s.size(), f, r, D.br, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    D.rt->DrawText(s.c_str(), (UINT32)s.size(), f, r, D.br, D2D1_DRAW_TEXT_OPTIONS_NONE);  // (not clipped: a g or y may hang below its box; widths trim with an ellipsis)
 }
 
 void Fill(const D2D1_RECT_F& r, D2D1_COLOR_F c, float radius) {
@@ -352,6 +353,7 @@ bool CoverBox(const D2D1_RECT_F& pic, float radius, const Shown& s) {
 // The glass card most styles sit on.
 void Card(float w, float h, float radius, float a = 0.84f) {
     const D2D1_RECT_F r = R(0.5f, 0.5f, w - 0.5f, h - 0.5f);
+    if (D.corners >= 0) radius = std::min(D.corners, h / 2 - 0.5f);
     Fill(r, Col(0x141417, a), radius);
     Stroke(r, Col(0xFFFFFF, 0.1f), radius);
 }
@@ -931,7 +933,7 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
     Text(L"MHz", R(317.0f, 83.5f, 347.4f, 90.5f), D.fUnit, Col(0x6F8998));
 
     // 6. Track info: bold title and compact timing
-    Text(s.song, R(143.0f, 97.0f, 347.0f, 113.0f), D.fTitle, Col(0xF0F5F8));
+    Text(s.song, R(143.0f, 94.5f, 347.0f, 112.5f), D.fTitle, Col(0xF0F5F8));
     Text(s.where, R(143.0f, 114.0f, 347.0f, 124.0f), D.fTime, Col(0xA8B6C0, 0.85f));
 
     // 7. Playback controls (centered vertically with 5 DIP margin to timing above and trim below)
@@ -1247,8 +1249,19 @@ bool DesktopSeen() {
     return !(mask & (PR_COVERED | PR_LOCKED | PR_DISPLAY_OFF));
 }
 
+const Settings::PlayerLook& LookOf(int style) {
+    return g_settings.playerLooks[std::clamp(style, 0, (int)std::size(g_settings.playerLooks) - 1)];
+}
+
+// The colour of a style's lit parts: the user's, or the Windows accent colour.
+D2D1_COLOR_F AccentOf(int style) {
+    BYTE r, g, b;
+    const std::wstring& c = LookOf(style).color;
+    return !c.empty() && ParseColor(c, &r, &g, &b) ? D2D1::ColorF(r / 255.f, g / 255.f, b / 255.f) : Accent();
+}
+
 // What shows now; seek (0..1): the place being dragged to, in a preview.
-Shown Current(float seek = -1) {
+Shown Current(float seek = -1, int style = 0) {
     const MusicState ms = Host_MusicState();
     const int n = (int)W.songs.size();
     const int kept = g_settings.musicTrack >= 0 && g_settings.musicTrack < n ? g_settings.musicTrack : 0;
@@ -1264,7 +1277,7 @@ Shown Current(float seek = -1) {
     s.playing = playing;
     s.done = dur ? std::min(1.f, (float)pos / dur) : 0;
     s.volume = g_settings.volume;
-    s.accent = Accent();
+    s.accent = AccentOf(style ? style : g_settings.musicPlayer);
     LoadCover(n ? W.songs[track] : L"");
     return s;
 }
@@ -1382,9 +1395,11 @@ void Draw(bool force = false) {
     if (!W.hwnd || !StartDrawing()) return;
     Shown s = Current();
     const PlayerStyle& st = Style();
-    wchar_t key[200];
-    swprintf(key, 200, L"%d|%ls|%ls|%d|%d|%d|%d|%d|%d|%.2f|%ls", g_settings.musicPlayer, s.song.c_str(), s.where.c_str(), s.playing, (int)(s.done * 400),
-             W.hot, W.press, W.sliding, g_settings.volume, W.scale, W.artFor.c_str());
+    const Settings::PlayerLook& look = LookOf(g_settings.musicPlayer);
+    D.corners = look.corners;
+    wchar_t key[260];
+    swprintf(key, 260, L"%d|%ls|%ls|%d|%d|%d|%d|%d|%d|%.2f|%ls|%ls|%.1f|%.2f", g_settings.musicPlayer, s.song.c_str(), s.where.c_str(), s.playing,
+             (int)(s.done * 400), W.hot, W.press, W.sliding, g_settings.volume, W.scale, W.artFor.c_str(), look.color.c_str(), look.corners, look.opacity);
     if (!force && W.drawn == key) {
         KeepTurning();
         return;
@@ -1424,7 +1439,7 @@ void Draw(bool force = false) {
     if (ok) {
         POINT dst = Origin(), zero{0, 0};
         SIZE sz{W.w, W.h};
-        BLENDFUNCTION bf{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        BLENDFUNCTION bf{AC_SRC_OVER, 0, (BYTE)lroundf(255 * std::clamp(look.opacity, 0.2f, 1.f)), AC_SRC_ALPHA};  // (the user's opacity)
         UPDATELAYEREDWINDOWINFO ul{sizeof ul, nullptr, &dst, &sz, W.dc, &zero, 0, &bf, ULW_ALPHA, &dirty};
         if (UpdateLayeredWindowIndirect(W.hwnd, &ul)) W.drawn = key;
     }
@@ -1625,7 +1640,9 @@ bool Player_Paint(int style, float scale, bool live, ClockImage* out, const Play
     if (style < 1 || style > (int)std::size(kStyles) || !StartDrawing()) return false;
     const PlayerStyle& st = kStyles[style - 1];
     if (!W.hwnd) W.songs = LoadPlaylist();  // (the window keeps its own up to date)
-    Shown s = Current(in ? in->seek : -1);
+    Shown s = Current(in ? in->seek : -1, style);
+    const Settings::PlayerLook& look = LookOf(style);
+    D.corners = look.corners;
     if (in) {
         s.hot = in->hot;
         s.press = in->press;
@@ -1646,12 +1663,29 @@ bool Player_Paint(int style, float scale, bool live, ClockImage* out, const Play
     s.clock = live ? t : 1.3f;
     const int w = (int)ceilf(st.w * scale), h = (int)ceilf(st.h * scale);
     W.drawn.clear();  // (the window's next frame is drawn whole: this used the same drawing surface)
-    return Render(st, s, scale, w, h, [&](HDC, const uint32_t* px) {
+    const bool ok = Render(st, s, scale, w, h, [&](HDC, const uint32_t* px) {
         out->px.assign(px, px + (size_t)w * h);
         out->w = w;
         out->h = h;
         out->pad = 0;
     });
+    D.corners = LookOf(g_settings.musicPlayer).corners;  // (the window's again)
+    if (ok && look.opacity < 1) {  // the user's opacity, as on the desktop
+        const UINT32 k = (UINT32)lroundf(256 * std::clamp(look.opacity, 0.2f, 1.f));
+        for (uint32_t& p : out->px)
+            p = ((p >> 24) * k >> 8) << 24 | (((p >> 16) & 255) * k >> 8) << 16 | (((p >> 8) & 255) * k >> 8) << 8 | ((p & 255) * k >> 8);
+    }
+    return ok;
+}
+
+bool Player_HasCorners(int style) {  // its card's corners can be changed (the cassette and the radio have their own bodies)
+    return style >= 1 && style <= (int)std::size(kStyles) && kStyles[style - 1].draw != DrawCassette && kStyles[style - 1].draw != DrawRadio;
+}
+
+float Player_Corners(int style) {  // the corner radius it has now (DIPs)
+    static const float own[] = {0, 20, 0, 41.5f, 20, 20, 20, 22, 0, 27.5f};  // each style's own (Card radius; Disc and Mini: pills)
+    const float c = LookOf(style).corners;
+    return c >= 0 ? c : style >= 1 && style < (int)std::size(own) ? own[style] : 20;
 }
 
 std::wstring Player_About(int style) {

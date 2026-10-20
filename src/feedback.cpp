@@ -4,6 +4,7 @@
 // user names and media file names taken out first.
 #include "common.h"
 #include <winhttp.h>
+#include <wincodec.h>
 #include <algorithm>
 
 namespace {
@@ -73,7 +74,93 @@ std::string ReadTail(const std::wstring& path, size_t max) {
     return s;
 }
 
+std::string Base64(const std::string& in) {
+    static const char* k = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string o;
+    o.reserve((in.size() + 2) / 3 * 4);
+    for (size_t i = 0; i < in.size(); i += 3) {
+        const unsigned v = (unsigned char)in[i] << 16 | (i + 1 < in.size() ? (unsigned char)in[i + 1] << 8 : 0) | (i + 2 < in.size() ? (unsigned char)in[i + 2] : 0);
+        o += k[v >> 18 & 63];
+        o += k[v >> 12 & 63];
+        o += i + 1 < in.size() ? k[v >> 6 & 63] : '=';
+        o += i + 2 < in.size() ? k[v & 63] : '=';
+    }
+    return o;
+}
+
 }  // namespace
+
+bool Feedback_Picture(const std::wstring& file, HBITMAP bitmap, FeedbackPicture* out) {
+    IWICImagingFactory* wic = nullptr;
+    IWICBitmapSource* src = nullptr;
+    IWICBitmapDecoder* dec = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICBitmap* bmp = nullptr;
+    IWICBitmapScaler* scaler = nullptr;
+    IWICFormatConverter* conv = nullptr;
+    IStream* stream = nullptr;
+    IWICBitmapEncoder* enc = nullptr;
+    IWICBitmapFrameEncode* fe = nullptr;
+    IPropertyBag2* props = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+    if (SUCCEEDED(hr) && bitmap) {
+        hr = wic->CreateBitmapFromHBITMAP(bitmap, nullptr, WICBitmapIgnoreAlpha, &bmp);
+        src = bmp;
+    } else if (SUCCEEDED(hr)) {
+        hr = wic->CreateDecoderFromFilename(file.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec);
+        if (SUCCEEDED(hr)) hr = dec->GetFrame(0, &frame);
+        src = frame;
+    }
+    UINT w = 0, h = 0;
+    if (SUCCEEDED(hr)) hr = src->GetSize(&w, &h);
+    if (SUCCEEDED(hr) && (w == 0 || h == 0)) hr = E_FAIL;
+    const double k = SUCCEEDED(hr) ? std::min(1.0, 1600.0 / std::max(w, h)) : 1;  // (screenshots stay readable)
+    const UINT sw = std::max(1u, (UINT)(w * k + 0.5)), sh = std::max(1u, (UINT)(h * k + 0.5));
+    if (SUCCEEDED(hr)) hr = wic->CreateBitmapScaler(&scaler);
+    if (SUCCEEDED(hr)) hr = scaler->Initialize(src, sw, sh, WICBitmapInterpolationModeFant);
+    if (SUCCEEDED(hr)) hr = wic->CreateFormatConverter(&conv);
+    if (SUCCEEDED(hr)) hr = conv->Initialize(scaler, GUID_WICPixelFormat24bppBGR, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom);
+    if (SUCCEEDED(hr)) hr = CreateStreamOnHGlobal(nullptr, TRUE, &stream);
+    if (SUCCEEDED(hr)) hr = wic->CreateEncoder(GUID_ContainerFormatJpeg, nullptr, &enc);
+    if (SUCCEEDED(hr)) hr = enc->Initialize(stream, WICBitmapEncoderNoCache);
+    if (SUCCEEDED(hr)) hr = enc->CreateNewFrame(&fe, &props);
+    if (SUCCEEDED(hr) && props) {
+        PROPBAG2 opt{};
+        opt.pstrName = (LPOLESTR)L"ImageQuality";
+        VARIANT v;
+        VariantInit(&v);
+        v.vt = VT_R4;
+        v.fltVal = 0.82f;
+        props->Write(1, &opt, &v);
+    }
+    if (SUCCEEDED(hr)) hr = fe->Initialize(props);
+    if (SUCCEEDED(hr)) hr = fe->SetSize(sw, sh);
+    WICPixelFormatGUID fmt = GUID_WICPixelFormat24bppBGR;
+    if (SUCCEEDED(hr)) hr = fe->SetPixelFormat(&fmt);
+    if (SUCCEEDED(hr)) hr = fe->WriteSource(conv, nullptr);
+    if (SUCCEEDED(hr)) hr = fe->Commit();
+    if (SUCCEEDED(hr)) hr = enc->Commit();
+    if (SUCCEEDED(hr)) {
+        HGLOBAL g = nullptr;
+        hr = GetHGlobalFromStream(stream, &g);
+        STATSTG st{};
+        if (SUCCEEDED(hr)) hr = stream->Stat(&st, STATFLAG_NONAME);
+        const void* p = SUCCEEDED(hr) ? GlobalLock(g) : nullptr;
+        if (p) {
+            out->jpeg.assign((const char*)p, (size_t)st.cbSize.QuadPart);
+            GlobalUnlock(g);
+        } else {
+            hr = E_FAIL;
+        }
+    }
+    for (IUnknown* u : {(IUnknown*)props, (IUnknown*)fe, (IUnknown*)enc, (IUnknown*)stream, (IUnknown*)conv, (IUnknown*)scaler, (IUnknown*)bmp,
+                        (IUnknown*)frame, (IUnknown*)dec, (IUnknown*)wic})
+        if (u) u->Release();
+    if (FAILED(hr)) return false;
+    const size_t slash = file.find_last_of(L"\\/");
+    out->name = file.empty() ? L"Pasted picture" : slash == std::wstring::npos ? file : file.substr(slash + 1);
+    return true;
+}
 
 // User names in paths (...\Users\<name>\...) and the names of videos, songs and fonts.
 std::wstring Feedback_Redact(std::wstring s) {
@@ -136,6 +223,13 @@ std::wstring Feedback_Preview(const FeedbackReport& r) {
     if (!r.often.empty()) t += L"\r\nHow often: " + r.often + L"\r\n";
     if (!r.email.empty()) t += L"\r\nReply to: " + r.email + L"\r\n";
     if (!r.system.empty()) t += L"\r\nYour PC and settings:\r\n" + r.system + L"\r\n";
+    if (!r.pictures.empty()) {
+        size_t bytes = 0;
+        for (auto& p : r.pictures) bytes += p.jpeg.size();
+        wchar_t b[128];
+        swprintf(b, 128, L"\r\nPictures: %zu (as JPEGs, %.0f KB in all; their file names aren't sent)\r\n", r.pictures.size(), bytes / 1024.0);
+        t += b;
+    }
     if (!r.log.empty()) {
         std::wstring log;
         for (wchar_t c : r.log) {
@@ -158,6 +252,11 @@ bool Feedback_Send(const FeedbackReport& r, std::wstring* error) {
         Json(body, "email", r.email);
         Json(body, "system", r.system);
         Json(body, "log", r.log);
+    }
+    if (!r.pictures.empty()) {  // "pictures":["<base64 JPEG>", ...] (their file names aren't sent)
+        body += ",\"pictures\":[";
+        for (size_t i = 0; i < r.pictures.size(); i++) body += (i ? ",\"" : "\"") + Base64(r.pictures[i].jpeg) + "\"";
+        body += "]";
     }
     body += "}";
 

@@ -83,10 +83,10 @@ and asks whether to delete your settings too. Then delete the folder.
 |---|---|
 | `Ctrl + Alt + B` | Turn the wallpaper on or off. The tray menu does the same. |
 | **Video** | **Choose video**, or pick one of **Your wallpapers** (the videos you switch between, with their pictures; add videos or take one off the list). **Crop** it, and pick the lock screen frame with the **Preview** slider (the wallpaper holds on that frame, and plays on a second after you let go). **Versions** makes lighter copies. |
-| **Desktop clock** | Drag the clock on the preview to place it. Choose its **style** (each shown as it looks: Mond in any font, Dial, Watch, Ring, Orbit, Flip (its flaps fall over at each new minute), Digital, Stack, Line, Big, Bold, Calendar, Words), text and glow colours, size, opacity, glow, date style, language (any language Windows knows) and 12/24-hour time; what a style doesn't show (a dial has no 12/24-hour time) is greyed out. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show / Hide** turns it on or off for each. **Presets** keeps up to 5 clock looks you can edit, rename and use on any of these. |
-| **Sound** | Nothing (the default), the video's sound, or your own songs. **My music** has a player (play/pause, seek bar, previous/next, shuffle, repeat one song) and a playlist: click a song to play it, or drag it by its grip to move it. Moving songs counts as shuffling; turning shuffle off goes back to the order you chose them in. **Player** picks the music player shown on your desktop while My music plays (Vinyl, Cassette, Disc, Bars, Wave, Halo, Cover, Radio or Mini, each shown as it looks; Bars, Wave and Halo move with the sound, on whichever speakers or headphones it plays). Its buttons and volume work right there, and clicking or dragging what shows the song's place (the record, the ring, the dial...) moves in the song. |
+| **Desktop clock** | Drag the clock on the preview to place it. Choose its **style** (each shown as it looks; turn it with the handle above it, which snaps to upright and to 15-degree steps: Mond in any font, Dial, Watch, Ring, Orbit, Flip (its flaps fall over at each new minute), Digital, Stack, Line, Big, Bold, Calendar, Words), text and glow colours, size, opacity, glow, date style, language (any language Windows knows) and 12/24-hour time; what a style doesn't show (a dial has no 12/24-hour time) is greyed out. Set it up separately for the video wallpaper and your still wallpaper, and give a video its own clock with **This video**. **Show / Hide** turns it on or off for each. **Presets** keeps up to 5 clock looks you can edit, rename and use on any of these. |
+| **Sound** | Nothing (the default), the video's sound, or your own songs. **My music** has a player (play/pause, seek bar, previous/next, shuffle, repeat one song) and a playlist: click a song to play it, drag it by its grip to move it, or take it off the list with its **×**. Moving songs counts as shuffling; turning shuffle off goes back to the order you chose them in. **Player** picks the music player shown on your desktop while My music plays (Vinyl, Cassette, Disc, Bars, Wave, Halo, Cover, Radio or Mini, each shown as it looks; Bars, Wave and Halo move with the sound, on whichever speakers or headphones it plays). Its buttons and volume work right there, and clicking or dragging what shows the song's place (the record, the ring, the dial...) moves in the song. |
 | **Playback** | Speed, a frame-rate cap, and which displays to use. Every display shows the same video, so more displays hardly add memory; versions are sized for the largest one. On laptops with two graphics chips, **Graphics chip** picks power saving or high performance. Under **Power saving**: pause when apps cover the desktop, and what to do on battery. |
-| **General** | Change the hotkey and the **pause / mute sound** shortcut (Pause/Break by default: plays or pauses My music, mutes the video's audio; it works in games too). A keyboard's play/pause, next and previous keys control My music too, through Windows' media controls (so they go to whichever app played last), choose whether the wallpaper starts on, find your data folders, and send **Feedback**: suggest a feature or report a problem (no account needed; a report can include the app's log, with your user name and file names taken out). |
+| **General** | Change the hotkey and the **pause / mute sound** shortcut (Pause/Break by default: plays or pauses My music, mutes the video's audio; it works in games too). A keyboard's play/pause, next and previous keys control My music too, through Windows' media controls (so they go to whichever app played last), choose whether the wallpaper starts on, find your data folders, and send **Feedback**: suggest a feature or report a problem, with up to 3 pictures (add them, or paste a screenshot with Ctrl+V; no account needed; a report can include the app's log, with your user name and file names taken out). |
 
 ### Modern look
 
@@ -106,15 +106,18 @@ the bottom of the screen, over a full-screen view of the wallpaper:
   any lighter ones; pick which one plays) and, for your wallpaper, **crop**: drag and scroll right
   on the screen, and choose the picture for your lock screen (the wallpaper waits on that frame while
   you drag). A video's versions share one card, which shows the size of the version it plays.
-- **Clock** (or **C**): the clock of the video in the middle, over that video. Drag it right on your desktop, with all its settings beside it (style and date
+- **Clock** (or **C**): the clock of the video in the middle, over that video. The handle above it
+  turns it (it snaps to upright and to 15-degree steps; Shift turns it freely; a double click puts
+  it upright). Drag it right on your desktop, with all its settings beside it (style and date
   step through with the arrows; language, colours, size, glow, time). Each colour has an eyedropper (point at your wallpaper: the clock takes
   the colour as you move) and a grid for any colour. It's this video's own clock. Its arrow sends
   the panel to the other side; the eye hides everything to take a look.
-- **Music** (or **M**): the **music player on your desktop** (behind your apps, with the song, its
-  cover, its controls and the volume; drag it to move it): step through its styles (**Player**),
-  and the player shown there is the remote too (play, pause, skip, the volume, and its place in
-  the song). Then your **playlist**, with shuffle and repeat on its heading (click a song to play
-  it, drag its grip to move it, or choose songs).
+- **Music** (or **M**): a screen like the clock's, over the video in the middle. The **music player
+  on your desktop** sits in the middle, big, and works as the remote (play, pause, skip, the volume,
+  its place in the song). The panel beside it picks its style (**Player**), its **colour** (with an
+  eyedropper and any colour), **opacity** and **corners** (each style keeps its own; **Reset** puts
+  it back), then your **playlist**: shuffle and repeat on its heading; click a song to play it, drag
+  its grip to move it, or the **×** on a song to take it off the list (the file stays).
 - **Settings** (or **S**): add videos, the lock screen, the wallpaper off, all the settings, or back
   to the classic look.
 
