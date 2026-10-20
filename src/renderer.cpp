@@ -941,6 +941,7 @@ struct Music {
     int repeat = 1;          // 0 off, 1 the playlist, 2 the song
     bool held = false;       // stopped at the end of the playlist (repeat off) until the user plays again
     double resumeAt = 0;     // seconds into the first song: where it was when the wallpaper last stopped
+    int keep = -1;           // the song playing, as KeepSong found it in the playlist
 } mu;
 
 void ReportTrack(int idx) { PostMessageW(g.host, WM_VBG_TRACK, (WPARAM)(INT_PTR)idx, 0); }
@@ -1020,6 +1021,27 @@ void StopMusic() {
     mu.list.clear();
     mu.order.clear();
     ReportTrack(-1);
+}
+
+// The settings changed: true if the song playing is still on the playlist (songs added or taken off
+// don't stop it); mu.keep is then its place on the playlist as it is now.
+bool KeepSong() {
+    if (mu.order.empty()) return false;
+    const int was = mu.order[mu.pos];
+    std::vector<std::wstring> list = LoadPlaylist();
+    if (list == mu.list) {
+        mu.keep = was;
+        return true;
+    }
+    for (int i = 0; i < (int)list.size(); i++)
+        if (list[i] == mu.list[was]) {
+            Log(L"music: the playlist changed (%zu songs now); this song carries on", list.size());
+            mu.list = list;
+            mu.keep = i;
+            ReportTrack(i);
+            return true;
+        }
+    return false;
 }
 
 void StartMusic() {
@@ -1616,11 +1638,11 @@ void Reload() {
     }
     if (ns.sound != 2) {
         StopMusic();
-    } else if (!mu.eng || old.sound != 2 || LoadPlaylist() != mu.list) {
+    } else if (!mu.eng || old.sound != 2 || !KeepSong()) {
         StartMusic();
-    } else {  // the same songs: the current one carries on in the new order, repeat or play state
+    } else {  // the song playing is still there: it carries on in the new order, repeat or play state
         mu.eng->SetVolume(ns.volume / 100.0);
-        const int current = mu.order[mu.pos];
+        const int current = mu.keep;
         mu.order = MusicOrderFor(ns, mu.list.size());
         for (int i = 0; i < (int)mu.order.size(); i++)
             if (mu.order[i] == current) mu.pos = i;

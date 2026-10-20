@@ -59,6 +59,16 @@ ULONGLONG g_musicKeyAt;     // when the sound shortcut last did something (eithe
 
 bool Running() { return g_proc != nullptr; }
 
+// The playlist, read once and kept here: both looks show this one, so neither goes out of date.
+std::vector<std::wstring> g_songs;
+bool g_songsRead;
+
+void SetSongs(const std::vector<std::wstring>& list) {
+    SavePlaylist(list);
+    g_songs = list;
+    g_songsRead = true;
+}
+
 // ---------------------------------------------------------------------------------------
 // Desktop clock: follows whichever wallpaper is showing.
 
@@ -79,7 +89,7 @@ void SyncPlayer(bool force) {
         Player_Hide();
         return;
     }
-    Player_Show(LoadPlaylist(), force);
+    Player_Show(Host_Songs(), force);
 }
 
 // The desktop clock (and the music player beside it) as the wallpaper and settings want them now.
@@ -352,18 +362,18 @@ void ShowTrayMenu(POINT pt) {
 }
 
 // Multi-select song picker for "my music". Returns false if cancelled.
-bool PickMusic(HWND owner) {
+std::vector<std::wstring> PickMusic(HWND owner, bool add) {
     IFileOpenDialog* dlg = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return false;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return {};
     const COMDLG_FILTERSPEC types[] = {
         {L"Music", L"*.mp3;*.m4a;*.aac;*.wav;*.wma;*.flac;*.alac;*.ogg;*.opus;*.mp4"},
         {L"All files", L"*.*"},
     };
     dlg->SetFileTypes((UINT)std::size(types), types);
-    dlg->SetTitle(L"Choose songs for the wallpaper (Ctrl+A selects a whole folder)");
+    dlg->SetTitle(add ? L"Add songs to the playlist (Ctrl+A selects a whole folder)" : L"Choose songs for the wallpaper (Ctrl+A selects a whole folder)");
     dlg->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_ALLOWMULTISELECT);
-    std::vector<std::wstring> old = LoadPlaylist();
-    std::wstring start = !old.empty() ? old[0] : L"";
+    const std::vector<std::wstring>& old = Host_Songs();
+    std::wstring start = !old.empty() ? old.back() : L"";
     if (!start.empty()) {
         IShellItem* folder = nullptr;
         std::wstring dir = start.substr(0, start.find_last_of(L"\\/"));
@@ -403,10 +413,7 @@ bool PickMusic(HWND owner) {
         }
     }
     dlg->Release();
-    if (files.empty()) return false;
-    SavePlaylist(files);
-    Log(L"tray: %zu song(s) chosen for my music", files.size());
-    return true;
+    return files;
 }
 
 bool PickVideo(HWND owner) {
@@ -480,7 +487,7 @@ void ToggleMusic() {
         UI_Refresh();
         return;
     }
-    if (g_settings.sound != 2 || LoadPlaylist().empty()) {
+    if (g_settings.sound != 2 || Host_Songs().empty()) {
         Log(L"tray: sound shortcut pressed, but there's no sound to pause");
         return;
     }
@@ -923,8 +930,35 @@ void Host_TrimMemory() {
 
 bool Host_PickVideo(HWND owner) { return PickVideo(owner); }
 
-bool Host_PickMusic(HWND owner) {
-    if (!PickMusic(owner)) return false;
+const std::vector<std::wstring>& Host_Songs() {
+    if (!g_songsRead) {
+        g_songs = LoadPlaylist();
+        g_songsRead = true;
+    }
+    return g_songs;
+}
+
+bool Host_PickMusic(HWND owner, bool add) {
+    const std::vector<std::wstring> files = PickMusic(owner, add);
+    if (files.empty()) return false;
+    if (add && !Host_Songs().empty()) {  // onto the end (in a shuffled order too); what plays carries on
+        std::vector<std::wstring> list = Host_Songs();
+        std::vector<int> order = MusicOrderFor(g_settings, list.size());
+        for (const std::wstring& f : files) {
+            if (std::any_of(list.begin(), list.end(), [&](const std::wstring& s) { return _wcsicmp(s.c_str(), f.c_str()) == 0; })) continue;
+            order.push_back((int)list.size());
+            list.push_back(f);
+        }
+        Log(L"tray: %zu song(s) added to my music", list.size() - Host_Songs().size());
+        if (list.size() == Host_Songs().size()) return false;  // (all there already)
+        SetSongs(list);
+        g_settings.musicOrder = MusicShuffled(order) ? order : std::vector<int>{};
+        Host_SettingsChanged();
+        UI_Refresh();
+        return true;
+    }
+    SetSongs(files);
+    Log(L"tray: %zu song(s) chosen for my music", files.size());
     g_settings.sound = 2;
     g_settings.musicOrder.clear();  // new songs: in the order chosen, waiting for Play
     g_settings.musicPlaying = false;
@@ -997,7 +1031,7 @@ void Host_PlaceSong(size_t n, int song, int to) {
 }
 
 void Host_RemoveSong(int song) {
-    std::vector<std::wstring> list = LoadPlaylist();
+    std::vector<std::wstring> list = Host_Songs();
     const int n = (int)list.size();
     if (song < 0 || song >= n) return;
     std::vector<int> order = MusicOrderFor(g_settings, n);
@@ -1016,7 +1050,8 @@ void Host_RemoveSong(int song) {
     for (int& i : order)
         if (i > song) i--;
     if (current > song) current--;
-    SavePlaylist(list);
+    SetSongs(list);
+    if (live) g_music.track = g_track = list.empty() ? -1 : current;  // (until the renderer says so itself)
     g_settings.musicOrder = MusicShuffled(order) ? order : std::vector<int>{};
     g_settings.musicTrack = list.empty() ? 0 : current;
     g_settings.musicPosMs = pos;  // (it carries on there with the list it has now)

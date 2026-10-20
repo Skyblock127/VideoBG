@@ -51,8 +51,9 @@ Using it
       * Music (top right, or M): the music player on your desktop (step
         through its styles); the player shown there works as the remote
         (play, pause, skip, volume, and its place in the song). Then your
-        playlist, with shuffle and repeat on its heading (click a song to
-        play it, drag its grip to move it).
+        playlist, with search, shuffle and repeat on its heading (click a
+        song to play it, drag its grip to move it). The handle above the
+        player turns it.
       * Settings (top right, or S): add videos, the
         lock screen, the wallpaper off, all the settings, or back to the
         classic look. The settings window is the same in both looks.
@@ -137,8 +138,10 @@ Using it
         preset before changing it, so you can get it back later.
   - My music (Music page): choose songs, then press Play (the music never
     starts by itself). The player has a seek bar, previous/next, shuffle and
-    repeat this song (the playlist always repeats); click the song's name to
-    find it in the playlist. In the playlist, click a song to play it, drag
+    repeat this song (the playlist always repeats); click "Playlist" to
+    find the song playing, or the search to find any (spelling slips are
+    fine). Add songs puts more on the end; Choose songs starts a new list.
+    In the playlist, click a song to play it, drag
     a song by its grip to move it, or drag anywhere else to scroll. Moving
     songs counts as shuffling; turning shuffle off goes back to the order
     you chose them in. With the video wallpaper off the music waits where it
@@ -147,13 +150,15 @@ Using it
     Vinyl, Cassette, Disc, Bars, Wave, Halo, Cover, Radio or Mini. Its
     buttons and volume work there; click or drag what shows the song's
     place (the record, the ring, the dial...) to move in the song. Drag
-    the rest of it to move it. When VideoBG starts with Windows the music
+    the rest of it to move it. Its settings also turn it (Rotate) and give
+    each colour an eyedropper. When VideoBG starts with Windows the music
     stays paused until you press Play.
   - Music and Playback pages: sound source, speed, frame rate, and (under
     Power saving) pausing while apps cover the desktop or on battery.
   - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.
   - Feedback (Settings page): suggest a feature or report a problem. No
-    account needed. A report can include VideoBG's log (your user name and
+    account needed. Up to 3 pictures (or paste a screenshot with Ctrl+V);
+    each shows with a x to take it out. A report can include VideoBG's log (your user name and
     file names are taken out first); "See what's sent" shows all of it.
   - No mouse needed: Tab (Shift+Tab back) moves between controls, Enter or
     Space uses one (a choice of several goes on to the next), the arrow keys

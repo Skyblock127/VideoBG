@@ -167,7 +167,8 @@ struct Settings {
         float opacity = 1;    // 0.2 .. 1, the whole player
         float corners = -1;   // its card's corner radius (DIPs); -1 = the style's own
         float size = 1;       // 0.7 .. 1.5 of the style's own size
-        bool IsDefault() const { return color.empty() && body.empty() && opacity >= 1 && corners < 0 && size == 1; }
+        float rotate = 0;     // turned this many degrees clockwise (-180 .. 180)
+        bool IsDefault() const { return color.empty() && body.empty() && opacity >= 1 && corners < 0 && size == 1 && rotate == 0; }
     };
     PlayerLook playerLooks[17];  // each style's, by musicPlayer number ([Player] Style<n>Color, ...Opacity, ...Corners)
     Crop crop;                // crop for the current video (stored per video)
@@ -194,6 +195,8 @@ std::wstring FeedbackUrl();               // where feedback goes: FEEDBACK_URL, 
 struct FeedbackPicture {
     std::wstring name;  // the file's name, or "Pasted picture"
     std::string jpeg;   // made smaller (1600 px at most) and turned into a JPEG
+    std::vector<uint32_t> thumb;  // a small copy (premultiplied BGRA, 144 px tall at most) for the dialog
+    int thumbW = 0, thumbH = 0;
 };
 struct FeedbackReport {
     bool bug = false;
@@ -224,6 +227,52 @@ inline std::vector<int> MusicOrderFor(const Settings& s, size_t n) {
     o.resize(n);
     for (size_t i = 0; i < n; i++) o[i] = (int)i;
     return o;
+}
+// The playlist's search, forgiving of spelling: the fewest letters to change, add, drop or swap round
+// to turn q into name (whole: all of it; else any part of it). Case, spaces and marks don't count.
+inline int SearchCost(const std::wstring& name, const std::wstring& q, bool whole = false) {
+    auto plain = [](const std::wstring& s) {
+        std::wstring o;
+        for (wchar_t c : s)
+            if (iswalnum(c)) o += towlower(c);
+        return o;
+    };
+    const std::wstring a = plain(name), b = plain(q);
+    const size_t m = b.size();
+    std::vector<int> p2(m + 1), p1(m + 1), cur(m + 1);
+    for (size_t j = 0; j <= m; j++) p1[j] = (int)j;
+    int best = p1[m];
+    for (size_t i = 1; i <= a.size(); i++) {
+        cur[0] = whole ? (int)i : 0;  // (a part may start anywhere)
+        for (size_t j = 1; j <= m; j++) {
+            int v = std::min(p1[j - 1] + (a[i - 1] != b[j - 1] ? 1 : 0), std::min(p1[j], cur[j - 1]) + 1);
+            if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) v = std::min(v, p2[j - 2] + 1);
+            cur[j] = v;
+        }
+        best = std::min(best, cur[m]);
+        std::swap(p2, p1);
+        std::swap(p1, cur);
+    }
+    return whole ? p1[m] : best;
+}
+// The best match for q among names: its index, or -1 if none is close. Closest part first; of those,
+// the name closest as a whole (typing "sial" finds "Sail", not "California Love").
+inline int SearchBest(const std::vector<std::wstring>& names, const std::wstring& q) {
+    int n = 0;
+    for (wchar_t c : q) n += iswalnum(c) != 0;
+    if (!n) return -1;
+    const int most = n / 3 + 1;  // (about one slip in three letters)
+    int best = -1, score = 0;
+    for (size_t i = 0; i < names.size(); i++) {
+        const int c = SearchCost(names[i], q);
+        if (c >= most) continue;
+        const int sc = c * 1000 + std::min(999, SearchCost(names[i], q, true));
+        if (best < 0 || sc < score) {
+            best = (int)i;
+            score = sc;
+        }
+    }
+    return best;
 }
 inline bool MusicShuffled(const std::vector<int>& o) {
     for (size_t i = 0; i < o.size(); i++)
@@ -288,7 +337,8 @@ bool Host_StartupRegistered(bool* enabledInWindows);
 void Host_RegisterStartup();
 void Host_TrimMemory();
 bool Host_PickVideo(HWND owner);
-bool Host_PickMusic(HWND owner);             // choose songs for "my music"
+bool Host_PickMusic(HWND owner, bool add);   // choose songs for "my music" (add: onto the end of the playlist)
+const std::vector<std::wstring>& Host_Songs();  // the playlist, as both looks and the player show it
 void Host_MusicCommand(MusicCommand cmd, LPARAM value);  // next, previous, seek, play a song
 void Host_LiveVolume(int volume);            // the sound follows the volume slider before it's saved
 void Host_SeekWallpaper(double seconds, bool exact);  // the wallpaper follows the Preview slider
@@ -465,15 +515,17 @@ struct PlayerInput {  // the pointer on a preview: what it's over or holds, the 
 };
 // A style's picture (style 1-based, scale: pixels per DIP) with the song as it is now, for the
 // settings windows; live: what turns, turned by the clock (a still one shows it mid-song).
-bool Player_Paint(int style, float scale, bool live, ClockImage* out, const PlayerInput* in = nullptr);
-int Player_PartAt(int style, float x, float y);    // PlayerPart (the place only while a song is there to move in)
-float Player_VolumeAt(int style, float x);         // the volume (0..1) at x on its slider
-float Player_SeekAt(int style, float x, float y);  // the place (0..1) at x, y, while it's held
+// turned: as on the desktop, turned by the user's rotation (into a picture just big enough).
+bool Player_Paint(int style, float scale, bool live, ClockImage* out, const PlayerInput* in = nullptr, bool turned = false);
+// x, y below: in the turned picture's DIPs (Player_Size with turned).
+int Player_PartAt(int style, float x, float y);     // PlayerPart (the place only while a song is there to move in)
+float Player_VolumeAt(int style, float x, float y);  // the volume (0..1) where its slider is pointed at
+float Player_SeekAt(int style, float x, float y);   // the place (0..1) at x, y, while it's held
 bool Player_HasVolume(int style);
 bool Player_HasCorners(int style);  // its card's corners can be changed (PlayerLook::corners)
 float Player_Corners(int style);    // its corner radius now (DIPs)
 void Player_Seek(float frac);  // the song moves there (and shows there at once)
-void Player_Size(int style, float* w, float* h);  // DIPs
+void Player_Size(int style, float* w, float* h, bool turned = false);  // DIPs (turned: the box round it as it's turned)
 std::wstring Player_About(int style);             // what it is, in a few words (0: none)
 bool Player_Turns();        // the music plays: a live preview moves
 void Player_FreePreview();

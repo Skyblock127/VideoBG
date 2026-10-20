@@ -699,6 +699,7 @@ void LoadSettings(Settings& s) {
         pl.size = ReadFloat(ini, L"Player", (k + L"Size").c_str(), 1, 0.7f, 1.5f);
         pl.opacity = ReadFloat(ini, L"Player", (k + L"Opacity").c_str(), 1, 0.2f, 1);
         pl.corners = ReadFloat(ini, L"Player", (k + L"Corners").c_str(), -1, -1, 60);
+        pl.rotate = ReadFloat(ini, L"Player", (k + L"Rotate").c_str(), 0, -180, 180);
     }
     s.playerY = ReadFloat(ini, L"General", L"PlayerY", 0.9f, 0, 1);
     s.lockFollow = ReadInt(ini, L"LockScreenFollows", 1, 0, 1) != 0;
@@ -780,6 +781,8 @@ void SaveSettings(const Settings& s) {
         ini.Set(L"Player", k + L"Opacity", pl.opacity < 1 ? buf : nullptr);
         swprintf(buf, 64, L"%.1f", pl.corners);
         ini.Set(L"Player", k + L"Corners", pl.corners >= 0 ? buf : nullptr);
+        swprintf(buf, 64, L"%.1f", pl.rotate);
+        ini.Set(L"Player", k + L"Rotate", pl.rotate != 0 ? buf : nullptr);
     }
     swprintf(buf, 64, L"%.4f", s.playerY);
     ini.Set(L"General", L"PlayerY", buf);

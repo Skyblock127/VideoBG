@@ -49,6 +49,7 @@ enum Id {
     ID_P_DATE_PREV, ID_P_DATE_NEXT, ID_P_H12, ID_P_H24, ID_P_PICK_TEXT, ID_P_PICK_GLOW, ID_P_GRID_TEXT, ID_P_GRID_GLOW,
     // the music's
     ID_MU_PREV, ID_MU_PLAY, ID_MU_NEXT, ID_MU_SEEK, ID_MU_VOLUME, ID_MU_SHUFFLE, ID_MU_REPEAT, ID_MU_PICK, ID_MU_LIST,
+    ID_MU_HEAD, ID_MU_ADD, ID_MU_SEARCH, ID_MU_SEARCH_X, ID_MU_RST_COL, ID_MU_RST_BODY, ID_MU_RST_SIZE, ID_MU_RST_OPACITY, ID_MU_RST_CORNERS, ID_MU_ROTATE,
     ID_MU_STYLE_PREV, ID_MU_STYLE_NEXT, ID_MU_PREVIEW, ID_P_ROTATE,
     ID_MU_DONE, ID_MU_PICK_COL, ID_MU_GRID_COL, ID_MU_OPACITY, ID_MU_CORNERS, ID_MU_RESET, ID_MU_SIZE, ID_MU_PICK_BODY, ID_MU_GRID_BODY,
     ID_MU_COL0,         // + swatch (0: the Windows accent colour)
@@ -232,12 +233,18 @@ struct Picker {
     // Music
     bool music = false;               // its dropdown is open
     float musicA = 0;
-    std::vector<std::wstring> songs;  // the playlist
     float seekFrac = -1;              // while its place is dragged
     D2D1_RECT_F songView{};           // the playlist
-    float songScroll = 0;
+    float songScroll = 0, songTarget = 0, songMax = 0;  // scrolled this far, gliding there, at most
     int songDrag = -1, songIns = 0;   // a song being moved, and where it would land
     float songGrab = 0, songY = 0;
+    double songEdgeAt = 0;            // moving one: since when it's been near the list's edge
+    int songPress = -1;               // pressed on a song (or -2: the list): a drag scrolls the list
+    float songPressY = 0, songPressScroll = 0;
+    bool songMoved = false;
+    bool searchOn = false;            // the playlist's search box is out
+    std::wstring search;              // what's typed in it
+    int searchHit = -1;               // the song that matches it best
     ID2D1Bitmap* player = nullptr;    // the desktop player's style, as it looks (redrawn while it turns)
     int playerStyle = 0;
     double playerAt = 0;
@@ -249,6 +256,8 @@ struct Picker {
     bool pvSeeking = false;
     bool pvMoving = false;            // the music screen: the player is being dragged to a new place
     D2D1_POINT_2F pvGrab{};           // where it was taken, from its centre
+    bool pvRotating = false;          // its handle is held: the player turns
+    float pvRotFrom = 0, pvRotPointer = 0;  // its angle when taken, and the pointer's
     // How long drawing takes (logged when it closes)
     int frames = 0;
     double drawTime = 0, drawMax = 0;
@@ -1225,6 +1234,18 @@ void Label(const std::wstring& s, float x, float y, float a, bool on = true) {
     Text(s, R(x, y, x + kLabelW, y + kRow), G.fBody, Col(0xFFFFFF, (on ? 0.78f : 0.35f) * a));
 }
 
+// A small arrow at the end of a row's label: puts that one setting back as it comes.
+void ResetBtn(int id, float x, float y, float a) {
+    const float cy = y + kRow / 2;
+    const D2D1_RECT_F r = R(x - 11, cy - 11, x + 11, cy + 11);
+    if (P.hot == id) {
+        G.br->SetColor(Col(0xFFFFFF, 0.09f * a));
+        G.ctx->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x, cy), 11, 11), G.br);
+    }
+    Text(L"\uE7A7", r, G.fSmallIcon, Col(0xFFFFFF, (P.hot == id ? 0.95f : 0.5f) * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+    P.hits.push_back({id, r});
+}
+
 void Circle(float cx, float cy, float r, D2D1_COLOR_F c) {
     G.br->SetColor(c);
     G.ctx->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), G.br);
@@ -1571,16 +1592,52 @@ void LanguageJump(wchar_t letter) {
 
 // The playlist, in play order: a click plays a song; its grip moves it (drag it up or down, the
 // others make room). The wheel scrolls it.
+static_assert(ID_MU_COL0 + 5 <= ID_MU_BODY0, "the colour swatches' ids overlap");
 constexpr float kSongRow = 30;
 
+// Glides the playlist to a song (playlist index), putting it in the middle of the list.
+void SongGlide(int song) {
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
+    for (size_t p = 0; p < order.size(); p++)
+        if (order[p] == song) P.songTarget = p * kSongRow - (P.songView.bottom - P.songView.top - kSongRow) / 2;
+    P.dirty = true;
+}
+
+// The search: the list glides to the song that matches what's typed best (it only looks; nothing moves).
+void SearchChar(wchar_t c) {
+    if (c == 8) {
+        if (!P.search.empty()) P.search.pop_back();
+    } else if (c == 127) {  // Ctrl+Backspace
+        P.search.clear();
+    } else if (c >= 32 && P.search.size() < 80) {
+        P.search += c;
+    } else if (c == 22 && OpenClipboard(P.hwnd)) {  // Ctrl+V
+        if (HANDLE h = GetClipboardData(CF_UNICODETEXT))
+            if (const wchar_t* t = (const wchar_t*)GlobalLock(h)) {
+                for (; *t && *t != L'\r' && *t != L'\n' && P.search.size() < 80; t++) P.search += *t;
+                GlobalUnlock(h);
+            }
+        CloseClipboard();
+    }
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
+    std::vector<std::wstring> names;
+    for (int s : order) names.push_back(FileTitle(Host_Songs()[s]));
+    const int p = SearchBest(names, P.search);
+    P.searchHit = p >= 0 ? order[p] : -1;
+    if (p >= 0) SongGlide(P.searchHit);
+    P.dirty = true;
+}
+
 void DrawSongs(const D2D1_RECT_F& view, float a) {
-    const int n = (int)P.songs.size();
+    const int n = (int)Host_Songs().size();
     const std::vector<int> order = MusicOrderFor(g_settings, n);
     const MusicState ms = Host_MusicState();
     const int current = ms.track >= 0 ? ms.track : std::clamp(g_settings.musicTrack, -1, n - 1);
     P.songView = view;
     P.hits.push_back({ID_MU_LIST, view});
-    P.songScroll = std::clamp(P.songScroll, 0.f, std::max(0.f, n * kSongRow - (view.bottom - view.top)));
+    P.songMax = std::max(0.f, n * kSongRow - (view.bottom - view.top));
+    P.songScroll = std::clamp(P.songScroll, 0.f, P.songMax);
+    P.songTarget = std::clamp(P.songTarget, 0.f, P.songMax);
     std::vector<int> shown = order;
     float liftTop = 0;
     const bool moving = P.songDrag >= 0 && P.songDrag < n;
@@ -1601,9 +1658,10 @@ void DrawSongs(const D2D1_RECT_F& view, float a) {
         } else if (hot) {
             Fill(r, Col(0xFFFFFF, 0.07f * a), 7);
         }
+        if (P.searchOn && song == P.searchHit && !lifted) Stroke(r, g_accent * a, 7, 1);  // what the search found
         if (cur) Text(L"\uE767", R(r.left + 4, r.top, r.left + 30, r.bottom), G.fSmallIcon, g_accent * a, DWRITE_TEXT_ALIGNMENT_CENTER);
         else Text(std::to_wstring(place + 1), R(r.left + 4, r.top, r.left + 30, r.bottom), G.fSmall, Col(0xFFFFFF, 0.4f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
-        Text(FileTitle(P.songs[song]), R(r.left + 34, r.top, r.right - (hot ? 62 : 34), r.bottom), cur ? G.fBold : G.fBody,
+        Text(FileTitle(Host_Songs()[song]), R(r.left + 34, r.top, r.right - (hot ? 62 : 34), r.bottom), cur ? G.fBold : G.fBody,
              Col(0xFFFFFF, (cur || lifted ? 0.95f : 0.75f) * a));
         Text(L"\uE76F", R(r.right - 30, r.top, r.right - 6, r.bottom), G.fSmallIcon,
              Col(0xFFFFFF, (lifted || P.hot == ID_GRIP0 + song ? 0.9f : 0.35f) * a), DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -1632,7 +1690,7 @@ void DrawSongs(const D2D1_RECT_F& view, float a) {
 float PlayerPreview(float maxW, float* drawnW, float maxScale = 1) {
     const int style = g_settings.musicPlayer;
     float sw = 0, sh = 0;
-    Player_Size(style, &sw, &sh);
+    Player_Size(style, &sw, &sh, true);
     if (style < 1 || sw <= 0) {
         SafeRelease(P.player);
         return 0;
@@ -1642,7 +1700,7 @@ float PlayerPreview(float maxW, float* drawnW, float maxScale = 1) {
     if (!P.player || P.playerStyle != style || s != P.playerK || now - P.playerAt > (Player_Turns() ? 0.03 : 0.5)) {
         ClockImage img;
         SafeRelease(P.player);
-        if (Player_Paint(style, s * P.scale, true, &img, &P.pv)) P.player = BitmapFrom(img.px, img.w, img.h, true);
+        if (Player_Paint(style, s * P.scale, true, &img, &P.pv, true)) P.player = BitmapFrom(img.px, img.w, img.h, true);
         P.playerStyle = style;
         P.playerAt = now;
     }
@@ -1680,6 +1738,20 @@ void DrawMusicStage(float a) {
                                Col(0xFFFFFF, 0.6f * a), 14, 1.5f, G.dash);
         G.ctx->DrawBitmap(P.player, P.playerBox, a, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         P.hits.push_back({ID_MU_PREVIEW, P.playerBox});
+        // The handle that turns it, above it (below it near the top), as the clock's: a double click
+        // puts it upright, Shift turns it freely; its angle beside it while it turns.
+        const float hx = cx, hy = P.playerBox.top - 26 > 14 ? P.playerBox.top - 26 : P.playerBox.bottom + 26;
+        const bool lit = P.hot == ID_MU_ROTATE || P.pvRotating;
+        Circle(hx, hy, 11, Col(0x000000, 0.28f * a));
+        Ring(hx, hy, 11, Col(0xFFFFFF, (lit ? 0.75f : 0.4f) * a), 1);
+        Text(L"\uE7AD", R(hx - 11, hy - 11, hx + 11, hy + 11), G.fSmallIcon, Col(0xFFFFFF, (lit ? 0.9f : 0.55f) * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+        P.hits.push_back({ID_MU_ROTATE, R(hx - 14, hy - 14, hx + 14, hy + 14)});
+        const float deg = g_settings.playerLooks[style].rotate;
+        if (P.pvRotating || (P.hot == ID_MU_ROTATE && deg != 0)) {
+            wchar_t t[16];
+            swprintf(t, 16, L"%.0f\u00B0", deg);
+            Text(t, R(hx + 18, hy - 10, hx + 80, hy + 10), G.fSmall, Col(0xFFFFFF, 0.8f * a));
+        }
         return;
     }
     const float cx = (left + right) / 2, cy = P.H / 2;
@@ -1695,7 +1767,7 @@ void DrawMusicEditPanel(float a) {
     if (a <= 0.01f) return;
     const int style = g_settings.musicPlayer;
     const bool mine = g_settings.sound == 2, has = style > 0;
-    const int n = (int)P.songs.size();
+    const int n = (int)Host_Songs().size();
     const float x = PanelX(), y = 92, h = P.H - 20 - y;
     const D2D1_RECT_F box = R(x, y, x + kPanelW, y + h);
     PanelBox(box, a);
@@ -1733,6 +1805,7 @@ void DrawMusicEditPanel(float a) {
     const bool quick = look.color.empty() || std::find(P.swatches.begin(), P.swatches.begin() + std::min<size_t>(4, P.swatches.size()), ink) !=
                                                  P.swatches.begin() + std::min<size_t>(4, P.swatches.size());
     Label(L"Colour", lx, yy, a, has);
+    if (has && !look.color.empty()) ResetBtn(ID_MU_RST_COL, cx - 14, yy, a);
     const float sy = yy + kRow / 2;
     ToolSwatch(ID_MU_PICK_COL, cx + 12, sy, L"\uEF3C", P.picking == 3, a, has);
     ToolSwatch(ID_MU_GRID_COL, cx + 39, sy, L"\uE710", P.gridFor == 3 || !quick, a, has, quick ? nullptr : &ink);
@@ -1746,6 +1819,7 @@ void DrawMusicEditPanel(float a) {
     const bool bodyQuick = look.body.empty() || std::find(P.swatches.begin(), P.swatches.begin() + std::min<size_t>(4, P.swatches.size()), bodyInk) !=
                                                     P.swatches.begin() + std::min<size_t>(4, P.swatches.size());
     Label(L"Body", lx, yy, a, has);
+    if (has && !look.body.empty()) ResetBtn(ID_MU_RST_BODY, cx - 14, yy, a);
     const float by = yy + kRow / 2;
     ToolSwatch(ID_MU_PICK_BODY, cx + 12, by, L"\uEF3C", P.picking == 4, a, has);
     ToolSwatch(ID_MU_GRID_BODY, cx + 39, by, L"\uE710", P.gridFor == 4 || !bodyQuick, a, has, bodyQuick ? nullptr : &bodyInk);
@@ -1756,22 +1830,25 @@ void DrawMusicEditPanel(float a) {
     yy += kRow;
     wchar_t v[32];
     Label(L"Size", lx, yy, a, has);
+    if (has && look.size != 1) ResetBtn(ID_MU_RST_SIZE, cx - 14, yy, a);
     swprintf(v, 32, L"%.0f%%", look.size * 100);
     SliderCtl(ID_MU_SIZE, ctl(yy), (look.size - 0.7f) / 0.8f, v, a, has);
     yy += kRow;
     Label(L"Opacity", lx, yy, a, has);
+    if (has && look.opacity < 1) ResetBtn(ID_MU_RST_OPACITY, cx - 14, yy, a);
     swprintf(v, 32, L"%.0f%%", look.opacity * 100);
     SliderCtl(ID_MU_OPACITY, ctl(yy), (look.opacity - 0.2f) / 0.8f, v, a, has);
     yy += kRow;
     const bool corners = has && Player_HasCorners(style);
     const float radius = has ? Player_Corners(style) : 0;
     Label(L"Corners", lx, yy, a, corners);
+    if (corners && look.corners >= 0) ResetBtn(ID_MU_RST_CORNERS, cx - 14, yy, a);
     swprintf(v, 32, L"%.0f", radius);
     SliderCtl(ID_MU_CORNERS, ctl(yy), radius / 40, corners ? v : L"", a, corners);
     yy += kRow;
     // Back to how this style comes (only when it's been changed).
     if (has && !look.IsDefault()) {
-        const std::wstring t = L"Reset " + Player_Styles()[style - 1];
+        const std::wstring t = L"Reset all";
         const float tw = TextWidth(t, G.fBody);
         const D2D1_RECT_F r = R(cr - tw, yy + 4, cr, yy + 26);
         Text(t, r, G.fBody, P.hot == ID_MU_RESET ? Col(0xFFFFFF, a) : g_accent * a);
@@ -1792,22 +1869,51 @@ void DrawMusicEditPanel(float a) {
         Text(L"To play your own songs, choose My music on the Music page of All settings.", R(x + 18, yy, box.right - 18, yy + 44), G.fWrap,
              Col(0xFFFFFF, 0.7f * a));
     } else {
-        Text(L"Playlist", R(x + 18, yy, x + 120, yy + 24), G.fBold, Col(0xFFFFFF, 0.92f * a));
-        const std::wstring pick = L"Choose songs\u2026";
-        const float pw = TextWidth(pick, G.fBody);
-        const D2D1_RECT_F pr = R(box.right - 18 - pw, yy, box.right - 18, yy + 24);
+        const float hy = yy + 12;
+        if (P.searchOn) {  // the search box, over the heading: the list scrolls to the best match (nothing moves)
+            const D2D1_RECT_F sb = R(x + 12, yy - 3, box.right - 12, yy + 27);
+            Fill(sb, Col(0xFFFFFF, 0.08f * a), 8);
+            Stroke(sb, g_accent * a, 8, 1);
+            Text(L"\uE721", R(sb.left + 8, sb.top, sb.left + 26, sb.bottom), G.fSmallIcon, Col(0xFFFFFF, 0.6f * a));
+            const D2D1_RECT_F tr = R(sb.left + 32, sb.top, sb.right - 34, sb.bottom);
+            if (P.search.empty()) Text(L"Find a song", tr, G.fBody, Col(0xFFFFFF, 0.4f * a));
+            else Text(P.search, tr, G.fBody, Col(0xFFFFFF, 0.95f * a));
+            const float cw = std::min(TextWidth(P.search, G.fBody), tr.right - tr.left);
+            G.br->SetColor(Col(0xFFFFFF, 0.9f * a));
+            G.ctx->DrawLine(D2D1::Point2F(tr.left + cw + 1, sb.top + 7), D2D1::Point2F(tr.left + cw + 1, sb.bottom - 7), G.br, 1);  // the caret
+            if (!P.search.empty() && P.searchHit < 0)
+                Text(L"No match", R(tr.left + cw + 10, sb.top, tr.right, sb.bottom), G.fSmall, Col(0xFFFFFF, 0.45f * a), DWRITE_TEXT_ALIGNMENT_TRAILING);
+            IconBtn(ID_MU_SEARCH_X, sb.right - 17, hy, 12, L"\uE711", a);
+        } else {  // its heading finds the song playing in the list; then the search, shuffle and repeat
+            const float tw = TextWidth(L"Playlist", G.fBold);
+            const D2D1_RECT_F hr = R(x + 18, yy, x + 18 + tw, yy + 24);
+            Text(L"Playlist", hr, G.fBold, n && P.hot == ID_MU_HEAD ? g_accent * a : Col(0xFFFFFF, 0.92f * a));
+            if (n) P.hits.push_back({ID_MU_HEAD, hr});
+            if (n) {
+                const bool shuffled = MusicShuffled(MusicOrderFor(g_settings, n)), one = g_settings.musicRepeat == 2;  // (lit while on)
+                const float bx = box.right - 30;
+                IconBtn(ID_MU_REPEAT, bx, hy, 14, one ? L"\uE8ED" : L"\uE8EE", a, true, one ? g_accent : D2D1::ColorF(1, 1, 1));
+                IconBtn(ID_MU_SHUFFLE, bx - 34, hy, 14, L"\uE8B1", a, n > 1, shuffled ? g_accent : D2D1::ColorF(1, 1, 1));
+                IconBtn(ID_MU_SEARCH, bx - 68, hy, 14, L"\uE721", a);
+            }
+        }
+        yy += 30;
+        // Under the list: adding songs to it, or choosing new ones.
+        const float fy = box.bottom - 34;
+        const std::wstring add = L"Add songs\u2026", pick = L"Choose songs\u2026";
+        const float aw = TextWidth(add, G.fBody), pw = TextWidth(pick, G.fBody);
+        const D2D1_RECT_F ar = R(x + 18, fy, x + 18 + aw, fy + 24), pr = R(box.right - 18 - pw, fy, box.right - 18, fy + 24);
+        if (n) {
+            Text(add, ar, G.fBody, P.hot == ID_MU_ADD ? Col(0xFFFFFF, a) : g_accent * a);
+            P.hits.push_back({ID_MU_ADD, ar});
+        }
         Text(pick, pr, G.fBody, P.hot == ID_MU_PICK ? Col(0xFFFFFF, a) : g_accent * a);
         P.hits.push_back({ID_MU_PICK, pr});
         if (n) {
-            const bool shuffled = MusicShuffled(MusicOrderFor(g_settings, n)), one = g_settings.musicRepeat == 2;  // (lit while on)
-            const float hy = yy + 12, bx = pr.left - 22;
-            IconBtn(ID_MU_REPEAT, bx, hy, 14, one ? L"\uE8ED" : L"\uE8EE", a, true, one ? g_accent : D2D1::ColorF(1, 1, 1));
-            IconBtn(ID_MU_SHUFFLE, bx - 34, hy, 14, L"\uE8B1", a, n > 1, shuffled ? g_accent : D2D1::ColorF(1, 1, 1));
-            yy += 30;
-            const int rows = std::max(1, (int)((box.bottom - 10 - yy) / kSongRow));
+            const int rows = std::max(1, (int)((fy - 6 - yy) / kSongRow));
             DrawSongs(R(x + 8, yy, box.right - 8, yy + std::min(n, rows) * kSongRow), a);
         } else {
-            Text(L"Choose songs (a whole folder works too), and they play with the wallpaper.", R(x + 18, yy + 30, box.right - 18, yy + 74),
+            Text(L"Choose songs (a whole folder works too), and they play with the wallpaper.", R(x + 18, yy, box.right - 18, yy + 44),
                  G.fWrap, Col(0xFFFFFF, 0.7f * a));
         }
     }
@@ -2680,7 +2786,6 @@ void StartMusicEdit() {
     KillTimer(P.hwnd, TIMER_DWELL);
     P.editPlay = card >= 0 ? P.cards[card].play : g_settings.video;
     if (card < 0 || !P.cards[card].failed) AskPreview(P.editPlay, card >= 0 ? P.cards[card].info.time : 0);
-    P.songs = LoadPlaylist();
     P.songDrag = -1;
     P.gridFor = P.picking = 0;
     P.panelHidden = false;
@@ -2885,6 +2990,22 @@ void Command(int id) {
                 PlayerLookChanged(true);
             }
             break;
+        case ID_MU_RST_COL:
+        case ID_MU_RST_BODY:
+        case ID_MU_RST_SIZE:
+        case ID_MU_RST_OPACITY:
+        case ID_MU_RST_CORNERS:  // one setting back as the style comes
+            if (g_settings.musicPlayer > 0) {
+                Settings::PlayerLook& pl = g_settings.playerLooks[g_settings.musicPlayer];
+                const Settings::PlayerLook own;
+                if (id == ID_MU_RST_COL) pl.color = own.color;
+                else if (id == ID_MU_RST_BODY) pl.body = own.body;
+                else if (id == ID_MU_RST_SIZE) pl.size = own.size;
+                else if (id == ID_MU_RST_OPACITY) pl.opacity = own.opacity;
+                else pl.corners = own.corners;
+                PlayerLookChanged(true);
+            }
+            break;
         case ID_MU_PLAY: Host_PlayMusic(!g_settings.musicPlaying); break;
         case ID_MU_STYLE_PREV:
         case ID_MU_STYLE_NEXT: {  // off, then each style, round again
@@ -2898,7 +3019,7 @@ void Command(int id) {
         case ID_MU_PREV:
         case ID_MU_NEXT: Host_SkipMusic(id == ID_MU_NEXT); break;
         case ID_MU_SHUFFLE:
-            Host_ShuffleMusic(P.songs.size());
+            Host_ShuffleMusic(Host_Songs().size());
             UI_Refresh();
             break;
         case ID_MU_REPEAT:  // the playlist (always) or just this song
@@ -2906,9 +3027,17 @@ void Command(int id) {
             Host_SettingsChanged();
             UI_Refresh();
             break;
+        case ID_MU_HEAD: SongGlide(Host_MusicState().track >= 0 ? Host_MusicState().track : g_settings.musicTrack); break;
+        case ID_MU_SEARCH:
+            P.searchOn = true;
+            P.search.clear();
+            P.searchHit = -1;
+            break;
+        case ID_MU_SEARCH_X: P.searchOn = false; break;
         case ID_MU_PICK:
+        case ID_MU_ADD:
             P.dialog = true;
-            if (Host_PickMusic(P.hwnd)) P.songs = LoadPlaylist();
+            Host_PickMusic(P.hwnd, id == ID_MU_ADD);
             P.dialog = false;
             SetForegroundWindow(P.hwnd);
             break;
@@ -3033,13 +3162,12 @@ void Command(int id) {
             ClockEdited();
             break;
         default:
-            if (id >= ID_SONGX0 && id < ID_SONGX0 + (int)P.songs.size()) {  // taken off the playlist
+            if (id >= ID_SONGX0 && id < ID_SONGX0 + (int)Host_Songs().size()) {  // taken off the playlist
                 Host_RemoveSong(id - ID_SONGX0);
-                P.songs = LoadPlaylist();
                 P.dirty = true;
                 break;
             }
-            if (id >= ID_SONG0 && id < ID_SONG0 + (int)P.songs.size()) {  // a song: it plays
+            if (id >= ID_SONG0 && id < ID_SONG0 + (int)Host_Songs().size()) {  // a song: it plays
                 Host_MusicCommand(MC_PLAY_INDEX, id - ID_SONG0);
                 Host_PlayMusic(true);
             } else if (id >= ID_V0 && id <= ID_V0 + (int)P.versionList.size() && P.actionsCard >= 0) {
@@ -3093,7 +3221,9 @@ int HitCard(float x, float y) {
         D2D1_MATRIX_3X2_F m = CardMatrix(p);
         if (!Invert(m)) continue;
         const D2D1_POINT_2F l = Apply(m, D2D1::Point2F(x, y));
-        if (fabsf(l.x) <= kCardW / 2 && fabsf(l.y) <= kCardH / 2) return i;
+        // A lifted card keeps its hover down where its bottom was: it doesn't rise off the pointer and drop back.
+        const float below = i == P.hotCard ? 16 * P.k / std::max(0.01f, p.s) : 0;
+        if (fabsf(l.x) <= kCardW / 2 && l.y >= -kCardH / 2 && l.y <= kCardH / 2 + below) return i;
     }
     return -1;
 }
@@ -3117,8 +3247,16 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 P.hotCard = card;
                 P.dirty = true;
             }
-            if (P.pv.sliding) {  // the player's volume
-                SetSlider(ID_MU_VOLUME, Player_VolumeAt(g_settings.musicPlayer, (x - P.playerBox.left) / P.playerK));
+            if (P.pvRotating) {  // the player turns round its centre, on the desktop too
+                const float cx = (P.playerBox.left + P.playerBox.right) / 2, cy = (P.playerBox.top + P.playerBox.bottom) / 2;
+                const float r = Clock_RotateTo(P.pvRotFrom, P.pvRotPointer, Clock_PointerAngle(cx, cy, x, y), (w & MK_SHIFT) != 0);
+                Settings::PlayerLook& pl = g_settings.playerLooks[std::clamp(g_settings.musicPlayer, 0, (int)std::size(g_settings.playerLooks) - 1)];
+                if (r != pl.rotate) {
+                    pl.rotate = r;
+                    PlayerLookChanged(false);
+                }
+            } else if (P.pv.sliding) {  // the player's volume
+                SetSlider(ID_MU_VOLUME, Player_VolumeAt(g_settings.musicPlayer, (x - P.playerBox.left) / P.playerK, (y - P.playerBox.top) / P.playerK));
                 PreviewChanged();
             } else if (P.pvMoving) {  // the player follows the pointer, on the desktop too
                 g_settings.playerX = Clamp01((x - P.pvGrab.x) / P.W);
@@ -3132,6 +3270,10 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 SlideTo(x);
             } else if (P.songDrag >= 0) {
                 P.songY = y;
+                P.dirty = true;
+            } else if (P.songPress != -1) {  // the list follows the pointer
+                if (fabsf(y - P.songPressY) > 4) P.songMoved = true;
+                if (P.songMoved) P.songScroll = P.songTarget = std::clamp(P.songPressScroll - (y - P.songPressY), 0.f, P.songMax);
                 P.dirty = true;
             } else if (P.mode == 1 && P.rotating) {  // turning it round its centre
                 const float cx = P.look.x * P.W, cy = P.look.y * P.H;
@@ -3212,15 +3354,27 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 P.dirty = true;
                 break;
             }
+            if (P.press == ID_MU_ROTATE && g_settings.musicPlayer > 0) {  // takes hold of its handle (a double click: upright)
+                Settings::PlayerLook& pl = g_settings.playerLooks[g_settings.musicPlayer];
+                if (m == WM_LBUTTONDBLCLK) {
+                    pl.rotate = 0;
+                    PlayerLookChanged(true);
+                } else {
+                    P.pvRotating = true;
+                    P.pvRotFrom = pl.rotate;
+                    P.pvRotPointer = Clock_PointerAngle((P.playerBox.left + P.playerBox.right) / 2, (P.playerBox.top + P.playerBox.bottom) / 2, x, y);
+                }
+                break;
+            }
             if (P.press == ID_MU_PREVIEW) {  // the player: a button, its volume or its place
                 P.pv.press = PreviewPart(x, y);
                 const float px = (x - P.playerBox.left) / P.playerK, py = (y - P.playerBox.top) / P.playerK;
-                if (P.mode == 3 && (P.pv.press == PLAYER_BODY || ((g_settings.sound != 2 || P.songs.empty()) && P.pv.press != PLAYER_NONE))) {
+                if (P.mode == 3 && (P.pv.press == PLAYER_BODY || ((g_settings.sound != 2 || Host_Songs().empty()) && P.pv.press != PLAYER_NONE))) {
                     P.pvMoving = true;  // (with no music, any part of it moves it)
                     P.pvGrab = D2D1::Point2F(x - (P.playerBox.left + P.playerBox.right) / 2, y - (P.playerBox.top + P.playerBox.bottom) / 2);
                 } else if (P.pv.press == PLAYER_VOLUME) {
                     P.pv.sliding = true;
-                    SetSlider(ID_MU_VOLUME, Player_VolumeAt(g_settings.musicPlayer, px));
+                    SetSlider(ID_MU_VOLUME, Player_VolumeAt(g_settings.musicPlayer, px, py));
                 } else if (P.pv.press == PLAYER_SEEK) {
                     P.pvSeeking = true;
                     P.pv.seek = Player_SeekAt(g_settings.musicPlayer, px, py);
@@ -3264,11 +3418,19 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 SlideTo(x);
                 break;
             }
-            if (P.press >= ID_GRIP0 && P.press < ID_GRIP0 + (int)P.songs.size()) {  // takes hold of a song
+            if (P.press == ID_MU_LIST || (P.press >= ID_SONG0 && P.press < ID_SONG0 + (int)Host_Songs().size())) {  // a drag scrolls the list
+                P.songPress = P.press == ID_MU_LIST ? -2 : P.press - ID_SONG0;
+                P.songPressY = y;
+                P.songPressScroll = P.songTarget = P.songScroll;
+                P.songMoved = false;
+                break;
+            }
+            if (P.press >= ID_GRIP0 && P.press < ID_GRIP0 + (int)Host_Songs().size()) {  // takes hold of a song
                 P.songDrag = P.press - ID_GRIP0;
                 for (const Hit& hh : P.hits)
                     if (hh.id == P.press) P.songGrab = y - hh.r.top;
                 P.songY = y;
+                P.songEdgeAt = 0;
                 P.dirty = true;
                 break;
             }
@@ -3300,6 +3462,14 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
         }
         case WM_LBUTTONUP: {
             ReleaseCapture();
+            if (P.pvRotating) {
+                P.pvRotating = false;
+                P.press = ID_NONE;
+                SaveSettings(g_settings);
+                Log(L"picker: the music player turned to %.0f degrees", g_settings.playerLooks[std::clamp(g_settings.musicPlayer, 0, 9)].rotate);
+                P.dirty = true;
+                break;
+            }
             if (P.press == ID_MU_PREVIEW) {
                 const int part = P.pv.press;
                 if (P.pvMoving) {
@@ -3341,7 +3511,7 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 break;
             }
             if (P.songDrag >= 0) {  // let go: the song lands in the gap
-                Host_PlaceSong(P.songs.size(), P.songDrag, P.songIns);
+                Host_PlaceSong(Host_Songs().size(), P.songDrag, P.songIns);
                 UI_Refresh();
                 P.songDrag = -1;
                 P.press = ID_NONE;
@@ -3359,6 +3529,16 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 P.press = ID_NONE;
                 P.dirty = true;
                 break;
+            }
+            if (P.songPress != -1) {  // the list was dragged: no click
+                const bool moved = P.songMoved;
+                P.songPress = -1;
+                P.songMoved = false;
+                if (moved) {
+                    P.press = ID_NONE;
+                    P.dirty = true;
+                    break;
+                }
             }
             const int id = P.press;
             P.press = ID_NONE;
@@ -3397,7 +3577,7 @@ void OnWheel(int delta, LPARAM l) {
     if (P.music || P.mode == 3) {  // the playlist
         const float px = (GET_X_LPARAM(l) - P.mon.left) / P.scale, py = (GET_Y_LPARAM(l) - P.mon.top) / P.scale;
         if (In(P.songView, px, py)) {
-            P.songScroll -= delta / 120.f * 60;  // kept inside the list when drawn
+            P.songTarget -= delta / 120.f * kSongRow * 2;  // glides there (kept inside the list when drawn)
             P.dirty = true;
             return;
         }
@@ -3419,6 +3599,13 @@ void OnWheel(int delta, LPARAM l) {
 
 void OnKey(WPARAM vk) {
     if (P.phase != BROWSING && P.phase != OPENING) return;  // choosing or closing: nearly done
+    if (P.mode == 3 && P.searchOn && !P.picking) {  // the letters come as WM_CHAR
+        if (vk == VK_ESCAPE || vk == VK_RETURN) {
+            P.searchOn = false;
+            P.dirty = true;
+        }
+        return;
+    }
     const bool shift = GetKeyState(VK_SHIFT) < 0;
     if (P.mode == 2) {
         const float step = shift ? 1.f : 10.f;
@@ -3525,6 +3712,25 @@ bool Step(double now) {
             P.scrollV = 0;
         }
         moving = moving || before != P.scroll;
+    }
+    // The playlist glides to where the wheel or the search sent it; a song moved near its edge scrolls it.
+    if (P.songDrag >= 0) {
+        const float zone = 30, top = P.songView.top + zone, bottom = P.songView.bottom - zone;
+        const float depth = std::clamp(P.songY < top ? (P.songY - top) / zone : P.songY > bottom ? (P.songY - bottom) / zone : 0.f, -2.f, 2.f);
+        if (depth != 0) {
+            if (!P.songEdgeAt) P.songEdgeAt = now;
+            const float ease = std::min(1.f, (float)(now - P.songEdgeAt) / 0.5f);
+            P.songTarget = P.songScroll = std::clamp(P.songTarget + depth * fabsf(depth) * 500 * dt * ease, 0.f, P.songMax);
+            moving = true;
+        } else {
+            P.songEdgeAt = 0;
+        }
+    }
+    if (fabsf(P.songTarget - P.songScroll) > 0.5f) {
+        P.songScroll += (P.songTarget - P.songScroll) * (1 - powf(0.75f, dt / 0.015f));
+        moving = true;
+    } else {
+        P.songScroll = P.songTarget;
     }
     // The live wallpaper shows once the showcase is up and plays the focused card's video.
     const std::wstring& wanted = (P.mode == 1 || P.mode == 3) && !P.editPlay.empty()                 ? P.editPlay
@@ -3709,6 +3915,9 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             return 0;
         case WM_MOUSEWHEEL: OnWheel(GET_WHEEL_DELTA_WPARAM(w), l); return 0;
+        case WM_CHAR:
+            if (P.mode == 3 && P.searchOn) SearchChar((wchar_t)w);
+            return 0;
         case WM_MOUSEHWHEEL:
             if (P.mode != 2) OnWheel(-GET_WHEEL_DELTA_WPARAM(w), l);
             return 0;

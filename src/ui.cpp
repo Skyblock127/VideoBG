@@ -37,7 +37,7 @@ enum Id {
     ID_MONITORS, ID_GPU, ID_COVER, ID_BATTERY, ID_HOTKEY, ID_MUSIC_HOTKEY, ID_LAUNCH, ID_LOOK, ID_STARTUP_LINK, ID_STARTUP_REG,
     ID_C_AREA, ID_C_LOCK, ID_C_RESET, ID_C_CANCEL, ID_C_APPLY, ID_VERSIONS, ID_VER_SCRIM, ID_VER_CANCEL, ID_VER_USE,
     ID_SOUND, ID_MUSIC_PICK, ID_MUSIC_PLAY, ID_MUSIC_PREV, ID_MUSIC_NEXT, ID_MUSIC_SHUFFLE, ID_MUSIC_REPEAT, ID_MUSIC_SEEK,
-    ID_MUSIC_LIST, ID_MUSIC_TITLE, ID_UNMUTE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX, ID_PLAYER_STYLE, ID_WALLS,
+    ID_MUSIC_LIST, ID_MUSIC_HEAD, ID_MUSIC_ADD, ID_MUSIC_SEARCH, ID_MUSIC_SEARCH_X, ID_UNMUTE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX, ID_PLAYER_STYLE, ID_WALLS,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_ROTATE, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
     ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO,
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
@@ -46,6 +46,7 @@ enum Id {
     ID_FB_IDEA, ID_FB_BUG, ID_FB_SCRIM, ID_FB_TEXT, ID_FB_STEPS, ID_FB_EMAIL, ID_FB_OFTEN, ID_FB_LOG, ID_FB_PREVIEW, ID_FB_CANCEL,
     ID_FB_SEND, ID_MEMINFO, ID_FB_PICS, ID_FB_PICS_CLEAR,
     ID_PD_SCRIM, ID_PD_AREA, ID_PD_PREV, ID_PD_NEXT, ID_PD_COLOR, ID_PD_BODY, ID_PD_OPACITY, ID_PD_SIZE, ID_PD_CORNERS, ID_PD_RESET, ID_PD_DONE,
+    ID_PD_PICK_COL, ID_PD_PICK_BODY, ID_PD_RST_COL, ID_PD_RST_BODY, ID_PD_RST_OPACITY, ID_PD_RST_SIZE, ID_PD_RST_CORNERS, ID_CLK_PICK, ID_PD_ROTATE, ID_PD_RST_ROTATE,
     ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
@@ -59,6 +60,7 @@ enum Id {
     ID_SONG_ROW0 = 10000,  // the playlist: a song's row, and its grip for moving it (up to 10000 songs)
     ID_SONG_GRIP0 = 20000,
     ID_SONG_DEL0 = 30000,  // + song: take it off the playlist
+    ID_FB_PIC_X0 = 2050,  // the feedback dialog: a picture's remove button
     ID_PRS_USE0 = 2100,   // clock presets: a preset's Use, Edit, Rename and Delete buttons
     ID_PRS_EDIT0 = 2110,
     ID_PRS_REN0 = 2120,
@@ -324,13 +326,15 @@ struct UI {
     int songIns = 0;           // moving: the place it would land
     DWORD songEdgeSince = 0;   // moving: since when the cursor has been near the list's edge
     float seekFrac = -1;       // the music's seek bar while it's dragged
-    int songShown = -1;        // the song the player shows (clicking its name finds it in the playlist)
+    int songShown = -1;        // the song the player shows (clicking "Playlist" finds it in the list)
+    bool searchOn = false;     // the playlist's search box is out
+    std::wstring search;       // what's typed in it
+    int searchHit = -1;        // the song that matches it best (playlist index)
     D2D1_RECT_F memInfo{};  // the sidebar's memory numbers (hovering them explains them)  // the largest display the video plays on, and how many it plays on
 
     int recording = 0;  // a shortcut being recorded: ID_HOTKEY or ID_MUSIC_HOTKEY
     std::wstring hotkeyMsg;
     int hotkeyMsgFor = 0;  // the shortcut box it's about
-    std::vector<std::wstring> playlist;
 
     bool optBusy = false;
     int optPct = 0;
@@ -358,6 +362,7 @@ struct UI {
     float snapYv = 0;
     bool picking = false;             // eyedropper on: clicking the preview takes the wallpaper's colour there
     std::wstring pickColor;           // colour under the eyedropper ("" when it isn't over the wallpaper)
+    bool pickDirect = false;          // it came from the page, not the colour dialog: the click sets dlg.target's colour itself
     D2D1_POINT_2F pickAt{};
     DWORD lastClockMove = 0;
     std::wstring clockNote;           // short feedback in the help line (pasted, copied)
@@ -1120,8 +1125,8 @@ void PaintSidebar() {
         AddHit(ID_NAV + i, K_BUTTON, r);
         y += 40;
         if (i == NAV_PLAYBACK || i == NAV_SOUND) {  // groups: the wallpaper | the clock and the music | the rest
-            Line(kSideX + 14, y + 4, kSideX + kSideW - 14, y + 4, t.stroke);
-            y += 9;
+            Line(kSideX + 8, y + 6, kSideX + kSideW - 8, y + 6, t.ctrlStroke);
+            y += 13;
         }
     }
 
@@ -1380,11 +1385,11 @@ void PaintPlayer(float x, float w, float yy) {
     const Theme& t = u.th;
     const float lx = x + kPad, right = x + w - kPad;
     const MusicState ms = Host_MusicState();
-    const std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
-    const bool have = !u.playlist.empty(), live = have && Host_IsOn() && ms.track >= 0;
-    const int kept = g_settings.musicTrack >= 0 && g_settings.musicTrack < (int)u.playlist.size() ? g_settings.musicTrack : -1;
-    const int track = ms.track >= 0 && ms.track < (int)u.playlist.size() ? ms.track : kept >= 0 ? kept : have ? order[0] : -1;
-    std::wstring title = track >= 0 ? SongName(u.playlist[track]) : L"No songs chosen yet";
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
+    const bool have = !Host_Songs().empty(), live = have && Host_IsOn() && ms.track >= 0;
+    const int kept = g_settings.musicTrack >= 0 && g_settings.musicTrack < (int)Host_Songs().size() ? g_settings.musicTrack : -1;
+    const int track = ms.track >= 0 && ms.track < (int)Host_Songs().size() ? ms.track : kept >= 0 ? kept : have ? order[0] : -1;
+    std::wstring title = track >= 0 ? SongName(Host_Songs()[track]) : L"No songs chosen yet";
     std::wstring note;
     D2D1_COLOR_F noteColor = t.text2;
     if (Host_CurrentTrack() == -2) {
@@ -1400,15 +1405,8 @@ void PaintPlayer(float x, float w, float yy) {
     }
     Text(L"\uE8D6", R(lx, yy, lx + 18, yy + 22), u.fIconSmall, have ? t.accent : t.text3);
     const float noteW = note.empty() ? 0 : TextWidth(note, u.fSmall) + 16;
-    // The song's name: clicking it scrolls the playlist to the song.
-    const bool titleHot = track >= 0 && IsHot(ID_MUSIC_TITLE);
-    Text(title, R(lx + 24, yy, right - noteW, yy + 22), u.fStrong, !have ? t.text2 : titleHot ? t.accentHover : t.text);
-    if (track >= 0) {
-        const float tw = std::min(TextWidth(title, u.fStrong), right - noteW - lx - 24);
-        if (titleHot) Line(lx + 24, yy + 20, lx + 24 + tw, yy + 20, t.accentHover);
-        AddHit(ID_MUSIC_TITLE, K_BUTTON, R(lx + 24, yy, lx + 24 + tw, yy + 22));
-        u.songShown = track;
-    }
+    Text(title, R(lx + 24, yy, right - noteW, yy + 22), u.fStrong, !have ? t.text2 : t.text);
+    u.songShown = track;
     Text(note, R(right - noteW, yy, right, yy + 22), u.fSmall, noteColor, DWRITE_TEXT_ALIGNMENT_TRAILING);
     yy += 26;
     float frac = u.drag == ID_MUSIC_SEEK && u.seekFrac >= 0 ? u.seekFrac : ms.durMs ? (float)ms.posMs / ms.durMs : 0;
@@ -1418,7 +1416,7 @@ void PaintPlayer(float x, float w, float yy) {
     // The buttons, centred: shuffle, previous, play / pause, next, repeat.
     const float cy = yy + 22, mid = (lx + right) / 2;
     const bool shuffled = MusicShuffled(order), on = have && Host_IsOn();  // off: all greyed out, as it was
-    IconButton(ID_MUSIC_SHUFFLE, mid - 118, cy, 18, L"\uE8B1", shuffled, on && u.playlist.size() > 1);
+    IconButton(ID_MUSIC_SHUFFLE, mid - 118, cy, 18, L"\uE8B1", shuffled, on && Host_Songs().size() > 1);
     IconButton(ID_MUSIC_PREV, mid - 62, cy, 18, L"\uE892", false, live);
     {
         // Usable with the wallpaper off too: it decides whether the music starts when the wallpaper's back.
@@ -1438,15 +1436,39 @@ void PaintPlayer(float x, float w, float yy) {
 void PaintPlaylist(float x, float w, float top, float bottom) {
     const Theme& t = u.th;
     const D2D1_RECT_F card = R(x, top, x + w, bottom);
-    Card(card, L"\uE8FD", L"Playlist");
-    Button(ID_MUSIC_PICK, R(x + w - kPad - 148, top + 12, x + w - kPad, top + 44), L"Choose songs", L"\uE8D6", true);
-    const size_t n = u.playlist.size();
-    const std::wstring count = n ? Fmt(L"%zu song%ls", n, n == 1 ? L"" : L"s") : L"";
-    Text(count, R(x + kPad + 120, top + 16, x + w - kPad - 160, top + 40), u.fSmall, t.text2);
-    if (IsHot(ID_MUSIC_PICK) || u.focus == ID_MUSIC_PICK)  // the tip, while pointing at it, beside the count
-        Text(TwoLines(L"Tip: in the picker, Ctrl+A picks every song in the folder", u.fSmall),
-             R(x + kPad + 120 + TextWidth(count, u.fSmall) + 16, top + 12, x + w - kPad - 160, top + 44), u.fSmall, t.text2,
-             DWRITE_TEXT_ALIGNMENT_TRAILING);
+    const size_t n = Host_Songs().size();
+    // Its heading finds the song playing in the list (a click); then the search, adding songs, choosing new ones.
+    Card(card, L"\uE8FD", L"");
+    {
+        const float tw = TextWidth(L"Playlist", u.fHeader);
+        const D2D1_RECT_F hr = R(x + kPad + 28, top + 16, x + kPad + 28 + tw, top + 40);
+        const bool hot = n && IsHot(ID_MUSIC_HEAD);
+        Text(L"Playlist", hr, u.fHeader, hot ? t.accentHover : t.text);
+        if (hot) Line(hr.left, hr.bottom - 1, hr.right, hr.bottom - 1, t.accentHover);
+        AddHit(ID_MUSIC_HEAD, K_BUTTON, hr, n > 0);
+    }
+    if (u.searchOn) {  // the search box, across the heading: it only scrolls to the best match
+        const D2D1_RECT_F sb = R(x + kPad + 126, top + 12, x + w - kPad, top + 44);
+        Fill(sb, t.ctrl, 6);
+        Stroke(sb, u.focus == ID_MUSIC_SEARCH || u.focus == 0 ? t.accent : t.ctrlStroke, 6);
+        Text(L"\uE721", R(sb.left + 10, sb.top, sb.left + 28, sb.bottom), u.fIconSmall, t.text2);
+        const D2D1_RECT_F tr = R(sb.left + 34, sb.top, sb.right - 40, sb.bottom);
+        const bool none = !u.search.empty() && u.searchHit < 0;
+        if (u.search.empty()) Text(L"Find a song", tr, u.fBody, t.text3);
+        else Text(u.search, tr, u.fBody, t.text);
+        const float cw = std::min(TextWidth(u.search, u.fBody), tr.right - tr.left);
+        Line(tr.left + cw + 1, sb.top + 8, tr.left + cw + 1, sb.bottom - 8, t.text);  // the caret
+        if (none) Text(L"No match", R(tr.left + cw + 12, sb.top, sb.right - 40, sb.bottom), u.fSmall, t.text3, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        AddHit(ID_MUSIC_SEARCH, K_AREA, R(sb.left, sb.top, sb.right - 36, sb.bottom));
+        IconButton(ID_MUSIC_SEARCH_X, sb.right - 18, (sb.top + sb.bottom) / 2, 13, L"\uE711", false, true);
+    } else {
+        const float right = x + w - kPad;
+        Button(ID_MUSIC_PICK, R(right - 148, top + 12, right, top + 44), L"Choose songs", L"\uE8D6", true);
+        Button(ID_MUSIC_ADD, R(right - 148 - 8 - 124, top + 12, right - 156, top + 44), L"Add songs", L"\uE710", false);
+        IconButton(ID_MUSIC_SEARCH, right - 280 - 26, top + 28, 16, L"\uE721", false, n > 0);
+        const std::wstring count = n ? Fmt(L"%zu song%ls", n, n == 1 ? L"" : L"s") : L"";
+        Text(count, R(x + kPad + 126, top + 16, right - 330, top + 40), u.fSmall, t.text2);
+    }
     const D2D1_RECT_F view = R(x + 8, top + kCardHead + 8, x + w - 8, bottom - 8);
     u.songView = view;
     AddHit(ID_MUSIC_LIST, K_AREA, view);  // the wheel scrolls it
@@ -1486,9 +1508,10 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
         } else if (hot && on) {
             Fill(r, Mix(t.card, t.text, 0.05f), 5);
         }
+        if (u.searchOn && song == u.searchHit && !lifted) Stroke(r, t.accent, 5);  // what the search found
         if (isCurrent) Text(L"\uE767", R(r.left + 6, r.top, r.left + 34, r.bottom), u.fIconSmall, on ? t.accent : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
         else Text(std::to_wstring(p + 1), R(r.left + 6, r.top, r.left + 34, r.bottom), u.fSmall, t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
-        Text(SongName(u.playlist[song]), R(r.left + 42, r.top, r.right - (hot && on ? 80 : 48), r.bottom), isCurrent ? u.fStrong : u.fBody,
+        Text(SongName(Host_Songs()[song]), R(r.left + 42, r.top, r.right - (hot && on ? 80 : 48), r.bottom), isCurrent ? u.fStrong : u.fBody,
              !on ? t.text3 : isCurrent || lifted ? t.text : t.text2);
         const bool gripHot = on && (IsHot(ID_SONG_GRIP0 + song) || lifted);
         Text(L"\uE76F", R(r.right - 40, r.top, r.right - 8, r.bottom), u.fIconSmall, gripHot ? t.text : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -1647,6 +1670,8 @@ struct FeedbackUI {
     DWORD sentAt = 0;
     std::wstring idea, what, doing, mail;  // drafts, kept while VideoBG runs (Cancel doesn't lose them)
     D2D1_RECT_F boxText{}, boxSteps{}, boxEmail{};
+    D2D1_RECT_F picsButton{}, strip{};      // adding pictures; the strip that shows them (once there are some)
+    float picScroll = 0, picMax = 0;        // the strip, scrolled sideways
     std::vector<FeedbackPicture> pictures;  // screenshots for it (added, or pasted with Ctrl+V)
     WNDPROC editProc = nullptr;
 } fb;
@@ -1662,20 +1687,52 @@ bool FbBox(int id) { return id == ID_FB_TEXT || id == ID_FB_STEPS || id == ID_FB
 HWND FbEditFor(int id) { return id == ID_FB_TEXT ? fb.text : id == ID_FB_STEPS ? fb.steps : id == ID_FB_EMAIL ? fb.email : nullptr; }
 
 // The dialog (DIPs), and its text boxes.
+constexpr float kFbStripH = 86;  // the pictures' strip (72 DIP tall pictures)
+
 D2D1_RECT_F FeedbackLayout() {
-    const float W = kDialogW, H = fb.bug ? 548 : 376, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
+    const float base = fb.bug ? 548 : 376, strip = fb.pictures.empty() ? 0 : kFbStripH, W = kDialogW, L = (kW - W) / 2;
+    const float H = std::min(base + strip, kH - 24), squeeze = base + strip - H;  // (a short window: the text boxes give up the room)
+    float T = std::max(12.f, (kH - base) / 2);
+    if (T + H > kH - 12) T = std::max(12.f, kH - 12 - H);  // it grows down, as far as there's room
     float y = T + 84;
     if (!fb.bug) {
-        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 144);
+        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 144 - squeeze);
         fb.boxSteps = fb.boxEmail = R(0, 0, 0, 0);
+        fb.picsButton = R(L + 24, fb.boxText.bottom + 14, L + 164, fb.boxText.bottom + 46);
+        y = fb.picsButton.bottom;
     } else {
-        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 96);
+        const float textCut = std::min(squeeze, 40.f);
+        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 96 - textCut);
         y = fb.boxText.bottom + 14;
-        fb.boxSteps = R(L + 24, y + 24, L + W - 24, y + 24 + 64);
+        fb.boxSteps = R(L + 24, y + 24, L + W - 24, y + 24 + 64 - (squeeze - textCut));
         y = fb.boxSteps.bottom + 14 + 32 + 14 + 28 + 14;
         fb.boxEmail = R(L + 24, y + 24, L + 24 + 320, y + 24 + 32);
+        fb.picsButton = R(L + 356, fb.boxEmail.top, L + 496, fb.boxEmail.bottom);
+        y = fb.boxEmail.bottom;
     }
+    fb.strip = strip ? R(L + 24, y + 12, L + W - 24, y + 12 + 72) : R(0, 0, 0, 0);
     return R(L, T, L + W, T + H);
+}
+
+void FbFitScroll(HWND e);
+
+// The text boxes follow the layout (it changes as pictures come and go).
+void FbPlaceEdits() {
+    const float k = u.dpi / 96.f;
+    auto place = [&](HWND e, const D2D1_RECT_F& box, bool multi) {
+        if (!e) return;
+        const int x = (int)lroundf((box.left + 8) * k), y = (int)lroundf((box.top + 6) * k);
+        const int w = (int)lroundf((box.right - box.left - (multi ? 10 : 16)) * k), h = (int)lroundf((box.bottom - box.top - 12) * k);
+        RECT r;
+        GetWindowRect(e, &r);
+        MapWindowPoints(nullptr, u.hwnd, (POINT*)&r, 2);
+        if (r.left == x && r.top == y && r.right - r.left == w && r.bottom - r.top == h) return;
+        MoveWindow(e, x, y, w, h, TRUE);
+        FbFitScroll(e);
+    };
+    place(fb.text, fb.boxText, true);
+    place(fb.steps, fb.boxSteps, true);
+    place(fb.email, fb.boxEmail, false);
 }
 
 void PaintGeneralPage(float x, float w) {
@@ -2181,8 +2238,9 @@ void PaintClockPage(float x, float w) {
     Row(lx, yy, labW, L"Style", rowH, on);
     FontButton(ID_CLK_FONT, R(lx + labW, yy + 3, lx + colW, yy + rowH - 3), Clock_StyleName(*look), on, L"\uE790");
     Row(rx, yy, labW, L"Colour", rowH, on);
-    ColorPairButton(ID_CLK_CUSTOM, R(rx + labW, yy + 3, rx + colW, yy + rowH - 3), look->color,
+    ColorPairButton(ID_CLK_CUSTOM, R(rx + labW, yy + 3, rx + colW - 40, yy + rowH - 3), look->color,
                     look->glowColor.empty() ? look->color : look->glowColor, on);
+    Button(ID_CLK_PICK, R(rx + colW - 32, yy + 3, rx + colW, yy + rowH - 3), L"", L"\uEF3C", u.picking && u.pickDirect, on);
     yy += rowH;
     sliderRow(lx, ID_CLK_SIZE, L"Size", (look->size - 0.5f) / 1.5f, Fmt(L"%.0f%%", look->size * 100), on);
     sliderRow(rx, ID_CLK_GLOW, L"Glow", look->glow, look->glow > 0 ? Fmt(L"%.0f%%", look->glow * 100) : std::wstring(L"Off"), on);
@@ -2212,6 +2270,7 @@ void PaintClockPage(float x, float w) {
                                     : L"This video's own clock, or the one every video shares (this video keeps its own)";
             break;
         case ID_CLK_CUSTOM: help = L"The text's and the glow's colours: any colour, a code, your saved ones or the wallpaper's"; break;
+        case ID_CLK_PICK: help = L"Take the text's colour from the wallpaper: click the preview where it is"; break;
         case ID_CLK_FONT: help = L"The clock's style (Mond in any font, a dial, a ring...), and the language of its words"; break;
         case ID_CLK_SIZE: help = L"The clock's size in this look"; break;
         case ID_CLK_OPACITY: help = L"How solid the clock is; lower lets the wallpaper show through (glow included)"; break;
@@ -2855,7 +2914,7 @@ void ClosePlayerDialog() {
 D2D1_RECT_F PdScreen(const D2D1_RECT_F& box) {
     const int style = g_settings.musicPlayer;
     float sw = 0, sh = 0;
-    Player_Size(style, &sw, &sh);
+    Player_Size(style, &sw, &sh, true);
     const float pix = Clock_PixelScale(), size = style > 0 ? std::clamp(PdLook().size, 0.7f, 1.5f) : 1;
     const float bw = box.right - box.left, bh = box.bottom - box.top;
     const float scrW = (float)std::max(1, u.screenW), scrH = (float)std::max(1, u.screenH);
@@ -2876,16 +2935,16 @@ void PdDraw(const D2D1_RECT_F& screen) {
     u.clockEdit = keep;
     const int style = g_settings.musicPlayer;
     float sw = 0, sh = 0;
-    Player_Size(style, &sw, &sh);
+    Player_Size(style, &sw, &sh, true);  // (as it's turned)
     if (style < 1 || sw <= 0 || u.screenW <= 0) return;
     const float z = (screen.right - screen.left) / u.screenW, k = u.dpi / 96.f;
     const float scale = std::clamp(PdLook().size, 0.7f, 1.5f) * Clock_PixelScale() * z;  // window DIPs per style DIP
-    const std::wstring key = Fmt(L"%d|%.4f|%ls|%ls|%.2f|%.1f|%d|%d", style, scale, PdLook().color.c_str(), PdLook().body.c_str(), PdLook().opacity,
-                                 PdLook().corners, g_settings.musicPlaying, Host_MusicState().track);
+    const std::wstring key = Fmt(L"%d|%.4f|%ls|%ls|%.2f|%.1f|%d|%d|%.1f", style, scale, PdLook().color.c_str(), PdLook().body.c_str(), PdLook().opacity,
+                                 PdLook().corners, g_settings.musicPlaying, Host_MusicState().track, PdLook().rotate);
     if (!pd.pic || key != pd.picKey || GetTickCount() - pd.picAt > 1000) {
         SafeRelease(pd.pic);
         ClockImage img;
-        if (Player_Paint(style, scale * k, false, &img)) {
+        if (Player_Paint(style, scale * k, false, &img, nullptr, true)) {
             D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
             u.rt->CreateBitmap(D2D1::SizeU((UINT32)img.w, (UINT32)img.h), img.px.data(), (UINT32)img.w * 4, &bp, &pd.pic);
         }
@@ -2931,7 +2990,13 @@ void PaintPlayerDialog() {
     pd.closeup = R(L + 24, T + 82, L + W - 24, T + 82 + 220);
     pd.screen = PdScreen(pd.closeup);
     clip = PushRounded(pd.closeup, 6);
-    PdDraw(pd.screen);
+    {
+        Settings::PlayerLook& pl = PdLook();
+        const Settings::PlayerLook kept = pl;
+        if (u.picking && dlg.target >= 2 && !u.pickColor.empty()) (dlg.target == 2 ? pl.color : pl.body) = u.pickColor;  // the colour under the eyedropper, on it
+        PdDraw(pd.screen);
+        pl = kept;
+    }
     if (u.picking && dlg.target >= 2 && !u.pickColor.empty()) Loupe(u.pickAt.x, u.pickAt.y, pd.closeup, u.pickColor);
     PopRounded(clip);
     Stroke(pd.closeup, t.ctrlStroke, 6);
@@ -2954,10 +3019,16 @@ void PaintPlayerDialog() {
         IconButton(ID_PD_NEXT, r.right - 18, (r.top + r.bottom) / 2, 14, L"\uE76C", false, true);
     }
     y += 44;
-    // Its colours: a swatch and what it is, each opening the colour dialog.
-    auto colour = [&](int id, float x, const wchar_t* label, const std::wstring& value, const std::wstring& dflt, const wchar_t* dfltName) {
+    // Each setting changed from the style's own has a small arrow beside its name that puts it back.
+    auto reset = [&](int id, float x, bool changed) {
+        if (has && changed) IconButton(id, x + labW - 14, y + 16, 11, L"\uE7A7", false, true);
+    };
+    // Its colours: a swatch and what it is, each opening the colour dialog; an eyedropper beside each.
+    auto colour = [&](int id, int pick, int target, float x, const wchar_t* label, const std::wstring& value, const std::wstring& dflt,
+                      const wchar_t* dfltName) {
         Text(label, R(x, y, x + labW, y + 32), u.fBody, has ? t.text : t.text3);
-        const D2D1_RECT_F r = R(x + labW, y, x + colW, y + 32);
+        Button(pick, R(x + colW - 32, y, x + colW, y + 32), L"", L"\uEF3C", u.picking && u.pickDirect && dlg.target == target, has);
+        const D2D1_RECT_F r = R(x + labW, y, x + colW - 40, y + 32);
         const bool hot = has && IsHot(id), pressed = hot && u.press == id;
         Fill(r, pressed ? t.ctrlPress : hot ? t.ctrlHover : t.ctrl, 4);
         Stroke(r, t.ctrlStroke, 4);
@@ -2968,8 +3039,10 @@ void PaintPlayerDialog() {
         Text(L"\uE790", R(r.right - 26, r.top, r.right - 10, r.bottom), u.fIconSmall, has ? t.text2 : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
         AddHit(id, K_BUTTON, r, has);
     };
-    colour(ID_PD_COLOR, lx, L"Colour", look.color, PdDefault(2), L"Windows accent");
-    colour(ID_PD_BODY, rx, L"Body", look.body, PdDefault(3), L"Its own");
+    colour(ID_PD_COLOR, ID_PD_PICK_COL, 2, lx, L"Colour", look.color, PdDefault(2), L"Accent");
+    colour(ID_PD_BODY, ID_PD_PICK_BODY, 3, rx, L"Body", look.body, PdDefault(3), L"Its own");
+    reset(ID_PD_RST_COL, lx, !look.color.empty());
+    reset(ID_PD_RST_BODY, rx, !look.body.empty());
     y += 44;
     // Opacity and size; then its corners (for the styles on a card).
     auto slider = [&](int id, float x, const wchar_t* label, float frac, const std::wstring& value, bool on) {
@@ -2979,14 +3052,19 @@ void PaintPlayerDialog() {
     };
     slider(ID_PD_OPACITY, lx, L"Opacity", (look.opacity - 0.2f) / 0.8f, Fmt(L"%.0f%%", look.opacity * 100), has);
     slider(ID_PD_SIZE, rx, L"Size", (look.size - 0.7f) / 0.8f, Fmt(L"%.0f%%", look.size * 100), has);
+    reset(ID_PD_RST_OPACITY, lx, look.opacity < 1);
+    reset(ID_PD_RST_SIZE, rx, look.size != 1);
     y += 44;
     const bool corners = has && Player_HasCorners(style);
     slider(ID_PD_CORNERS, lx, L"Corners", has ? Player_Corners(style) / 40 : 0, corners ? Fmt(L"%.0f", Player_Corners(style)) : L"", corners);
+    reset(ID_PD_RST_CORNERS, lx, corners && look.corners >= 0);
+    slider(ID_PD_ROTATE, rx, L"Rotate", (look.rotate + 180) / 360, Fmt(L"%.0f\u00B0", look.rotate), has);
+    reset(ID_PD_RST_ROTATE, rx, look.rotate != 0);
     // The bottom bar: back to how the style comes, and done.
     const float by = T + H - 48;
     if (has && !look.IsDefault()) {
-        const std::wstring reset = L"Reset " + Player_Styles()[style - 1];
-        Link(ID_PD_RESET, R(L + 24, by + 7, L + 24 + TextWidth(reset, u.fSmall) + 4, by + 25), reset);
+        const std::wstring all = L"Reset all of " + Player_Styles()[style - 1];
+        Link(ID_PD_RESET, R(L + 24, by + 7, L + 24 + TextWidth(all, u.fSmall) + 4, by + 25), all);
     }
     Button(ID_PD_DONE, R(L + W - 24 - 110, by, L + W - 24, by + 32), L"Done", nullptr, true);
 }
@@ -3607,6 +3685,7 @@ void PaintFeedbackDialog() {
     Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
     AddHit(ID_FB_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
     const D2D1_RECT_F panel = FeedbackLayout();
+    FbPlaceEdits();
     const float L = panel.left, T = panel.top, W = panel.right - L, H = panel.bottom - T;
     const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
     Fill(R(L - 2, T, L + W + 2, T + H + 4), D2D1::ColorF(0, 0, 0, 0.2f), 10);  // shadow
@@ -3641,18 +3720,64 @@ void PaintFeedbackDialog() {
         Link(ID_FB_PREVIEW, R(L + W - 24 - 130, y + 5, L + W - 24, y + 23), L"See what's sent");
         box(ID_FB_EMAIL, fb.boxEmail, fb.email, L"Your email, if you'd like a reply (optional)");
     }
-    // Pictures: added from files, or a screenshot pasted into a text box.
+    // Pictures: added from files, or a screenshot pasted into a text box; then shown in a strip under
+    // the rest, each with a cross that takes it out (the strip scrolls sideways if they don't fit).
     {
-        const D2D1_RECT_F b = fb.bug ? R(L + 356, fb.boxEmail.top, L + 496, fb.boxEmail.bottom)
-                                     : R(L + 24, fb.boxText.bottom + 14, L + 164, fb.boxText.bottom + 46);
+        const D2D1_RECT_F b = fb.picsButton;
         const size_t n = fb.pictures.size();
-        Button(ID_FB_PICS, b, n ? Fmt(L"Pictures (%zu)", n) : std::wstring(L"Add pictures"), L"\uEB9F", false, n < kFeedbackPictures && !fb.sending);
+        Button(ID_FB_PICS, b, L"Add pictures", L"\uEB9F", false, n < kFeedbackPictures && !fb.sending);
         float px = b.right + 12;
-        if (n) {
-            Link(ID_FB_PICS_CLEAR, R(px, b.top + 7, px + 64, b.top + 25), L"Remove");
-            px += 76;
+        if (n && !fb.bug) {
+            const std::wstring count = Fmt(L"%zu of %zu", n, kFeedbackPictures);
+            Text(count, R(px, b.top, px + 60, b.bottom), u.fSmall, t.text2);
+            px += TextWidth(count, u.fSmall) + 14;
+        }
+        if (n > 1 && px + 76 <= L + W - 24) {
+            {
+                Link(ID_FB_PICS_CLEAR, R(px, b.top + 7, px + 76, b.top + 25), L"Remove all");
+                px += 90;
+            }
         }
         if (!fb.bug) Text(L"or paste a screenshot into the box (Ctrl+V)", R(px, b.top, L + W - 24, b.bottom), u.fSmall, t.text2);
+        if (n) {
+            const D2D1_RECT_F& s = fb.strip;
+            float total = 0;
+            for (const FeedbackPicture& p : fb.pictures) total += (p.thumbH ? std::clamp(72.f * p.thumbW / p.thumbH, 40.f, 160.f) : 96.f) + 10;
+            fb.picMax = std::max(0.f, total - 10 - (s.right - s.left));
+            fb.picScroll = std::clamp(fb.picScroll, 0.f, fb.picMax);
+            const size_t firstHit = u.hits.size();
+            u.rt->PushAxisAlignedClip(R(s.left, s.top - 2, s.right, s.bottom + 2), D2D1_ANTIALIAS_MODE_ALIASED);
+            float x = s.left - fb.picScroll;
+            for (size_t i = 0; i < n; i++) {
+                const FeedbackPicture& p = fb.pictures[i];
+                const float pw = p.thumbH ? std::clamp(72.f * p.thumbW / p.thumbH, 40.f, 160.f) : 96.f;
+                const D2D1_RECT_F r = R(x, s.top, x + pw, s.bottom);
+                ID2D1Bitmap* bmp = nullptr;
+                if (!p.thumb.empty()) {
+                    const D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+                    u.rt->CreateBitmap(D2D1::SizeU((UINT32)p.thumbW, (UINT32)p.thumbH), p.thumb.data(), (UINT32)p.thumbW * 4, &bp, &bmp);
+                }
+                ID2D1RoundedRectangleGeometry* round = PushRounded(r, 6);
+                if (bmp) u.rt->DrawBitmap(bmp, &r, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);  // (as wide as it is: not cropped)
+                else Fill(r, t.ctrl);
+                PopRounded(round);
+                SafeRelease(bmp);
+                Stroke(r, t.ctrlStroke, 6);
+                // Its cross, on its top-right corner.
+                const float cx = r.right - 12, cy = r.top + 12;
+                const bool hot = IsHot(ID_FB_PIC_X0 + (int)i);
+                Circle(cx, cy, 10, D2D1::ColorF(0, 0, 0, hot ? 0.8f : 0.55f));
+                Text(L"\uE711", R(cx - 10, cy - 10, cx + 10, cy + 10), u.fIconSmall, D2D1::ColorF(1, 1, 1, hot ? 1.f : 0.85f), DWRITE_TEXT_ALIGNMENT_CENTER);
+                AddHit(ID_FB_PIC_X0 + (int)i, K_BUTTON, R(cx - 11, cy - 11, cx + 11, cy + 11), !fb.sending);
+                x += pw + 10;
+            }
+            u.rt->PopAxisAlignedClip();
+            for (size_t h = firstHit; h < u.hits.size(); h++) {  // what's scrolled out of the strip can't be clicked
+                D2D1_RECT_F& hr = u.hits[h].r;
+                hr = R(std::max(hr.left, s.left), hr.top, std::min(hr.right, s.right), hr.bottom);
+                if (hr.right <= hr.left) hr = R(0, 0, 0, 0);
+            }
+        }
     }
     const float by = T + H - 48;
     const bool canSend = !fb.sending && FbGet(fb.text).size() >= 3;
@@ -4277,6 +4402,15 @@ void OpenColorDialog(int target) {
     u.pickColor.clear();
 }
 
+// The eyedropper straight from the page (the colour dialog stays shut): the next click on the
+// wallpaper sets that colour (0 the clock's text, 2 the player's colour, 3 its body); Esc cancels.
+void StartPick(int target) {
+    dlg.target = target;
+    if (target < 2) dlg.sameAsText = false;
+    u.picking = u.pickDirect = true;
+    u.pickColor.clear();
+}
+
 void CloseColorDialog(bool keep) {
     if (dlg.target >= 2) {  // the player's colours: kept, or put back
         if (!keep) {
@@ -4494,10 +4628,18 @@ void OnSlider(int id, float frac, bool final) {
         case ID_PD_OPACITY:  // the music player's look: on the desktop as it moves, saved when let go
         case ID_PD_SIZE:
         case ID_PD_CORNERS:
+        case ID_PD_ROTATE:
             if (g_settings.musicPlayer > 0) {
                 Settings::PlayerLook& pl = PdLook();
                 if (id == ID_PD_OPACITY) pl.opacity = roundf((0.2f + frac * 0.8f) * 100) / 100;
                 else if (id == ID_PD_SIZE) pl.size = roundf((0.7f + frac * 0.8f) * 20) / 20;
+                else if (id == ID_PD_ROTATE) {  // whole degrees; near a quarter or a 15-degree step it settles there
+                    float r = roundf(frac * 360 - 180);
+                    const float quarter = roundf(r / 90) * 90, step = roundf(r / 15) * 15;
+                    if (fabsf(r - quarter) < 5) r = quarter;
+                    else if (fabsf(r - step) < 2) r = step;
+                    pl.rotate = r <= -180 ? 180 : r;
+                }
                 else pl.corners = roundf(frac * 40);
                 Player_Update();
                 if (final) SaveSettings(g_settings);
@@ -4628,8 +4770,8 @@ void OnSeg(int id, int i) {
         case ID_COVER: g_settings.pauseCover = i; break;
         case ID_SOUND:
             if (i == g_settings.sound) return;
-            if (i == 2 && u.playlist.empty()) {  // "my music" needs songs first
-                if (Host_PickMusic(u.hwnd)) u.playlist = LoadPlaylist();
+            if (i == 2 && Host_Songs().empty()) {  // "my music" needs songs first
+                Host_PickMusic(u.hwnd, false);
                 return;
             }
             if (i == 2) g_settings.musicPlaying = false;  // ready to play, but silent until Play is pressed
@@ -4683,24 +4825,69 @@ void OnSeg(int id, int i) {
 // files) is the only "unshuffled" one: shuffling makes a new order, and moving a song by hand
 // does too; shuffle off goes back to the order chosen.
 
-void MusicShuffle() { Host_ShuffleMusic(u.playlist.size()); }
+void MusicShuffle() { Host_ShuffleMusic(Host_Songs().size()); }
 
 void OnClick(int id);
 
 // Puts a song at place `to` in the play order (the others move along).
-void MusicPlace(int song, int to) { Host_PlaceSong(u.playlist.size(), song, to); }
+void MusicPlace(int song, int to) { Host_PlaceSong(Host_Songs().size(), song, to); }
 
 // Moves a song one place up (-1) or down (1) in the play order (Alt+arrows on a focused song).
 void MusicMove(int song, int dir) {
-    const std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
     for (size_t p = 0; p < order.size(); p++)
         if (order[p] == song) MusicPlace(song, (int)p + dir);
+}
+
+// Glides the playlist to a song (playlist index), putting it in the middle of the list.
+void SongGlide(int song) {
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
+    for (size_t p = 0; p < order.size(); p++)
+        if (order[p] == song) {
+            const float viewH = u.songView.bottom - u.songView.top;
+            u.songTarget = std::clamp(p * kSongRowH - (viewH - kSongRowH) / 2, 0.f, u.songMax);
+            SetTimer(u.hwnd, TIMER_SONGS, 15, nullptr);
+        }
+}
+
+// The search: the list glides to the song that matches what's typed best (it only looks; nothing moves).
+void SongSearch() {
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
+    std::vector<std::wstring> names;
+    for (int s : order) names.push_back(SongName(Host_Songs()[s]));
+    const int p = SearchBest(names, u.search);
+    u.searchHit = p >= 0 ? order[p] : -1;
+    if (p >= 0) SongGlide(u.searchHit);
+}
+
+void SearchChar(wchar_t c) {
+    if (c == 8) {
+        if (!u.search.empty()) u.search.pop_back();
+    } else if (c == 127) {  // Ctrl+Backspace
+        u.search.clear();
+    } else if (c == 22 || c >= 32) {
+        const std::wstring add = c == 22 ? ClipboardText() : std::wstring(1, c);
+        for (wchar_t ch : add) {
+            if (ch == L'\r' || ch == L'\n') break;
+            if (ch >= 32 && u.search.size() < 80) u.search += ch;
+        }
+    } else {
+        return;
+    }
+    SongSearch();
+}
+
+void SearchClose() {
+    u.searchOn = false;
+    u.search.clear();
+    u.searchHit = -1;
+    if (u.focus == ID_MUSIC_SEARCH) u.focus = 0;
 }
 
 // A press on a song: on its grip it starts moving the song, elsewhere a drag scrolls the list.
 void SongPress(int id, float y) {
     const int song = id % 10000;
-    const std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
     const int p = (int)(std::find(order.begin(), order.end(), song) - order.begin());
     u.drag = ID_MUSIC_LIST;
     u.songPress = song;
@@ -5038,7 +5225,6 @@ void OnClick(int id) {
     }
     if (id >= ID_SONG_DEL0 && id < ID_SONG_DEL0 + 10000) {  // take it off the playlist
         Host_RemoveSong(id - ID_SONG_DEL0);
-        u.playlist = LoadPlaylist();
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
@@ -5113,6 +5299,7 @@ void OnClick(int id) {
         case ID_DLG_COPY: DlgCopy(); break;
         case ID_DLG_PICK:  // the dialog steps aside: the colour comes from the wallpaper on the page
             u.picking = true;
+            u.pickDirect = false;
             u.pickColor.clear();
             dlg.hexEdit = false;
             break;
@@ -5139,8 +5326,17 @@ void OnClick(int id) {
         }
         case ID_CROP: EnterCrop(); break;
         case ID_MUSIC_PICK:
-            if (Host_PickMusic(u.hwnd)) u.playlist = LoadPlaylist();
+        case ID_MUSIC_ADD:
+            Host_PickMusic(u.hwnd, id == ID_MUSIC_ADD);
             break;
+        case ID_MUSIC_SEARCH:
+            if (!u.searchOn) {
+                u.searchOn = true;
+                u.search.clear();
+                u.searchHit = -1;
+            }
+            break;
+        case ID_MUSIC_SEARCH_X: SearchClose(); break;
         case ID_MUSIC_PLAY:
             g_settings.musicPlaying = !g_settings.musicPlaying;
             Log(L"ui: music %ls", g_settings.musicPlaying ? L"played" : L"paused");
@@ -5159,16 +5355,7 @@ void OnClick(int id) {
             g_settings.videoMuted = !g_settings.videoMuted;
             Host_SettingsChanged();
             break;
-        case ID_MUSIC_TITLE: {  // glide the playlist to the song, in the middle of the list
-            const std::vector<int> order = MusicOrderFor(g_settings, u.playlist.size());
-            for (size_t p = 0; p < order.size(); p++)
-                if (order[p] == u.songShown) {
-                    const float viewH = u.songView.bottom - u.songView.top;
-                    u.songTarget = std::clamp(p * kSongRowH - (viewH - kSongRowH) / 2, 0.f, u.songMax);
-                    SetTimer(u.hwnd, TIMER_SONGS, 15, nullptr);
-                }
-            break;
-        }
+        case ID_MUSIC_HEAD: SongGlide(u.songShown); break;
         case ID_MUSIC_REPEAT:  // the playlist (always) or just this song
             g_settings.musicRepeat = g_settings.musicRepeat == 2 ? 1 : 2;
             Host_SettingsChanged();
@@ -5190,6 +5377,14 @@ void OnClick(int id) {
         case ID_FB_PREVIEW: FeedbackPreview(); break;
         case ID_FB_PICS: FbPickPictures(); break;
         case ID_FB_PICS_CLEAR: fb.pictures.clear(); break;
+        case ID_FB_PIC_X0:
+        case ID_FB_PIC_X0 + 1:
+        case ID_FB_PIC_X0 + 2:
+        case ID_FB_PIC_X0 + 3:
+        case ID_FB_PIC_X0 + 4:
+            if (id - ID_FB_PIC_X0 < (int)fb.pictures.size()) fb.pictures.erase(fb.pictures.begin() + (id - ID_FB_PIC_X0));
+            fb.note.clear();
+            break;
         case ID_PRS: OpenPresets(); break;
         case ID_PRS_CLOSE: ClosePresets(); break;
         case ID_PRS_NO: prs.confirm = -1; break;
@@ -5214,6 +5409,27 @@ void OnClick(int id) {
             SaveSettings(g_settings);
             Player_Update();
             break;
+        case ID_PD_RST_COL:
+        case ID_PD_RST_BODY:
+        case ID_PD_RST_OPACITY:
+        case ID_PD_RST_SIZE:
+        case ID_PD_RST_CORNERS:
+        case ID_PD_RST_ROTATE: {  // one setting back to the style's own
+            Settings::PlayerLook& pl = PdLook();
+            const Settings::PlayerLook own;
+            if (id == ID_PD_RST_COL) pl.color = own.color;
+            else if (id == ID_PD_RST_BODY) pl.body = own.body;
+            else if (id == ID_PD_RST_OPACITY) pl.opacity = own.opacity;
+            else if (id == ID_PD_RST_SIZE) pl.size = own.size;
+            else if (id == ID_PD_RST_ROTATE) pl.rotate = own.rotate;
+            else pl.corners = own.corners;
+            SaveSettings(g_settings);
+            Player_Update();
+            break;
+        }
+        case ID_PD_PICK_COL: StartPick(2); break;
+        case ID_PD_PICK_BODY: StartPick(3); break;
+        case ID_CLK_PICK: StartPick(0); break;
         case ID_PD_DONE: ClosePlayerDialog(); break;
         case ID_WALLS: OpenWallpapers(); break;
         case ID_FNT_DONE:
@@ -5494,6 +5710,14 @@ bool OnKeyInner(UINT vk) {
             return true;
         }
     }
+    if (u.searchOn && u.page == 0 && u.nav == NAV_SOUND && !DialogOpen() && (u.focus == ID_MUSIC_SEARCH || u.focus == 0)) {
+        if (vk == VK_ESCAPE || vk == VK_RETURN) {  // put away (the list stays where it found the song)
+            SearchClose();
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return true;
+        }
+        if (vk != VK_TAB && vk != VK_UP && vk != VK_DOWN) return true;  // letters come as WM_CHAR
+    }
     if (vk == VK_TAB && u.picking) return true;  // the eyedropper is out: Esc or a click first
     if (vk == VK_TAB) {
         if (dlg.open) dlg.hexEdit = false;
@@ -5719,6 +5943,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 SetCursor(LoadCursorW(nullptr, IDC_CROSS));
                 return TRUE;
             }
+            if (LOWORD(l) == HTCLIENT && u.hot == ID_MUSIC_SEARCH && u.searchOn) {  // the playlist's search box
+                SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                return TRUE;
+            }
             if (LOWORD(l) == HTCLIENT && u.page == 0 && u.nav == NAV_CLOCK && (u.hot == ID_CLK_AREA || u.drag == ID_CLK_AREA)) {
                 SetCursor(LoadCursorW(nullptr, u.overClock || u.drag ? IDC_SIZEALL : IDC_ARROW));
                 return TRUE;
@@ -5740,10 +5968,17 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (u.picking) {  // the colour dialog's eyedropper: take the wallpaper's colour, or put it away
                 std::wstring pc;
                 BYTE r = 0, g = 0, b = 0;
-                if (dlg.open && ht && dlg.target >= 2 ? ht && ht->id == ID_PD_AREA && PdSample(x, y, &pc) && ParseColor(pc, &r, &g, &b)
-                                                      : ht && ht->id == ID_CLK_AREA && SampleWallpaper(u.clockBox, x, y, &pc) && ParseColor(pc, &r, &g, &b))
+                if (dlg.target >= 2 ? ht && ht->id == ID_PD_AREA && PdSample(x, y, &pc) && ParseColor(pc, &r, &g, &b)
+                                    : ht && ht->id == ID_CLK_AREA && SampleWallpaper(u.clockBox, x, y, &pc) && ParseColor(pc, &r, &g, &b)) {
                     DlgSetRgb(r, g, b);
-                u.picking = false;
+                    if (u.pickDirect && !dlg.open) {  // from the page: kept now
+                        Log(L"ui: %ls colour taken from the wallpaper: %ls", dlg.target == 0 ? L"clock text" : dlg.target == 2 ? L"player" : L"player body",
+                            pc.c_str());
+                        if (dlg.target >= 2) SaveSettings(g_settings);
+                        else ClockEdited();
+                    }
+                }
+                u.picking = u.pickDirect = false;
                 u.pickColor.clear();
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
@@ -5848,7 +6083,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
             }
             return 0;
-        case WM_CHAR:  // typing a preset's name, or a hex code in the colour dialog
+        case WM_CHAR:  // typing a preset's name, a hex code in the colour dialog, or a song to find
+            if (u.searchOn && !DialogOpen() && u.page == 0 && u.nav == NAV_SOUND && (u.focus == ID_MUSIC_SEARCH || u.focus == 0)) {
+                SearchChar((wchar_t)w);
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             if (prs.rename >= 0) {
                 PresetNameChar((wchar_t)w);
                 InvalidateRect(h, nullptr, FALSE);
@@ -5861,7 +6101,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             break;
         case WM_MOUSEWHEEL:
-            if (fnt.open) {
+            if (fb.open) {  // the pictures' strip, sideways
+                POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+                ScreenToClient(h, &pt);
+                if (fb.picMax > 0 && In(fb.strip, Dip(pt.x), Dip(pt.y))) {
+                    fb.picScroll = std::clamp(fb.picScroll - GET_WHEEL_DELTA_WPARAM(w) / 120.f * 60, 0.f, fb.picMax);
+                    InvalidateRect(h, nullptr, FALSE);
+                }
+            } else if (fnt.open) {
                 FontScrollTo(fnt.target - GET_WHEEL_DELTA_WPARAM(w) / 120.f * 80, true);
             } else if (u.page == 0 && u.nav == NAV_SOUND && !DialogOpen()) {  // the playlist
                 POINT pt{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
@@ -6170,7 +6417,6 @@ void UI_Show() {
     MF.Start();
     QueryScreen();
     QueryGpu();
-    u.playlist = LoadPlaylist();
     LoadTheme();
 
     HINSTANCE inst = GetModuleHandleW(nullptr);

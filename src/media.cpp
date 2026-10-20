@@ -161,7 +161,7 @@ void Media_Start(HWND host) {
 // My music's state on the media card: there while My music has songs, with the song and whether it plays.
 void Media_Update() {
     if (!g_controls) return;
-    const std::vector<std::wstring> songs = g_settings.sound == 2 ? LoadPlaylist() : std::vector<std::wstring>{};
+    const std::vector<std::wstring> songs = g_settings.sound == 2 ? Host_Songs() : std::vector<std::wstring>{};
     const MusicState ms = Host_MusicState();
     const int n = (int)songs.size();
     const int track = ms.track >= 0 && ms.track < n ? ms.track : g_settings.musicTrack >= 0 && g_settings.musicTrack < n ? g_settings.musicTrack : 0;

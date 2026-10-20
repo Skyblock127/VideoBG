@@ -87,7 +87,12 @@ struct PlayerWindow {
     HWND hwnd = nullptr, desktop = nullptr;
     std::vector<std::wstring> songs;
     float scale = 1;
-    int w = 0, h = 0;  // pixels
+    int w = 0, h = 0;  // pixels (the player upright)
+    int ow = 0, oh = 0;  // the window's (round the player as it's turned)
+    float deg = 0;       // turned this far (the window's picture)
+    HDC tdc = nullptr;   // the turned picture
+    HBITMAP tdib = nullptr;
+    HGDIOBJ toldBmp = nullptr;
     int hot = PART_NONE, press = PART_NONE;
     bool dragging = false, sliding = false;
     POINT grab{};      // where the pointer took hold of it, in the window
@@ -1314,9 +1319,50 @@ POINT Origin() {
     MONITORINFO mi{sizeof mi};
     GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
     const RECT& m = mi.rcWork;
-    const LONG x = (LONG)lroundf(mi.rcMonitor.left + g_settings.playerX * (mi.rcMonitor.right - mi.rcMonitor.left) - W.w / 2.f);
-    const LONG y = (LONG)lroundf(mi.rcMonitor.top + g_settings.playerY * (mi.rcMonitor.bottom - mi.rcMonitor.top) - W.h / 2.f);
-    return POINT{std::clamp(x, m.left, std::max(m.left, m.right - W.w)), std::clamp(y, m.top, std::max(m.top, m.bottom - W.h))};
+    const LONG x = (LONG)lroundf(mi.rcMonitor.left + g_settings.playerX * (mi.rcMonitor.right - mi.rcMonitor.left) - W.ow / 2.f);
+    const LONG y = (LONG)lroundf(mi.rcMonitor.top + g_settings.playerY * (mi.rcMonitor.bottom - mi.rcMonitor.top) - W.oh / 2.f);
+    return POINT{std::clamp(x, m.left, std::max(m.left, m.right - W.ow)), std::clamp(y, m.top, std::max(m.top, m.bottom - W.oh))};
+}
+
+// Turning: the box round a w x h picture turned deg degrees, and a point in that box back on the picture.
+float TurnOf(const Settings::PlayerLook& look) { return fabsf(look.rotate) < 0.05f ? 0 : std::clamp(look.rotate, -180.f, 180.f); }
+
+void TurnedBox(float w, float h, float deg, float* bw, float* bh) {
+    const float rad = deg * kPi / 180, cs = fabsf(cosf(rad)), sn = fabsf(sinf(rad));
+    *bw = w * cs + h * sn;
+    *bh = w * sn + h * cs;
+}
+
+void Unturn(float w, float h, float deg, float* x, float* y) {
+    if (!deg) return;
+    float bw, bh;
+    TurnedBox(w, h, deg, &bw, &bh);
+    const float rad = deg * kPi / 180, cs = cosf(rad), sn = sinf(rad), dx = *x - bw / 2, dy = *y - bh / 2;
+    *x = dx * cs + dy * sn + w / 2;
+    *y = -dx * sn + dy * cs + h / 2;
+}
+
+// Draws a w x h picture (premultiplied pixels) turned deg degrees clockwise about its centre, in the
+// middle of dc's dw x dh picture.
+bool TurnInto(const uint32_t* px, int w, int h, float deg, HDC dc, int dw, int dh) {
+    const RECT all{0, 0, dw, dh};
+    D.rt->SetDpi(96, 96);
+    if (FAILED(D.rt->BindDC(dc, &all))) return false;
+    ID2D1Bitmap* pic = nullptr;
+    const D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    if (FAILED(D.rt->CreateBitmap(D2D1::SizeU((UINT32)w, (UINT32)h), px, (UINT32)w * 4, bp, &pic))) return false;
+    const float rad = deg * kPi / 180, cs = cosf(rad), sn = sinf(rad), ox = w / 2.f, oy = h / 2.f;
+    D.rt->BeginDraw();
+    D.rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+    D.rt->SetTransform(D2D1::Matrix3x2F(cs, sn, -sn, cs, dw / 2.f - (ox * cs - oy * sn), dh / 2.f - (ox * sn + oy * cs)));
+    D.rt->DrawBitmap(pic, D2D1::RectF(0, 0, (float)w, (float)h), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    D.rt->SetTransform(D2D1::Matrix3x2F::Identity());
+    const HRESULT hr = D.rt->EndDraw();
+    Rel(pic);
+    if (hr == D2DERR_RECREATE_TARGET) StopDrawing();
+    if (FAILED(hr)) return false;
+    GdiFlush();
+    return true;
 }
 
 // Draws style st with what s shows into a w x h picture (pixels; scale: pixels per DIP).
@@ -1386,7 +1432,41 @@ bool WindowDib() {
     return true;
 }
 
+// The turned picture's surface (made again when its size changes).
+bool TurnedDib(int w, int h) {
+    if (W.tdc && W.ow == w && W.oh == h) return true;
+    if (W.tdc) {
+        SelectObject(W.tdc, W.toldBmp);
+        DeleteObject(W.tdib);
+        DeleteDC(W.tdc);
+        W.tdc = nullptr;
+    }
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void* bits = nullptr;
+    HDC dc = CreateCompatibleDC(nullptr);
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bmp) {
+        DeleteDC(dc);
+        return false;
+    }
+    W.tdc = dc;
+    W.tdib = bmp;
+    W.toldBmp = SelectObject(dc, bmp);
+    return true;
+}
+
 void FreeWindowDib() {
+    if (W.tdc) {
+        SelectObject(W.tdc, W.toldBmp);
+        DeleteObject(W.tdib);
+        DeleteDC(W.tdc);
+        W.tdc = nullptr;
+    }
     if (!W.dc) return;
     SelectObject(W.dc, W.oldBmp);
     DeleteObject(W.dib);
@@ -1427,10 +1507,11 @@ void Draw(bool force = false) {
         W.scale = scale;
         force = true;
     }
+    const float deg = TurnOf(look);
     wchar_t key[300];
-    swprintf(key, 300, L"%d|%ls|%ls|%d|%d|%d|%d|%d|%d|%.2f|%ls|%ls|%ls|%.1f|%.2f", g_settings.musicPlayer, s.song.c_str(), s.where.c_str(), s.playing,
-             (int)(s.done * 400), W.hot, W.press, W.sliding, g_settings.volume, W.scale, W.artFor.c_str(), look.color.c_str(), look.body.c_str(),
-             look.corners, look.opacity);
+    swprintf(key, 300, L"%d|%ls|%ls|%d|%d|%d|%d|%d|%d|%.2f|%ls|%ls|%ls|%.1f|%.2f|%.1f", g_settings.musicPlayer, s.song.c_str(), s.where.c_str(),
+             s.playing, (int)(s.done * 400), W.hot, W.press, W.sliding, g_settings.volume, W.scale, W.artFor.c_str(), look.color.c_str(),
+             look.body.c_str(), look.corners, look.opacity, deg);
     if (!force && W.drawn == key) {
         KeepTurning();
         return;
@@ -1467,11 +1548,26 @@ void Draw(bool force = false) {
     } else {
         ok = DrawLayer(st, s, 0, false);
     }
+    HDC shown = W.dc;
+    if (ok && deg) {  // turned: the upright picture, turned into the window's (all of it changes)
+        float bw, bh;
+        TurnedBox((float)W.w, (float)W.h, deg, &bw, &bh);
+        const int tw = (int)ceilf(bw), th = (int)ceilf(bh);
+        ok = TurnedDib(tw, th) && TurnInto(W.bits, W.w, W.h, deg, W.tdc, tw, th);
+        W.ow = tw;
+        W.oh = th;
+        dirty = RECT{0, 0, tw, th};
+        shown = W.tdc;
+    } else {
+        W.ow = W.w;
+        W.oh = W.h;
+    }
+    W.deg = deg;
     if (ok) {
         POINT dst = Origin(), zero{0, 0};
-        SIZE sz{W.w, W.h};
+        SIZE sz{W.ow, W.oh};
         BLENDFUNCTION bf{AC_SRC_OVER, 0, (BYTE)lroundf(255 * std::clamp(look.opacity, 0.2f, 1.f)), AC_SRC_ALPHA};  // (the user's opacity)
-        UPDATELAYEREDWINDOWINFO ul{sizeof ul, nullptr, &dst, &sz, W.dc, &zero, 0, &bf, ULW_ALPHA, &dirty};
+        UPDATELAYEREDWINDOWINFO ul{sizeof ul, nullptr, &dst, &sz, shown, &zero, 0, &bf, ULW_ALPHA, &dirty};
         if (UpdateLayeredWindowIndirect(W.hwnd, &ul)) W.drawn = key;
     }
     KeepTurning();
@@ -1513,7 +1609,10 @@ void KeepPlace(HWND h) {
 }
 
 LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    const float x = GET_X_LPARAM(l) / W.scale, y = GET_Y_LPARAM(l) / W.scale;
+    float x = (float)GET_X_LPARAM(l), y = (float)GET_Y_LPARAM(l);
+    Unturn((float)W.w, (float)W.h, W.deg, &x, &y);  // (where that is on the player upright)
+    x /= W.scale;
+    y /= W.scale;
     switch (m) {
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;  // a click doesn't take the focus from the app in use
         case WM_TIMER:
@@ -1642,7 +1741,7 @@ void Player_Show(const std::vector<std::wstring>& songs, bool force) {
     if (fresh) W.arm = g_settings.musicPlaying ? 1.f : 0.f;
     Draw(force || fresh);
     const POINT p = Origin();
-    SetWindowPos(W.hwnd, HWND_BOTTOM, p.x, p.y, W.w, W.h, SWP_NOACTIVATE | SWP_SHOWWINDOW);  // bottom = just above the desktop
+    SetWindowPos(W.hwnd, HWND_BOTTOM, p.x, p.y, W.ow, W.oh, SWP_NOACTIVATE | SWP_SHOWWINDOW);  // bottom = just above the desktop
     if (fresh) Log(L"player: on the desktop (%ls)", Style().name);
 }
 
@@ -1676,7 +1775,7 @@ void Player_Hide() {
     Log(L"player: off the desktop");
 }
 
-bool Player_Paint(int style, float scale, bool live, ClockImage* out, const PlayerInput* in) {
+bool Player_Paint(int style, float scale, bool live, ClockImage* out, const PlayerInput* in, bool turned) {
     if (style < 1 || style > (int)std::size(kStyles) || !StartDrawing()) return false;
     const PlayerStyle& st = kStyles[style - 1];
     if (!W.hwnd) W.songs = LoadPlaylist();  // (the window keeps its own up to date)
@@ -1703,7 +1802,7 @@ bool Player_Paint(int style, float scale, bool live, ClockImage* out, const Play
     s.clock = live ? t : 1.3f;
     const int w = (int)ceilf(st.w * scale), h = (int)ceilf(st.h * scale);
     W.drawn.clear();  // (the window's next frame is drawn whole: this used the same drawing surface)
-    const bool ok = Render(st, s, scale, w, h, [&](HDC, const uint32_t* px) {
+    bool ok = Render(st, s, scale, w, h, [&](HDC, const uint32_t* px) {
         out->px.assign(px, px + (size_t)w * h);
         out->w = w;
         out->h = h;
@@ -1714,6 +1813,19 @@ bool Player_Paint(int style, float scale, bool live, ClockImage* out, const Play
         const UINT32 k = (UINT32)lroundf(256 * std::clamp(look.opacity, 0.2f, 1.f));
         for (uint32_t& p : out->px)
             p = ((p >> 24) * k >> 8) << 24 | (((p >> 16) & 255) * k >> 8) << 16 | (((p >> 8) & 255) * k >> 8) << 8 | ((p & 255) * k >> 8);
+    }
+    const float deg = turned ? TurnOf(look) : 0;
+    if (ok && deg) {  // turned as on the desktop
+        float bw, bh;
+        TurnedBox((float)w, (float)h, deg, &bw, &bh);
+        const int tw = (int)ceilf(bw), th = (int)ceilf(bh);
+        ok = Render(st, s, scale, tw, th, [&](HDC dc, const uint32_t* px) {  // (a surface that size; the turned picture drawn over it)
+            if (!TurnInto(out->px.data(), w, h, deg, dc, tw, th)) return;
+            out->px.assign(px, px + (size_t)tw * th);
+            out->w = tw;
+            out->h = th;
+        });
+        ok = ok && out->w == tw;
     }
     return ok;
 }
@@ -1732,24 +1844,30 @@ std::wstring Player_About(int style) {
     return style >= 1 && style <= (int)std::size(kStyles) ? kStyles[style - 1].about : L"Nothing on the desktop";
 }
 
-void Player_Size(int style, float* w, float* h) {
+void Player_Size(int style, float* w, float* h, bool turned) {
     const bool ok = style >= 1 && style <= (int)std::size(kStyles);
     *w = ok ? kStyles[style - 1].w : 0;
     *h = ok ? kStyles[style - 1].h : 0;
+    if (ok && turned) TurnedBox(*w, *h, TurnOf(LookOf(style)), w, h);
 }
 
 int Player_PartAt(int style, float x, float y) {
-    return style >= 1 && style <= (int)std::size(kStyles) ? HitPart(kStyles[style - 1], x, y) : PART_NONE;
+    if (style < 1 || style > (int)std::size(kStyles)) return PART_NONE;
+    Unturn(kStyles[style - 1].w, kStyles[style - 1].h, TurnOf(LookOf(style)), &x, &y);
+    return HitPart(kStyles[style - 1], x, y);
 }
 
-float Player_VolumeAt(int style, float x) {
+float Player_VolumeAt(int style, float x, float y) {
     if (style < 1 || style > (int)std::size(kStyles)) return 0;
+    Unturn(kStyles[style - 1].w, kStyles[style - 1].h, TurnOf(LookOf(style)), &x, &y);
     const D2D1_RECT_F& t = kStyles[style - 1].volume;
     return t.right > t.left ? std::clamp((x - t.left) / (t.right - t.left), 0.f, 1.f) : 0;
 }
 
 float Player_SeekAt(int style, float x, float y) {
-    return style >= 1 && style <= (int)std::size(kStyles) ? kStyles[style - 1].seek(kStyles[style - 1], x, y, true) : 0;
+    if (style < 1 || style > (int)std::size(kStyles)) return 0;
+    Unturn(kStyles[style - 1].w, kStyles[style - 1].h, TurnOf(LookOf(style)), &x, &y);
+    return kStyles[style - 1].seek(kStyles[style - 1], x, y, true);
 }
 
 bool Player_HasVolume(int style) {

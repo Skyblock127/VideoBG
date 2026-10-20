@@ -153,6 +153,24 @@ bool Feedback_Picture(const std::wstring& file, HBITMAP bitmap, FeedbackPicture*
             hr = E_FAIL;
         }
     }
+    if (SUCCEEDED(hr)) {  // the small copy the dialog shows
+        const double t = std::min(1.0, 144.0 / h);
+        const UINT tw = std::max(1u, (UINT)(w * t + 0.5)), th = std::max(1u, (UINT)(h * t + 0.5));
+        IWICBitmapScaler* ts = nullptr;
+        IWICFormatConverter* tc = nullptr;
+        out->thumb.assign((size_t)tw * th, 0);
+        if (SUCCEEDED(wic->CreateBitmapScaler(&ts)) && SUCCEEDED(ts->Initialize(src, tw, th, WICBitmapInterpolationModeFant)) &&
+            SUCCEEDED(wic->CreateFormatConverter(&tc)) &&
+            SUCCEEDED(tc->Initialize(ts, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom)) &&
+            SUCCEEDED(tc->CopyPixels(nullptr, tw * 4, tw * th * 4, (BYTE*)out->thumb.data()))) {
+            out->thumbW = (int)tw;
+            out->thumbH = (int)th;
+        } else {
+            out->thumb.clear();
+        }
+        if (tc) tc->Release();
+        if (ts) ts->Release();
+    }
     for (IUnknown* u : {(IUnknown*)props, (IUnknown*)fe, (IUnknown*)enc, (IUnknown*)stream, (IUnknown*)conv, (IUnknown*)scaler, (IUnknown*)bmp,
                         (IUnknown*)frame, (IUnknown*)dec, (IUnknown*)wic})
         if (u) u->Release();
