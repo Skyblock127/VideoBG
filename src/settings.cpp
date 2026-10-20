@@ -695,6 +695,8 @@ void LoadSettings(Settings& s) {
         Settings::PlayerLook& pl = s.playerLooks[i];
         const std::wstring k = L"Style" + std::to_wstring(i);
         pl.color = ReadStr(ini, L"Player", (k + L"Color").c_str());
+        pl.body = ReadStr(ini, L"Player", (k + L"Body").c_str());
+        pl.size = ReadFloat(ini, L"Player", (k + L"Size").c_str(), 1, 0.7f, 1.5f);
         pl.opacity = ReadFloat(ini, L"Player", (k + L"Opacity").c_str(), 1, 0.2f, 1);
         pl.corners = ReadFloat(ini, L"Player", (k + L"Corners").c_str(), -1, -1, 60);
     }
@@ -771,6 +773,9 @@ void SaveSettings(const Settings& s) {
         const Settings::PlayerLook& pl = s.playerLooks[i];
         const std::wstring k = L"Style" + std::to_wstring(i);
         ini.Set(L"Player", k + L"Color", pl.color.empty() ? nullptr : pl.color.c_str());
+        ini.Set(L"Player", k + L"Body", pl.body.empty() ? nullptr : pl.body.c_str());
+        swprintf(buf, 64, L"%.2f", pl.size);
+        ini.Set(L"Player", k + L"Size", pl.size != 1 ? buf : nullptr);
         swprintf(buf, 64, L"%.2f", pl.opacity);
         ini.Set(L"Player", k + L"Opacity", pl.opacity < 1 ? buf : nullptr);
         swprintf(buf, 64, L"%.1f", pl.corners);

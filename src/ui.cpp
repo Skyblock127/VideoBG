@@ -45,6 +45,7 @@ enum Id {
     ID_FNT_YES, ID_FNT_NO, ID_VER_YES, ID_VER_NO,
     ID_FB_IDEA, ID_FB_BUG, ID_FB_SCRIM, ID_FB_TEXT, ID_FB_STEPS, ID_FB_EMAIL, ID_FB_OFTEN, ID_FB_LOG, ID_FB_PREVIEW, ID_FB_CANCEL,
     ID_FB_SEND, ID_MEMINFO, ID_FB_PICS, ID_FB_PICS_CLEAR,
+    ID_PD_SCRIM, ID_PD_AREA, ID_PD_PREV, ID_PD_NEXT, ID_PD_COLOR, ID_PD_BODY, ID_PD_OPACITY, ID_PD_SIZE, ID_PD_CORNERS, ID_PD_RESET, ID_PD_DONE,
     ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
@@ -1835,6 +1836,19 @@ void RgbToHsv(BYTE r, BYTE g, BYTE b, float* h, float* s, float* v) {
     }
 }
 
+// The music player dialog (the Sound page's Player): a close-up of the wallpaper where the player
+// is, with the player on it at about its real size (it follows when the player's dragged on the
+// desktop), its style, its colours (through the colour dialog), opacity, size and corners.
+struct PlayerDialog {
+    bool open = false;
+    D2D1_RECT_F closeup{}, screen{};  // the close-up, and the whole screen it's a part of (zoomed alike)
+    ID2D1Bitmap* pic = nullptr;       // the player, drawn for it
+    std::wstring picKey;
+    DWORD picAt = 0;
+} pd;
+
+Settings::PlayerLook& PdLook() { return g_settings.playerLooks[std::clamp(g_settings.musicPlayer, 1, (int)std::size(g_settings.playerLooks) - 1)]; }
+
 std::wstring DlgColor() {
     if (!dlg.exact.empty()) return dlg.exact;
     BYTE r, g, b;
@@ -1843,7 +1857,17 @@ std::wstring DlgColor() {
 }
 
 // The look's value the dialog edits.
-std::wstring& DlgTarget() { return dlg.target == 0 ? EditedLook()->color : EditedLook()->glowColor; }
+// Targets 2 and 3: the music player's colour (its lit parts) and its body (from the player dialog).
+std::wstring& DlgTarget() {
+    if (dlg.target >= 2) return dlg.target == 2 ? PdLook().color : PdLook().body;
+    return dlg.target == 0 ? EditedLook()->color : EditedLook()->glowColor;
+}
+
+// What a player colour is when it's left to the style: the Windows accent colour, or the style's own body.
+std::wstring PdDefault(int target) {
+    if (target == 3) return L"20,20,23";
+    return Fmt(L"%d,%d,%d", (int)lroundf(u.th.accent.r * 255), (int)lroundf(u.th.accent.g * 255), (int)lroundf(u.th.accent.b * 255));
+}
 
 // The clock as it will look on the desktop (same drawing code, real pixel size); the previews
 // scale it down. Redrawn when the look or the minute changes.
@@ -2231,6 +2255,9 @@ D2D1_RECT_F ZoomedScreen(const D2D1_RECT_F& p, const ClockLook& look) {
     return R(l, t, l + vw, t + vh);
 }
 
+D2D1_RECT_F PdScreen(const D2D1_RECT_F& box);
+void PdDraw(const D2D1_RECT_F& screen);
+
 void PaintColorDialog() {
     const Theme& t = u.th;
     Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
@@ -2247,12 +2274,16 @@ void PaintColorDialog() {
     Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
 
     ClockLook* look = EditedLook();
-    // Which colour: the text's or the glow's (which can follow the text's).
-    Text(L"Clock colour", R(L + 24, T + 16, L + 200, T + 46), u.fSubtitle, t.text);
+    const bool player = dlg.target >= 2;
+    // Which colour: the text's or the glow's (which can follow the text's); for the player, its lit
+    // parts' (or the Windows accent colour) or its body's (or the style's own).
+    Text(player ? L"Player colour" : L"Clock colour", R(L + 24, T + 16, L + 200, T + 46), u.fSubtitle, t.text);
     const float segL = L + W - 24 - 170;
-    Seg(ID_DLG_TARGET, R(segL, T + 14, L + W - 24, T + 46), {L"Text", L"Glow"}, dlg.target);
-    if (dlg.target == 1) {
-        Text(L"Same as the text", R(L + 180, T + 16, segL - 16 - 40 - 12, T + 46), u.fBody, t.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
+    Seg(ID_DLG_TARGET, R(segL, T + 14, L + W - 24, T + 46),
+        player ? std::vector<std::wstring>{L"Colour", L"Body"} : std::vector<std::wstring>{L"Text", L"Glow"}, player ? dlg.target - 2 : dlg.target);
+    if (dlg.target != 0) {
+        Text(dlg.target == 1 ? L"Same as the text" : dlg.target == 2 ? L"Windows accent" : L"Its own", R(L + 180, T + 16, segL - 16 - 40 - 12, T + 46),
+             u.fBody, t.text, DWRITE_TEXT_ALIGNMENT_TRAILING);
         Toggle(ID_DLG_SAME, segL - 16 - 40, T + 31, dlg.sameAsText);
     }
     BYTE cr = 255, cg = 255, cb = 255;
@@ -2296,11 +2327,18 @@ void PaintColorDialog() {
     // Preview: the wallpaper around the clock, in the new colour.
     const float rx = L + 284, rw = W - 24 - 284;
     dlg.preview = R(rx, T + 62, rx + rw, T + 182);
-    dlg.previewScreen = ZoomedScreen(dlg.preview, *look);
-    clip = PushRounded(dlg.preview, 6);
-    DrawWallpaper(dlg.previewScreen);
-    DrawClockIn(dlg.previewScreen, *look);
-    PopRounded(clip);
+    if (player) {  // the player where it is, in the new colour
+        dlg.previewScreen = PdScreen(dlg.preview);
+        clip = PushRounded(dlg.preview, 6);
+        PdDraw(dlg.previewScreen);
+        PopRounded(clip);
+    } else {
+        dlg.previewScreen = ZoomedScreen(dlg.preview, *look);
+        clip = PushRounded(dlg.preview, 6);
+        DrawWallpaper(dlg.previewScreen);
+        DrawClockIn(dlg.previewScreen, *look);
+        PopRounded(clip);
+    }
     Stroke(dlg.preview, t.ctrlStroke, 6);
 
     // Hex code (click to type, or just type / paste), copy, eyedropper.
@@ -2794,10 +2832,159 @@ void WallsRemove(int i) {
 }
 
 void OpenPlayerDialog() {
-    fnt = FontDialog{};
-    fnt.open = fnt.players = true;
-    ReleaseFontSamples();
-    fnt.scroll = fnt.target = std::max(0, g_settings.musicPlayer - 1) * 124.f;  // the next paint keeps it in range
+    pd.open = true;
+    pd.picKey.clear();
+}
+
+void ClosePlayerDialog() {
+    if (!pd.open) return;
+    pd.open = false;
+    SafeRelease(pd.pic);
+    pd.picKey.clear();
+    SaveSettings(g_settings);
+    Player_FreePreview();
+}
+
+// The whole main screen, zoomed (UI DIPs per screen pixel) so that the player shows at about its real
+// size in `box` (smaller if it wouldn't fit), placed so the player sits in the middle of the box (kept
+// inside the screen's edges).
+D2D1_RECT_F PdScreen(const D2D1_RECT_F& box) {
+    const int style = g_settings.musicPlayer;
+    float sw = 0, sh = 0;
+    Player_Size(style, &sw, &sh);
+    const float pix = Clock_PixelScale(), size = style > 0 ? std::clamp(PdLook().size, 0.7f, 1.5f) : 1;
+    const float bw = box.right - box.left, bh = box.bottom - box.top;
+    const float scrW = (float)std::max(1, u.screenW), scrH = (float)std::max(1, u.screenH);
+    float z = 96.f / u.dpi;  // one screen pixel, one window pixel
+    if (sw > 0) z = std::min({z, (bw - 40) / (sw * size * pix), (bh - 28) / (sh * size * pix)});
+    const float w = scrW * z, h = scrH * z;
+    float l = (box.left + box.right) / 2 - g_settings.playerX * w, t = (box.top + box.bottom) / 2 - g_settings.playerY * h;
+    if (w >= bw) l = std::clamp(l, box.right - w, box.left);
+    if (h >= bh) t = std::clamp(t, box.bottom - h, box.top);
+    return R(l, t, l + w, t + h);
+}
+
+// The video wallpaper in `screen` (a zoomed whole screen), and the player on it where it is.
+void PdDraw(const D2D1_RECT_F& screen) {
+    const int keep = u.clockEdit;
+    u.clockEdit = 0;  // (the player shows with the video wallpaper)
+    DrawWallpaper(screen);
+    u.clockEdit = keep;
+    const int style = g_settings.musicPlayer;
+    float sw = 0, sh = 0;
+    Player_Size(style, &sw, &sh);
+    if (style < 1 || sw <= 0 || u.screenW <= 0) return;
+    const float z = (screen.right - screen.left) / u.screenW, k = u.dpi / 96.f;
+    const float scale = std::clamp(PdLook().size, 0.7f, 1.5f) * Clock_PixelScale() * z;  // window DIPs per style DIP
+    const std::wstring key = Fmt(L"%d|%.4f|%ls|%ls|%.2f|%.1f|%d|%d", style, scale, PdLook().color.c_str(), PdLook().body.c_str(), PdLook().opacity,
+                                 PdLook().corners, g_settings.musicPlaying, Host_MusicState().track);
+    if (!pd.pic || key != pd.picKey || GetTickCount() - pd.picAt > 1000) {
+        SafeRelease(pd.pic);
+        ClockImage img;
+        if (Player_Paint(style, scale * k, false, &img)) {
+            D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            u.rt->CreateBitmap(D2D1::SizeU((UINT32)img.w, (UINT32)img.h), img.px.data(), (UINT32)img.w * 4, &bp, &pd.pic);
+        }
+        pd.picKey = key;
+        pd.picAt = GetTickCount();
+    }
+    if (!pd.pic) return;
+    const float pw = sw * scale, ph = sh * scale;
+    const float cx = screen.left + g_settings.playerX * (screen.right - screen.left), cy = screen.top + g_settings.playerY * (screen.bottom - screen.top);
+    D2D1_RECT_F dst = R(cx - pw / 2, cy - ph / 2, cx + pw / 2, cy + ph / 2);
+    u.rt->DrawBitmap(pd.pic, &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
+}
+
+// The wallpaper's colour under the eyedropper, in the player dialog's close-up (or the colour
+// dialog's own preview of it).
+bool PdSample(float x, float y, std::wstring* out) {
+    const int keep = u.clockEdit;
+    u.clockEdit = 0;
+    const bool ok = In(pd.closeup, x, y) ? SampleWallpaper(pd.screen, x, y, out)
+                  : dlg.open && In(dlg.preview, x, y) ? SampleWallpaper(dlg.previewScreen, x, y, out) : false;
+    u.clockEdit = keep;
+    return ok;
+}
+
+void PaintPlayerDialog() {
+    const Theme& t = u.th;
+    Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
+    AddHit(ID_PD_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
+    const float W = kDialogW, H = 548, L = (kW - W) / 2, T = std::max(12.f, (kH - H) / 2);
+    const D2D1_RECT_F panel = R(L, T, L + W, T + H);
+    const D2D1_COLOR_F face = t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), bar = t.dark ? Rgb(0x202020) : Rgb(0xF3F3F3);
+    Fill(R(L - 2, T, L + W + 2, T + H + 4), D2D1::ColorF(0, 0, 0, 0.2f), 10);  // shadow
+    Fill(panel, face, 8);
+    ID2D1RoundedRectangleGeometry* clip = PushRounded(panel, 8);
+    Fill(R(L, T + H - 64, L + W, T + H), bar);
+    Line(L, T + H - 64, L + W, T + H - 64, t.stroke);
+    PopRounded(clip);
+    Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
+    Text(L"Music player", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
+    Text(L"On your desktop while My music plays. Drag it there to move it: this shows where it is.", R(L + 24, T + 50, L + W - 24, T + 72),
+         u.fBody, t.text2);
+    // The close-up: the wallpaper where the player is, the player on it.
+    pd.closeup = R(L + 24, T + 82, L + W - 24, T + 82 + 220);
+    pd.screen = PdScreen(pd.closeup);
+    clip = PushRounded(pd.closeup, 6);
+    PdDraw(pd.screen);
+    if (u.picking && dlg.target >= 2 && !u.pickColor.empty()) Loupe(u.pickAt.x, u.pickAt.y, pd.closeup, u.pickColor);
+    PopRounded(clip);
+    Stroke(pd.closeup, t.ctrlStroke, 6);
+    AddHit(ID_PD_AREA, K_AREA, pd.closeup);
+    // Its style: step through them (Off, then each).
+    const int style = g_settings.musicPlayer;
+    const bool has = style > 0;
+    const Settings::PlayerLook look = has ? PdLook() : Settings::PlayerLook{};
+    float y = pd.closeup.bottom + 14;
+    const float lx = L + 24, colW = (W - 48 - 24) / 2, labW = 76, rx = lx + colW + 24;
+    Text(L"Style", R(lx, y, lx + labW, y + 32), u.fBody, t.text);
+    {
+        const D2D1_RECT_F r = R(lx + labW, y, L + W - 24, y + 32);
+        Fill(r, t.ctrl, 4);
+        Stroke(r, t.ctrlStroke, 4);
+        const std::vector<std::wstring> names = Player_Styles();
+        Text(has && style <= (int)names.size() ? names[style - 1] + L"  \u00B7  " + Player_About(style) : std::wstring(L"Off: no player on the desktop"),
+             R(r.left + 40, r.top, r.right - 40, r.bottom), u.fBody, t.text, DWRITE_TEXT_ALIGNMENT_CENTER);
+        IconButton(ID_PD_PREV, r.left + 18, (r.top + r.bottom) / 2, 14, L"\uE76B", false, true);
+        IconButton(ID_PD_NEXT, r.right - 18, (r.top + r.bottom) / 2, 14, L"\uE76C", false, true);
+    }
+    y += 44;
+    // Its colours: a swatch and what it is, each opening the colour dialog.
+    auto colour = [&](int id, float x, const wchar_t* label, const std::wstring& value, const std::wstring& dflt, const wchar_t* dfltName) {
+        Text(label, R(x, y, x + labW, y + 32), u.fBody, has ? t.text : t.text3);
+        const D2D1_RECT_F r = R(x + labW, y, x + colW, y + 32);
+        const bool hot = has && IsHot(id), pressed = hot && u.press == id;
+        Fill(r, pressed ? t.ctrlPress : hot ? t.ctrlHover : t.ctrl, 4);
+        Stroke(r, t.ctrlStroke, 4);
+        const D2D1_COLOR_F c = LookColor(value.empty() ? dflt : value);
+        Circle(r.left + 17, (r.top + r.bottom) / 2, 8, t.ctrlStroke);
+        Circle(r.left + 17, (r.top + r.bottom) / 2, 7, has ? c : Mix(c, t.card, 0.6f));
+        Text(value.empty() ? std::wstring(dfltName) : Hex(value), R(r.left + 32, r.top, r.right - 28, r.bottom), u.fBody, has ? t.text : t.text3);
+        Text(L"\uE790", R(r.right - 26, r.top, r.right - 10, r.bottom), u.fIconSmall, has ? t.text2 : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
+        AddHit(id, K_BUTTON, r, has);
+    };
+    colour(ID_PD_COLOR, lx, L"Colour", look.color, PdDefault(2), L"Windows accent");
+    colour(ID_PD_BODY, rx, L"Body", look.body, PdDefault(3), L"Its own");
+    y += 44;
+    // Opacity and size; then its corners (for the styles on a card).
+    auto slider = [&](int id, float x, const wchar_t* label, float frac, const std::wstring& value, bool on) {
+        Text(label, R(x, y, x + labW, y + 32), u.fBody, on ? t.text : t.text3);
+        Slider(id, R(x + labW - 10, y + 2, x + colW - 40, y + 30), frac, on);
+        Text(value, R(x + colW - 40, y, x + colW, y + 32), u.fBody, on ? t.text : t.text3, DWRITE_TEXT_ALIGNMENT_TRAILING);
+    };
+    slider(ID_PD_OPACITY, lx, L"Opacity", (look.opacity - 0.2f) / 0.8f, Fmt(L"%.0f%%", look.opacity * 100), has);
+    slider(ID_PD_SIZE, rx, L"Size", (look.size - 0.7f) / 0.8f, Fmt(L"%.0f%%", look.size * 100), has);
+    y += 44;
+    const bool corners = has && Player_HasCorners(style);
+    slider(ID_PD_CORNERS, lx, L"Corners", has ? Player_Corners(style) / 40 : 0, corners ? Fmt(L"%.0f", Player_Corners(style)) : L"", corners);
+    // The bottom bar: back to how the style comes, and done.
+    const float by = T + H - 48;
+    if (has && !look.IsDefault()) {
+        const std::wstring reset = L"Reset " + Player_Styles()[style - 1];
+        Link(ID_PD_RESET, R(L + 24, by + 7, L + 24 + TextWidth(reset, u.fSmall) + 4, by + 25), reset);
+    }
+    Button(ID_PD_DONE, R(L + W - 24 - 110, by, L + W - 24, by + 32), L"Done", nullptr, true);
 }
 
 // The languages, in place of the fonts (Back, Esc or picking one goes back to them).
@@ -3519,6 +3706,7 @@ void PaintMain() {
     }
     if (IsHot(ID_MEMINFO) && !(dlg.open || ver.open || fnt.open || prs.open || fb.open)) PaintMemoryTip();
     if (IsHot(ID_LOOK) && !(dlg.open || ver.open || fnt.open || prs.open || fb.open)) PaintLookTip();
+    if (pd.open) PaintPlayerDialog();
     if (dlg.open && !u.picking) PaintColorDialog();
     if (ver.open) PaintVersionsDialog();
     if (fnt.open) PaintFontDialog();
@@ -4038,8 +4226,9 @@ void DlgNote(const std::wstring& m, bool warn = false) {
 
 // Puts the dialog's colour on the look (saved on Done) and the desktop.
 void DlgApply(bool force) {
-    DlgTarget() = dlg.target == 1 && dlg.sameAsText ? std::wstring() : DlgColor();
-    LiveClock(force);
+    DlgTarget() = dlg.target != 0 && dlg.sameAsText ? std::wstring() : DlgColor();
+    if (dlg.target >= 2) Player_Update();
+    else LiveClock(force);
 }
 
 void DlgSetRgb(BYTE r, BYTE g, BYTE b, bool typing = false) {
@@ -4052,6 +4241,16 @@ void DlgSetRgb(BYTE r, BYTE g, BYTE b, bool typing = false) {
 
 // Edits the text's (0) or the glow's (1) colour: the colour field starts from it.
 void DlgSetTarget(int target) {
+    if (target >= 2) {  // the player's
+        dlg.target = target;
+        dlg.sameAsText = DlgTarget().empty();
+        dlg.hexEdit = false;
+        BYTE r = 255, g = 255, b = 255;
+        ParseColor(dlg.sameAsText ? PdDefault(target) : DlgTarget(), &r, &g, &b);
+        RgbToHsv(r, g, b, &dlg.h, &dlg.s, &dlg.v);
+        dlg.exact = Fmt(L"%d,%d,%d", r, g, b);
+        return;
+    }
     ClockLook* look = EditedLook();
     dlg.target = target;
     dlg.sameAsText = target == 1 && look->glowColor.empty();
@@ -4068,14 +4267,25 @@ void OpenColorDialog(int target) {
     dlg = ColorDialog{};
     dlg.open = true;
     dlg.slot = slot;
-    dlg.beforeText = look->color;
-    dlg.beforeGlow = look->glowColor;
+    dlg.beforeText = target >= 2 ? PdLook().color : look->color;  // (the player's: its colour and body)
+    dlg.beforeGlow = target >= 2 ? PdLook().body : look->glowColor;
     DlgSetTarget(target);
     u.picking = false;
     u.pickColor.clear();
 }
 
 void CloseColorDialog(bool keep) {
+    if (dlg.target >= 2) {  // the player's colours: kept, or put back
+        if (!keep) {
+            PdLook().color = dlg.beforeText;
+            PdLook().body = dlg.beforeGlow;
+        }
+        dlg.open = dlg.hexEdit = u.picking = false;
+        u.pickColor.clear();
+        SaveSettings(g_settings);
+        Player_Update();
+        return;
+    }
     ClockLook* look = EditedLook();
     if (!keep) {
         look->color = dlg.beforeText;
@@ -4094,7 +4304,7 @@ void DlgSameAsText(bool on) {
     dlg.sameAsText = on;
     if (on) {
         BYTE r = 255, g = 255, b = 255;
-        ParseColor(EditedLook()->color, &r, &g, &b);
+        ParseColor(dlg.target >= 2 ? PdDefault(dlg.target) : EditedLook()->color, &r, &g, &b);
         RgbToHsv(r, g, b, &dlg.h, &dlg.s, &dlg.v);
         dlg.exact = Fmt(L"%d,%d,%d", r, g, b);
     }
@@ -4278,6 +4488,18 @@ void ReleaseWallpaper() {
 
 void OnSlider(int id, float frac, bool final) {
     switch (id) {
+        case ID_PD_OPACITY:  // the music player's look: on the desktop as it moves, saved when let go
+        case ID_PD_SIZE:
+        case ID_PD_CORNERS:
+            if (g_settings.musicPlayer > 0) {
+                Settings::PlayerLook& pl = PdLook();
+                if (id == ID_PD_OPACITY) pl.opacity = roundf((0.2f + frac * 0.8f) * 100) / 100;
+                else if (id == ID_PD_SIZE) pl.size = roundf((0.7f + frac * 0.8f) * 20) / 20;
+                else pl.corners = roundf(frac * 40);
+                Player_Update();
+                if (final) SaveSettings(g_settings);
+            }
+            break;
         case ID_SPEED: {
             int v = 25 + (int)lround(frac * 175 / 5) * 5;  // 5% steps
             if (std::abs(v - 100) <= 5) v = 100;            // snap to normal speed
@@ -4424,7 +4646,7 @@ void OnSeg(int id, int i) {
             u.clockEdit = i;
             return;
         case ID_DLG_TARGET:
-            if (i != dlg.target) DlgSetTarget(i);
+            if (i + (dlg.target >= 2 ? 2 : 0) != dlg.target) DlgSetTarget(i + (dlg.target >= 2 ? 2 : 0));
             return;
         case ID_FB_OFTEN: fb.often = i; return;
         case ID_KEEPSOUND: g_settings.keepSound = i == 1; break;
@@ -4974,6 +5196,22 @@ void OnClick(int id) {
         case ID_PRS_CURRENT: PresetFromCurrent(); break;
         case ID_CLK_DATE: OpenDateDialog(); break;
         case ID_PLAYER_STYLE: OpenPlayerDialog(); break;
+        case ID_PD_PREV:
+        case ID_PD_NEXT: {  // off, then each style, round again
+            const int n = (int)Player_Styles().size() + 1;
+            g_settings.musicPlayer = (std::clamp(g_settings.musicPlayer, 0, n - 1) + (id == ID_PD_NEXT ? 1 : n - 1)) % n;
+            Log(L"ui: desktop music player %ls", g_settings.musicPlayer ? Player_Styles()[g_settings.musicPlayer - 1].c_str() : L"off");
+            Host_SettingsChanged();
+            break;
+        }
+        case ID_PD_COLOR: OpenColorDialog(2); break;
+        case ID_PD_BODY: OpenColorDialog(3); break;
+        case ID_PD_RESET:
+            PdLook() = Settings::PlayerLook{};
+            SaveSettings(g_settings);
+            Player_Update();
+            break;
+        case ID_PD_DONE: ClosePlayerDialog(); break;
         case ID_WALLS: OpenWallpapers(); break;
         case ID_FNT_DONE:
             if (fnt.langs) CloseLanguageList();
@@ -5050,7 +5288,7 @@ size_t FocusStart() {
     size_t start = 0;
     for (size_t i = 0; i < u.hits.size(); i++)
         if (u.hits[i].id == ID_DLG_SCRIM || u.hits[i].id == ID_VER_SCRIM || u.hits[i].id == ID_FNT_SCRIM || u.hits[i].id == ID_PRS_SCRIM ||
-            u.hits[i].id == ID_FB_SCRIM)
+            u.hits[i].id == ID_FB_SCRIM || u.hits[i].id == ID_PD_SCRIM)
             start = i + 1;
     return start;
 }
@@ -5190,7 +5428,7 @@ void PaintFocus() {
     if (inList) u.rt->PopAxisAlignedClip();
 }
 
-bool DialogOpen() { return dlg.open || ver.open || fnt.open || prs.open || fb.open || u.page == 1; }  // the crop page counts too
+bool DialogOpen() { return dlg.open || ver.open || fnt.open || prs.open || fb.open || pd.open || u.page == 1; }  // the crop page counts too
 
 bool OnKeyInner(UINT vk);
 
@@ -5284,6 +5522,11 @@ bool OnKeyInner(UINT vk) {
         }
     }
     if (dlg.open) return DlgKey(vk);
+    if (pd.open && (vk == VK_ESCAPE || vk == VK_RETURN) && !u.keySlider) {
+        ClosePlayerDialog();
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
     if (ver.open) {
         int n = (int)ver.list.size();
         if (vk == VK_ESCAPE && ver.confirm >= 0) {
@@ -5422,7 +5665,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             int seg = ht && ht->kind == K_SEG ? SegAt(*ht, x) : -1;
             if (u.picking) {  // the colour under the eyedropper
                 std::wstring pc;
-                bool ok = SampleWallpaper(u.clockBox, x, y, &pc);
+                bool ok = dlg.target >= 2 ? PdSample(x, y, &pc) : SampleWallpaper(u.clockBox, x, y, &pc);
                 if (!ok) pc.clear();
                 if (pc != u.pickColor || u.pickAt.x != x || u.pickAt.y != y) {
                     u.pickColor = pc;
@@ -5469,7 +5712,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
                 break;
             }
-            if (LOWORD(l) == HTCLIENT && u.page == 0 && u.nav == NAV_CLOCK && u.picking && u.hot == ID_CLK_AREA) {
+            if (LOWORD(l) == HTCLIENT && u.picking && (u.hot == ID_PD_AREA || (u.page == 0 && u.nav == NAV_CLOCK && u.hot == ID_CLK_AREA))) {
                 SetCursor(LoadCursorW(nullptr, IDC_CROSS));
                 return TRUE;
             }
@@ -5494,7 +5737,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (u.picking) {  // the colour dialog's eyedropper: take the wallpaper's colour, or put it away
                 std::wstring pc;
                 BYTE r = 0, g = 0, b = 0;
-                if (dlg.open && ht && ht->id == ID_CLK_AREA && SampleWallpaper(u.clockBox, x, y, &pc) && ParseColor(pc, &r, &g, &b))
+                if (dlg.open && ht && dlg.target >= 2 ? ht && ht->id == ID_PD_AREA && PdSample(x, y, &pc) && ParseColor(pc, &r, &g, &b)
+                                                      : ht && ht->id == ID_CLK_AREA && SampleWallpaper(u.clockBox, x, y, &pc) && ParseColor(pc, &r, &g, &b))
                     DlgSetRgb(r, g, b);
                 u.picking = false;
                 u.pickColor.clear();

@@ -163,9 +163,11 @@ struct Settings {
     float playerX = 0.5f, playerY = 0.9f;  // its centre, as a share of the main screen
     struct PlayerLook {
         std::wstring color;   // "r,g,b" for its lit parts (the play button, its place); "" = the Windows accent colour
+        std::wstring body;    // "r,g,b" for the player itself (its card or case); "" = the style's own
         float opacity = 1;    // 0.2 .. 1, the whole player
         float corners = -1;   // its card's corner radius (DIPs); -1 = the style's own
-        bool IsDefault() const { return color.empty() && opacity >= 1 && corners < 0; }
+        float size = 1;       // 0.7 .. 1.5 of the style's own size
+        bool IsDefault() const { return color.empty() && body.empty() && opacity >= 1 && corners < 0 && size == 1; }
     };
     PlayerLook playerLooks[17];  // each style's, by musicPlayer number ([Player] Style<n>Color, ...Opacity, ...Corners)
     Crop crop;                // crop for the current video (stored per video)
@@ -451,6 +453,7 @@ std::wstring Clock_StyleKey(const ClockLook& look);  // everything that changes 
 // Desktop music player (player.cpp): the song and its controls, on the desktop, in a style.
 void Player_Show(const std::vector<std::wstring>& songs, bool force);  // create / update (songs: the playlist)
 void Player_Update();  // the song or its place changed: redrawn if it shows something new
+void Player_Place();   // it was moved (Settings::playerX, playerY): the window goes there
 void Player_Hide();
 std::vector<std::wstring> Player_Styles();  // by name: Settings::musicPlayer is 0 for none, else 1 + one of these
 // A style's parts, where the pointer is (x, y in the style's DIPs, as Player_Size gives them).

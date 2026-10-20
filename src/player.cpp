@@ -76,6 +76,8 @@ struct Drawing {
     ID2D1Bitmap* still = nullptr;  // the window's style without what turns (drawn when what it shows changes)
     int layer = 0;               // what a style draws: 0 all of it, 1 what stays still, 2 what turns
     float corners = -1;          // the card's corner radius the user chose (-1: the style's own)
+    bool hasBody = false;        // the user chose a colour for the player itself
+    D2D1_COLOR_F body{};
 } D;
 
 bool StillPart() { return D.layer != 2; }
@@ -136,6 +138,20 @@ D2D1_COLOR_F Lighter(D2D1_COLOR_F c, float by) {
 }
 
 float Luma(D2D1_COLOR_F c) { return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b; }
+
+// A shade of a colour: f > 0 towards white, f < 0 towards black; at alpha a.
+D2D1_COLOR_F Shade(D2D1_COLOR_F c, float f, float a = 1) {
+    auto mix = [&](float v) { return f >= 0 ? v + (1 - v) * f : v * (1 + f); };
+    return D2D1::ColorF(mix(c.r), mix(c.g), mix(c.b), a);
+}
+
+// The player's own colour (its card, its case): the user's, or the style's `own`; at alpha a.
+D2D1_COLOR_F BodyCol(UINT32 own, float a = 1) {
+    if (!D.hasBody) return Col(own, a);
+    D2D1_COLOR_F c = D.body;
+    c.a = a;
+    return c;
+}
 
 std::wstring SongName(const std::wstring& path) {
     const size_t slash = path.find_last_of(L"\\/");
@@ -354,7 +370,7 @@ bool CoverBox(const D2D1_RECT_F& pic, float radius, const Shown& s) {
 void Card(float w, float h, float radius, float a = 0.84f) {
     const D2D1_RECT_F r = R(0.5f, 0.5f, w - 0.5f, h - 0.5f);
     if (D.corners >= 0) radius = std::min(D.corners, h / 2 - 0.5f);
-    Fill(r, Col(0x141417, a), radius);
+    Fill(r, BodyCol(0x141417, a), radius);
     Stroke(r, Col(0xFFFFFF, 0.1f), radius);
 }
 
@@ -521,7 +537,7 @@ void DrawCassette(const PlayerStyle& st, const Shown& s) {
 // The cassette's case, displays and controls (what stays still).
 void CassetteBody(const PlayerStyle& st, const Shown& s, const D2D1_RECT_F& win) {
     // 1. Main Boombox chassis
-    Fill(R(0.5f, 0.5f, st.w - 0.5f, st.h - 0.5f), Col(0x141B22, 0.96f), 18);
+    Fill(R(0.5f, 0.5f, st.w - 0.5f, st.h - 0.5f), BodyCol(0x141B22, 0.96f), 18);
     Stroke(R(0.5f, 0.5f, st.w - 0.5f, st.h - 0.5f), Col(0x364552), 18, 1.2f);
     // Outer corner screws
     Screw(Pt(11, 11), 3.2f);
@@ -714,7 +730,7 @@ void DrawWave(const PlayerStyle& st, const Shown& s) {
         Volume(st, s);
     }
     if (!TurningPart()) return;
-    static const UINT32 kBlue[] = {0x0288D1, 0x29B6F6, 0x1E88E5, 0x81D4FA, 0x4FC3F7};
+    static const float kTone[] = {-0.2f, 0.25f, -0.4f, 0.5f, 0.1f};  // each thread a shade of the player's colour
     static const float kWaves[] = {1.8f, 2.6f, 1.4f, 3.4f, 2.9f};      // across the player
     static const float kSpeed[] = {7.5f, -6.2f, 5.0f, 9.8f, -8.4f};    // radians a second (fast!)
     static const float kShare[] = {1.0f, 0.82f, 0.68f, 0.52f, 0.40f};  // of the swing
@@ -742,7 +758,7 @@ void DrawWave(const PlayerStyle& st, const Shown& s) {
         for (int part = 0; part < 2; part++) {
             D.rt->PushAxisAlignedClip(part ? R(split, 68, right + 4, 104) : R(left - 4, 68, split, 104),
                                       D2D1_ANTIALIAS_MODE_ALIASED);
-            D.br->SetColor(Col(kBlue[k], part ? 0.3f : 0.95f));
+            D.br->SetColor(Shade(s.accent, kTone[k], part ? 0.3f : 0.95f));
             D.rt->DrawGeometry(g, D.br, kWidth[k], D.round);
             D.rt->PopAxisAlignedClip();
         }
@@ -792,10 +808,10 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
     Stroke(R(184.2f, 30.8f, 196.6f, 38.4f), Col(0x111B24), 2.4f, 1.2f);
 
     // 3. Main radio enclosure
-    Fill(R(1.0f, 30.4f, 373.0f, 176.4f), Col(0x1B6D9C), 17.2f);
-    Stroke(R(1.0f, 30.4f, 373.0f, 176.4f), Col(0x15354B), 17.2f, 0.8f);
-    Stroke(R(1.5f, 30.9f, 372.5f, 175.9f), Col(0x75D8FF, 0.45f), 16.8f, 0.6f);
-    Fill(R(3.4f, 32.8f, 370.6f, 174.0f), Col(0x18222B), 15.6f);
+    Fill(R(1.0f, 30.4f, 373.0f, 176.4f), Shade(s.accent, -0.45f), 17.2f);
+    Stroke(R(1.0f, 30.4f, 373.0f, 176.4f), Shade(s.accent, -0.7f), 17.2f, 0.8f);
+    Stroke(R(1.5f, 30.9f, 372.5f, 175.9f), Shade(s.accent, 0.4f, 0.45f), 16.8f, 0.6f);
+    Fill(R(3.4f, 32.8f, 370.6f, 174.0f), BodyCol(0x18222B), 15.6f);
     Stroke(R(3.4f, 32.8f, 370.6f, 174.0f), Col(0x586773, 0.6f), 15.6f, 0.6f);
 
     // Inner top highlight curve
@@ -862,20 +878,20 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
         Circle(kc, 6.6f, Col(0x28333D));
         Ring(kc, 6.6f, Col(0x7E909B), 0.4f);
         Ring(kc, 4.8f, Col(0x596A76), 0.4f);
-        Line(Pt(kc.x, kc.y - 4.8f), Pt(kc.x, kc.y - 1.6f), Col(0x7DE5FF), 1.1f);
+        Line(Pt(kc.x, kc.y - 4.8f), Pt(kc.x, kc.y - 1.6f), Shade(s.accent, 0.3f), 1.1f);
         Circle(kc, 1.0f, Col(0xA6B6BF));
     };
     drawKnob(Pt(48.6f, 148.0f));
     drawKnob(Pt(100.2f, 148.0f));
 
     // Power indicator LED
-    Circle(Pt(75.4f, 148.0f), 1.4f, Col(0x4ACFFF));
-    Ring(Pt(75.4f, 148.0f), 2.6f, Col(0x4ACFFF, 0.35f), 0.8f);
+    Circle(Pt(75.4f, 148.0f), 1.4f, s.accent);
+    Ring(Pt(75.4f, 148.0f), 2.6f, Shade(s.accent, 0, 0.35f), 0.8f);
 
     // 5. FM Tuner
     Text(L"FM / AM DIGITAL TUNER", R(143.0f, 41.0f, 287.0f, 49.0f), D.fMicroLeft, Col(0x9BABB6));
-    Circle(Pt(301.4f, 41.6f), 1.2f, Col(0x52D5FF));
-    Ring(Pt(301.4f, 41.6f), 2.2f, Col(0x52D5FF, 0.35f), 0.6f);
+    Circle(Pt(301.4f, 41.6f), 1.2f, s.accent);
+    Ring(Pt(301.4f, 41.6f), 2.2f, Shade(s.accent, 0, 0.35f), 0.6f);
     Text(L"STEREO", R(302.5f, 37.5f, 333.5f, 45.5f), D.fStereo, Col(0xA7B6C0));
     Circle(Pt(334.6f, 41.6f), 1.2f, Col(0x7CE0B2));
 
@@ -910,11 +926,11 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
         fsink->EndFigure(D2D1_FIGURE_END_CLOSED);
         fsink->Close();
         fsink->Release();
-        D.br->SetColor(Col(0x3BCAFA, 0.24f));
+        D.br->SetColor(Shade(s.accent, 0, 0.24f));
         D.rt->FillGeometry(fg, D.br);
         fg->Release();
     }
-    Line(Pt(nx, 54.0f), Pt(nx, 82.8f), Col(0x41D3FF), 1.2f);
+    Line(Pt(nx, 54.0f), Pt(nx, 82.8f), s.accent, 1.2f);
     ID2D1PathGeometry* tg = nullptr;
     ID2D1GeometrySink* tsink = nullptr;
     if (SUCCEEDED(D.d2d->CreatePathGeometry(&tg)) && SUCCEEDED(tg->Open(&tsink))) {
@@ -924,9 +940,9 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
         tsink->EndFigure(D2D1_FIGURE_END_CLOSED);
         tsink->Close();
         tsink->Release();
-        D.br->SetColor(Col(0x8BEAFF));
+        D.br->SetColor(Shade(s.accent, 0.4f));
         D.rt->FillGeometry(tg, D.br);
-        D.br->SetColor(Col(0x18AEE9));
+        D.br->SetColor(Shade(s.accent, -0.25f));
         D.rt->DrawGeometry(tg, D.br, 0.4f);
         tg->Release();
     }
@@ -956,11 +972,12 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
 
     const D2D1_POINT_2F playC = Pt(188.5f, 143.0f);
     Circle(Pt(playC.x, playC.y + 1.0f), 14.5f, Col(0x0F1B24, 0.35f));
-    Circle(playC, 14.0f, s.hot == PART_PLAY ? Col(0x56CEF7) : Col(0x3BC5F5));
-    Ring(playC, 14.0f, Col(0x8CE7FF), 0.8f);
+    Circle(playC, 14.0f, s.hot == PART_PLAY ? Shade(s.accent, 0.12f) : s.accent);
+    Ring(playC, 14.0f, Shade(s.accent, 0.4f), 0.8f);
+    const D2D1_COLOR_F playInk = Luma(s.accent) > 0.55f ? Shade(s.accent, -0.75f) : Col(0xFFFFFF, 0.95f);
     if (s.playing) {
-        Line(Pt(playC.x - 3.2f, playC.y - 4.8f), Pt(playC.x - 3.2f, playC.y + 4.8f), Col(0x123F57), 2.2f);
-        Line(Pt(playC.x + 3.2f, playC.y - 4.8f), Pt(playC.x + 3.2f, playC.y + 4.8f), Col(0x123F57), 2.2f);
+        Line(Pt(playC.x - 3.2f, playC.y - 4.8f), Pt(playC.x - 3.2f, playC.y + 4.8f), playInk, 2.2f);
+        Line(Pt(playC.x + 3.2f, playC.y - 4.8f), Pt(playC.x + 3.2f, playC.y + 4.8f), playInk, 2.2f);
     } else {
         ID2D1PathGeometry* plg = nullptr;
         ID2D1GeometrySink* plsink = nullptr;
@@ -971,7 +988,7 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
             plsink->EndFigure(D2D1_FIGURE_END_CLOSED);
             plsink->Close();
             plsink->Release();
-            D.br->SetColor(Col(0x123F57));
+            D.br->SetColor(playInk);
             D.rt->FillGeometry(plg, D.br);
             plg->Release();
         }
@@ -1032,7 +1049,7 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
     Stroke(R(263.0f, 141.5f, 347.0f, 144.5f), Col(0x455660), 1.5f, 0.4f);
 
     const float fillW = 84.0f * (s.volume / 100.f);
-    if (fillW > 0.5f) Fill(R(263.4f, 141.9f, 263.4f + fillW, 144.1f), Col(0x3BC5F5), 1.1f);
+    if (fillW > 0.5f) Fill(R(263.4f, 141.9f, 263.4f + fillW, 144.1f), s.accent, 1.1f);
     const float thx = 263.0f + fillW;
     Circle(Pt(thx, 143.0f), 3.8f, Col(0xDCE8EE));
     Ring(Pt(thx, 143.0f), 3.8f, Col(0x7A8A94), 0.6f);
@@ -1260,6 +1277,14 @@ D2D1_COLOR_F AccentOf(int style) {
     return !c.empty() && ParseColor(c, &r, &g, &b) ? D2D1::ColorF(r / 255.f, g / 255.f, b / 255.f) : Accent();
 }
 
+// The user's look for the style being drawn: its corners and its own colour (Card, BodyCol).
+void UseLook(const Settings::PlayerLook& look) {
+    D.corners = look.corners;
+    BYTE r, g, b;
+    D.hasBody = !look.body.empty() && ParseColor(look.body, &r, &g, &b);
+    if (D.hasBody) D.body = D2D1::ColorF(r / 255.f, g / 255.f, b / 255.f);
+}
+
 // What shows now; seek (0..1): the place being dragged to, in a preview.
 Shown Current(float seek = -1, int style = 0) {
     const MusicState ms = Host_MusicState();
@@ -1396,10 +1421,16 @@ void Draw(bool force = false) {
     Shown s = Current();
     const PlayerStyle& st = Style();
     const Settings::PlayerLook& look = LookOf(g_settings.musicPlayer);
-    D.corners = look.corners;
-    wchar_t key[260];
-    swprintf(key, 260, L"%d|%ls|%ls|%d|%d|%d|%d|%d|%d|%.2f|%ls|%ls|%.1f|%.2f", g_settings.musicPlayer, s.song.c_str(), s.where.c_str(), s.playing,
-             (int)(s.done * 400), W.hot, W.press, W.sliding, g_settings.volume, W.scale, W.artFor.c_str(), look.color.c_str(), look.corners, look.opacity);
+    UseLook(look);
+    const float scale = Clock_PixelScale() * std::clamp(look.size, 0.7f, 1.5f);  // (the user's size)
+    if (scale != W.scale) {
+        W.scale = scale;
+        force = true;
+    }
+    wchar_t key[300];
+    swprintf(key, 300, L"%d|%ls|%ls|%d|%d|%d|%d|%d|%d|%.2f|%ls|%ls|%ls|%.1f|%.2f", g_settings.musicPlayer, s.song.c_str(), s.where.c_str(), s.playing,
+             (int)(s.done * 400), W.hot, W.press, W.sliding, g_settings.volume, W.scale, W.artFor.c_str(), look.color.c_str(), look.body.c_str(),
+             look.corners, look.opacity);
     if (!force && W.drawn == key) {
         KeepTurning();
         return;
@@ -1470,6 +1501,17 @@ void SetVolumeAt(float x) {
     Draw();
 }
 
+// Where the window is now, as the settings keep it (its centre, a share of the main screen).
+void KeepPlace(HWND h) {
+    RECT r;
+    GetWindowRect(h, &r);
+    MONITORINFO mi{sizeof mi};
+    GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
+    const RECT& mon = mi.rcMonitor;
+    g_settings.playerX = std::clamp(((r.left + r.right) / 2.f - mon.left) / (mon.right - mon.left), 0.f, 1.f);
+    g_settings.playerY = std::clamp(((r.top + r.bottom) / 2.f - mon.top) / (mon.bottom - mon.top), 0.f, 1.f);
+}
+
 LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     const float x = GET_X_LPARAM(l) / W.scale, y = GET_Y_LPARAM(l) / W.scale;
     switch (m) {
@@ -1498,6 +1540,8 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 POINT p;
                 GetCursorPos(&p);
                 SetWindowPos(h, nullptr, p.x - W.grab.x, p.y - W.grab.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                KeepPlace(h);
+                UI_Refresh();  // (the settings window's close-up of it follows)
                 return 0;
             }
             const int hot = HitPart(Style(), x, y);
@@ -1544,13 +1588,7 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 Player_Seek(W.seekFrac);
             } else if (W.dragging) {
                 W.dragging = false;
-                RECT r;
-                GetWindowRect(h, &r);
-                MONITORINFO mi{sizeof mi};
-                GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
-                const RECT& mon = mi.rcMonitor;
-                g_settings.playerX = std::clamp(((r.left + r.right) / 2.f - mon.left) / (mon.right - mon.left), 0.f, 1.f);
-                g_settings.playerY = std::clamp(((r.top + r.bottom) / 2.f - mon.top) / (mon.bottom - mon.top), 0.f, 1.f);
+                KeepPlace(h);
                 SaveSettings(g_settings);
                 Log(L"player: moved to %.1f%%, %.1f%%", g_settings.playerX * 100, g_settings.playerY * 100);
             } else if (part == HitPart(Style(), x, y)) {
@@ -1600,11 +1638,6 @@ void Player_Show(const std::vector<std::wstring>& songs, bool force) {
     }
     const bool fresh = !W.hwnd;
     if (fresh && !CreatePlayerWindow()) return;
-    const float scale = Clock_PixelScale();
-    if (scale != W.scale) {
-        W.scale = scale;
-        force = true;
-    }
     W.songs = songs;
     if (fresh) W.arm = g_settings.musicPlaying ? 1.f : 0.f;
     Draw(force || fresh);
@@ -1617,6 +1650,13 @@ std::vector<std::wstring> Player_Styles() {
     std::vector<std::wstring> v;
     for (const PlayerStyle& s : kStyles) v.push_back(s.name);
     return v;
+}
+
+void Player_Place() {
+    if (W.hwnd && !W.dragging) {
+        const POINT p = Origin();
+        SetWindowPos(W.hwnd, nullptr, p.x, p.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 }
 
 void Player_Update() {
@@ -1642,7 +1682,7 @@ bool Player_Paint(int style, float scale, bool live, ClockImage* out, const Play
     if (!W.hwnd) W.songs = LoadPlaylist();  // (the window keeps its own up to date)
     Shown s = Current(in ? in->seek : -1, style);
     const Settings::PlayerLook& look = LookOf(style);
-    D.corners = look.corners;
+    UseLook(look);
     if (in) {
         s.hot = in->hot;
         s.press = in->press;
@@ -1669,7 +1709,7 @@ bool Player_Paint(int style, float scale, bool live, ClockImage* out, const Play
         out->h = h;
         out->pad = 0;
     });
-    D.corners = LookOf(g_settings.musicPlayer).corners;  // (the window's again)
+    UseLook(LookOf(g_settings.musicPlayer));  // (the window's again)
     if (ok && look.opacity < 1) {  // the user's opacity, as on the desktop
         const UINT32 k = (UINT32)lroundf(256 * std::clamp(look.opacity, 0.2f, 1.f));
         for (uint32_t& p : out->px)

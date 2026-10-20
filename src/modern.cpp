@@ -50,7 +50,9 @@ enum Id {
     // the music's
     ID_MU_PREV, ID_MU_PLAY, ID_MU_NEXT, ID_MU_SEEK, ID_MU_VOLUME, ID_MU_SHUFFLE, ID_MU_REPEAT, ID_MU_PICK, ID_MU_LIST,
     ID_MU_STYLE_PREV, ID_MU_STYLE_NEXT, ID_MU_PREVIEW, ID_P_ROTATE,
-    ID_MU_DONE, ID_MU_PICK_COL, ID_MU_GRID_COL, ID_MU_OPACITY, ID_MU_CORNERS, ID_MU_RESET, ID_MU_COL0,  // (+ swatch)
+    ID_MU_DONE, ID_MU_PICK_COL, ID_MU_GRID_COL, ID_MU_OPACITY, ID_MU_CORNERS, ID_MU_RESET, ID_MU_SIZE, ID_MU_PICK_BODY, ID_MU_GRID_BODY,
+    ID_MU_COL0,         // + swatch (0: the Windows accent colour)
+    ID_MU_BODY0 = 560,  // + swatch (0: the style's own)
     ID_P_COLOR0 = 500,  // + swatch
     ID_P_GLOWC0 = 530,  // + swatch (0: the text's colour)
     ID_P_GRID0 = 700,   // + colour in the grid (40 on: the saved ones)
@@ -245,6 +247,8 @@ struct Picker {
     float playerK = 1;                // DIPs here per DIP of the style
     PlayerInput pv;
     bool pvSeeking = false;
+    bool pvMoving = false;            // the music screen: the player is being dragged to a new place
+    D2D1_POINT_2F pvGrab{};           // where it was taken, from its centre
     // How long drawing takes (logged when it closes)
     int frames = 0;
     double drawTime = 0, drawMax = 0;
@@ -1663,15 +1667,22 @@ void PreviewChanged() {
 void DrawMusicStage(float a) {
     if (a <= 0) return;
     const float left = P.panelSide ? 20 + kPanelW + 20 : 20, right = P.panelSide ? P.W - 20 : P.W - 20 - kPanelW - 20;
-    const float cx = (left + right) / 2, cy = P.H / 2;
     float shownW = 0;
-    const float ph = PlayerPreview(std::min(right - left - 40, 760.f), &shownW, 1.6f);
+    const int style = g_settings.musicPlayer;
+    const float size = style > 0 ? std::clamp(g_settings.playerLooks[style].size, 0.7f, 1.5f) : 1;
+    const float ph = PlayerPreview(10000, &shownW, size);  // as big as on the desktop
     if (ph > 0 && P.player) {
+        // Where it is on the desktop (drag it to move it there too).
+        const float cx = std::clamp(g_settings.playerX * P.W, shownW / 2, P.W - shownW / 2);
+        const float cy = std::clamp(g_settings.playerY * P.H, ph / 2, P.H - ph / 2);
         P.playerBox = R(cx - shownW / 2, cy - ph / 2, cx + shownW / 2, cy + ph / 2);
+        if (P.pvMoving) Stroke(R(P.playerBox.left - 6, P.playerBox.top - 6, P.playerBox.right + 6, P.playerBox.bottom + 6),
+                               Col(0xFFFFFF, 0.6f * a), 14, 1.5f, G.dash);
         G.ctx->DrawBitmap(P.player, P.playerBox, a, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        if (g_settings.sound == 2 && !P.songs.empty()) P.hits.push_back({ID_MU_PREVIEW, P.playerBox});
+        P.hits.push_back({ID_MU_PREVIEW, P.playerBox});
         return;
     }
+    const float cx = (left + right) / 2, cy = P.H / 2;
     const std::wstring t = L"No music player on the desktop: pick one in the panel";
     const float tw = TextWidth(t, G.fBody) + 32;
     PanelBox(R(cx - tw / 2, cy - 22, cx + tw / 2, cy + 22), a, 22);
@@ -1730,7 +1741,24 @@ void DrawMusicEditPanel(float a) {
         Swatch(ID_MU_COL0 + 1 + (int)i, cx + 93 + 27 * i, sy, P.swatches[i], !look.color.empty() && P.swatches[i] == ink, a, has);
     const float colourRow = yy + kRow;
     yy += kRow;
+    // The player's own colour (its card or case): the eyedropper, any colour, its own (the first), quick ones.
+    const UINT32 own = 0x141417, bodyInk = look.body.empty() ? own : RgbOf(look.body);
+    const bool bodyQuick = look.body.empty() || std::find(P.swatches.begin(), P.swatches.begin() + std::min<size_t>(4, P.swatches.size()), bodyInk) !=
+                                                    P.swatches.begin() + std::min<size_t>(4, P.swatches.size());
+    Label(L"Body", lx, yy, a, has);
+    const float by = yy + kRow / 2;
+    ToolSwatch(ID_MU_PICK_BODY, cx + 12, by, L"\uEF3C", P.picking == 4, a, has);
+    ToolSwatch(ID_MU_GRID_BODY, cx + 39, by, L"\uE710", P.gridFor == 4 || !bodyQuick, a, has, bodyQuick ? nullptr : &bodyInk);
+    Swatch(ID_MU_BODY0, cx + 66, by, own, look.body.empty(), a, has, L"\uE72C");  // (the style's own)
+    for (size_t i = 0; i < P.swatches.size() && i < 4; i++)
+        Swatch(ID_MU_BODY0 + 1 + (int)i, cx + 93 + 27 * i, by, P.swatches[i], !look.body.empty() && P.swatches[i] == bodyInk, a, has);
+    const float bodyRow = yy + kRow;
+    yy += kRow;
     wchar_t v[32];
+    Label(L"Size", lx, yy, a, has);
+    swprintf(v, 32, L"%.0f%%", look.size * 100);
+    SliderCtl(ID_MU_SIZE, ctl(yy), (look.size - 0.7f) / 0.8f, v, a, has);
+    yy += kRow;
     Label(L"Opacity", lx, yy, a, has);
     swprintf(v, 32, L"%.0f%%", look.opacity * 100);
     SliderCtl(ID_MU_OPACITY, ctl(yy), (look.opacity - 0.2f) / 0.8f, v, a, has);
@@ -1784,6 +1812,7 @@ void DrawMusicEditPanel(float a) {
         }
     }
     if (P.gridFor == 3 && has) DrawColourGrid(a, cx + 19, colourRow, ink);
+    if (P.gridFor == 4 && has) DrawColourGrid(a, cx + 19, bodyRow, bodyInk);
 }
 
 // A small mouse with its right button lit: "right-click" in a tip.
@@ -2700,7 +2729,11 @@ void ClockEdited() {
 // The colour a colour row edits: the clock's text (1) or glow (2), or the music player's (3).
 std::wstring& PickColour(int row) {
     static std::wstring none;
-    if (row == 3) return g_settings.musicPlayer > 0 ? g_settings.playerLooks[g_settings.musicPlayer].color : none;
+    if (row == 3 || row == 4) {
+        if (g_settings.musicPlayer <= 0) return none;
+        Settings::PlayerLook& pl = g_settings.playerLooks[g_settings.musicPlayer];
+        return row == 3 ? pl.color : pl.body;
+    }
     return row == 2 ? P.look.glowColor : P.look.color;
 }
 
@@ -2713,7 +2746,7 @@ void PlayerLookChanged(bool keep) {
 
 bool IsSlider(int id) {
     return id == ID_P_SIZE || id == ID_P_OPACITY || id == ID_P_GLOW || id == ID_P_GLOWSIZE || id == ID_MU_VOLUME || id == ID_MU_SEEK ||
-           id == ID_C_FRAME || id == ID_MU_OPACITY || id == ID_MU_CORNERS;
+           id == ID_C_FRAME || id == ID_MU_OPACITY || id == ID_MU_CORNERS || id == ID_MU_SIZE;
 }
 
 void SetSlider(int id, float f) {
@@ -2732,9 +2765,11 @@ void SetSlider(int id, float f) {
         }
         case ID_MU_OPACITY:  // the player's look: shown as it changes, kept when let go
         case ID_MU_CORNERS:
+        case ID_MU_SIZE:
             if (g_settings.musicPlayer > 0) {
                 Settings::PlayerLook& pl = g_settings.playerLooks[g_settings.musicPlayer];
                 if (id == ID_MU_OPACITY) pl.opacity = roundf((0.2f + f * 0.8f) * 100) / 100;
+                else if (id == ID_MU_SIZE) pl.size = roundf((0.7f + f * 0.8f) * 20) / 20;  // (5% steps)
                 else pl.corners = roundf(f * 40);
                 PlayerLookChanged(false);
             }
@@ -2774,7 +2809,7 @@ UINT32 ScreenColour(POINT pt) {
 void StartPick(int row) {
     P.picking = row;
     P.pickWas = PickColour(row);
-    P.pickRgb = RgbOf(row == 2 && !P.look.glowColor.empty() ? P.look.glowColor : row == 3 ? P.pickWas : P.look.color);
+    P.pickRgb = RgbOf(row == 2 && !P.look.glowColor.empty() ? P.look.glowColor : row >= 3 ? P.pickWas : P.look.color);
     POINT pt;
     GetCursorPos(&pt);
     P.pickAt = D2D1::Point2F((pt.x - P.mon.left) / P.scale, (pt.y - P.mon.top) / P.scale);
@@ -2789,7 +2824,7 @@ void EndPick(bool keep) {
     const int row = P.picking;
     P.picking = 0;
     P.toastOn = false;
-    if (row == 3) PlayerLookChanged(true);
+    if (row >= 3) PlayerLookChanged(true);
     else ClockEdited();
 }
 
@@ -2800,13 +2835,13 @@ void PickMouse(UINT m, float x, float y) {
     }
     if (m != WM_MOUSEMOVE) return;
     P.pickAt = D2D1::Point2F(x, y);
-    if (!In(P.picking == 3 ? P.playerBox : ClockRect(), x, y) && Now() - P.pickTime > 0.025) {
+    if (!In(P.picking >= 3 ? P.playerBox : ClockRect(), x, y) && Now() - P.pickTime > 0.025) {
         P.pickTime = Now();
         POINT pt;
         GetCursorPos(&pt);
         P.pickRgb = ScreenColour(pt);
         PickColour(P.picking) = RgbText(P.pickRgb);
-        if (P.picking == 3) PlayerLookChanged(false);
+        if (P.picking >= 3) PlayerLookChanged(false);
         else ClockEdited();
     }
     P.dirty = true;
@@ -2837,8 +2872,12 @@ void Command(int id) {
         case ID_MUSIC: StartMusicEdit(); break;
         case ID_MU_DONE: EndMusicEdit(); break;
         case ID_MU_PICK_COL: StartPick(3); break;
+        case ID_MU_PICK_BODY: StartPick(4); break;
         case ID_MU_GRID_COL:
             P.gridFor = P.gridFor == 3 ? 0 : 3;
+            break;
+        case ID_MU_GRID_BODY:
+            P.gridFor = P.gridFor == 4 ? 0 : 4;
             break;
         case ID_MU_RESET:
             if (g_settings.musicPlayer > 0) {
@@ -3014,8 +3053,11 @@ void Command(int id) {
                 const int row = P.gridFor;
                 PickColour(row) = RgbText(c);
                 P.gridFor = 0;
-                if (row == 3) PlayerLookChanged(true);
+                if (row >= 3) PlayerLookChanged(true);
                 else ClockEdited();
+            } else if (id >= ID_MU_BODY0 && id <= ID_MU_BODY0 + (int)P.swatches.size() && g_settings.musicPlayer > 0) {
+                PickColour(4) = id == ID_MU_BODY0 ? L"" : RgbText(P.swatches[id - ID_MU_BODY0 - 1]);  // (0: the style's own)
+                PlayerLookChanged(true);
             } else if (id >= ID_MU_COL0 && id <= ID_MU_COL0 + (int)P.swatches.size() && g_settings.musicPlayer > 0) {
                 PickColour(3) = id == ID_MU_COL0 ? L"" : RgbText(P.swatches[id - ID_MU_COL0 - 1]);  // (0: the Windows accent colour)
                 PlayerLookChanged(true);
@@ -3078,6 +3120,11 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             if (P.pv.sliding) {  // the player's volume
                 SetSlider(ID_MU_VOLUME, Player_VolumeAt(g_settings.musicPlayer, (x - P.playerBox.left) / P.playerK));
                 PreviewChanged();
+            } else if (P.pvMoving) {  // the player follows the pointer, on the desktop too
+                g_settings.playerX = Clamp01((x - P.pvGrab.x) / P.W);
+                g_settings.playerY = Clamp01((y - P.pvGrab.y) / P.H);
+                Player_Place();
+                P.dirty = true;
             } else if (P.pvSeeking) {  // its place: shown where it's dragged, the song goes there when let go
                 P.pv.seek = Player_SeekAt(g_settings.musicPlayer, (x - P.playerBox.left) / P.playerK, (y - P.playerBox.top) / P.playerK);
                 PreviewChanged();
@@ -3168,7 +3215,10 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             if (P.press == ID_MU_PREVIEW) {  // the player: a button, its volume or its place
                 P.pv.press = PreviewPart(x, y);
                 const float px = (x - P.playerBox.left) / P.playerK, py = (y - P.playerBox.top) / P.playerK;
-                if (P.pv.press == PLAYER_VOLUME) {
+                if (P.mode == 3 && (P.pv.press == PLAYER_BODY || ((g_settings.sound != 2 || P.songs.empty()) && P.pv.press != PLAYER_NONE))) {
+                    P.pvMoving = true;  // (with no music, any part of it moves it)
+                    P.pvGrab = D2D1::Point2F(x - (P.playerBox.left + P.playerBox.right) / 2, y - (P.playerBox.top + P.playerBox.bottom) / 2);
+                } else if (P.pv.press == PLAYER_VOLUME) {
                     P.pv.sliding = true;
                     SetSlider(ID_MU_VOLUME, Player_VolumeAt(g_settings.musicPlayer, px));
                 } else if (P.pv.press == PLAYER_SEEK) {
@@ -3231,7 +3281,7 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 break;
             }
             if (P.mode == 3) {  // (no deck to drag here) a click elsewhere puts the colour grid away
-                if (P.gridFor && P.press != ID_MU_GRID_COL && P.press != ID_P_LIST && !(P.press >= ID_P_GRID0 && P.press < ID_P_GRID0 + 48))
+                if (P.gridFor && P.press != ID_MU_GRID_COL && P.press != ID_MU_GRID_BODY && P.press != ID_P_LIST && !(P.press >= ID_P_GRID0 && P.press < ID_P_GRID0 + 48))
                     P.gridFor = 0;
                 P.dirty = true;
                 break;
@@ -3252,7 +3302,11 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             ReleaseCapture();
             if (P.press == ID_MU_PREVIEW) {
                 const int part = P.pv.press;
-                if (P.pv.sliding) {
+                if (P.pvMoving) {
+                    P.pvMoving = false;
+                    SaveSettings(g_settings);
+                    Log(L"picker: the music player moved to %.1f%%, %.1f%%", g_settings.playerX * 100, g_settings.playerY * 100);
+                } else if (P.pv.sliding) {
                     Host_SettingsChanged();
                     UI_Refresh();
                 } else if (P.pvSeeking) {
@@ -3272,7 +3326,7 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 if (P.slide == ID_MU_VOLUME) {
                     Host_SettingsChanged();
                     UI_Refresh();
-                } else if (P.slide == ID_MU_OPACITY || P.slide == ID_MU_CORNERS) {
+                } else if (P.slide == ID_MU_OPACITY || P.slide == ID_MU_CORNERS || P.slide == ID_MU_SIZE) {
                     PlayerLookChanged(true);
                 } else if (P.slide == ID_MU_SEEK) {
                     const MusicState ms = Host_MusicState();
@@ -3671,6 +3725,7 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 const wchar_t* cur = P.picking                                  ? IDC_CROSS
                                    : P.mode == 2 && (P.cropDrag || P.hot == ID_NONE) ? IDC_SIZEALL
                                    : P.mode == 1 && (P.clockHot || P.clockDrag) ? IDC_SIZEALL
+                                   : P.mode == 3 && (P.pvMoving || (P.hot == ID_MU_PREVIEW && P.pv.hot == PLAYER_BODY)) ? IDC_SIZEALL
                                    : hand                                       ? IDC_HAND
                                                                                 : IDC_ARROW;
                 SetCursor(LoadCursorW(nullptr, cur));
