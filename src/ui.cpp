@@ -1662,14 +1662,14 @@ struct FeedbackUI {
     HFONT font = nullptr;
     HBRUSH brush = nullptr;
     COLORREF face = 0;
-    int often = -1;  // 0 once, 1 sometimes, 2 every time
+    HWND often = nullptr;  // how often it happens (typed)
     bool withLog = true;
     bool sending = false;
     std::wstring note;                     // the bottom bar: why it wasn't sent
     std::wstring sent;                     // on the page for a few seconds once sent
     DWORD sentAt = 0;
-    std::wstring idea, what, doing, mail;  // drafts, kept while VideoBG runs (Cancel doesn't lose them)
-    D2D1_RECT_F boxText{}, boxSteps{}, boxEmail{};
+    std::wstring idea, what, doing, mail, howOften;  // drafts, kept while VideoBG runs (Cancel doesn't lose them)
+    D2D1_RECT_F boxText{}, boxSteps{}, boxEmail{}, boxOften{};
     D2D1_RECT_F picsButton{}, strip{};      // adding pictures; the strip that shows them (once there are some)
     float picScroll = 0, picMax = 0;        // the strip, scrolled sideways
     std::vector<FeedbackPicture> pictures;  // screenshots for it (added, or pasted with Ctrl+V)
@@ -1683,8 +1683,10 @@ std::wstring FbGet(HWND e) {
     return a == std::wstring::npos ? L"" : t.substr(a, b - a + 1);
 }
 
-bool FbBox(int id) { return id == ID_FB_TEXT || id == ID_FB_STEPS || id == ID_FB_EMAIL; }
-HWND FbEditFor(int id) { return id == ID_FB_TEXT ? fb.text : id == ID_FB_STEPS ? fb.steps : id == ID_FB_EMAIL ? fb.email : nullptr; }
+bool FbBox(int id) { return id == ID_FB_TEXT || id == ID_FB_STEPS || id == ID_FB_OFTEN || id == ID_FB_EMAIL; }
+HWND FbEditFor(int id) {
+    return id == ID_FB_TEXT ? fb.text : id == ID_FB_STEPS ? fb.steps : id == ID_FB_OFTEN ? fb.often : id == ID_FB_EMAIL ? fb.email : nullptr;
+}
 
 // The dialog (DIPs), and its text boxes.
 constexpr float kFbStripH = 86;  // the pictures' strip (72 DIP tall pictures)
@@ -1705,6 +1707,7 @@ D2D1_RECT_F FeedbackLayout() {
         fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 96 - textCut);
         y = fb.boxText.bottom + 14;
         fb.boxSteps = R(L + 24, y + 24, L + W - 24, y + 24 + 64 - (squeeze - textCut));
+        fb.boxOften = R(L + W - 24 - 330, fb.boxSteps.bottom + 14, L + W - 24, fb.boxSteps.bottom + 14 + 32);
         y = fb.boxSteps.bottom + 14 + 32 + 14 + 28 + 14;
         fb.boxEmail = R(L + 24, y + 24, L + 24 + 320, y + 24 + 32);
         fb.picsButton = R(L + 356, fb.boxEmail.top, L + 496, fb.boxEmail.bottom);
@@ -1732,6 +1735,7 @@ void FbPlaceEdits() {
     };
     place(fb.text, fb.boxText, true);
     place(fb.steps, fb.boxSteps, true);
+    place(fb.often, fb.boxOften, false);
     place(fb.email, fb.boxEmail, false);
 }
 
@@ -3713,7 +3717,12 @@ void PaintFeedbackDialog() {
         box(ID_FB_STEPS, fb.boxSteps, fb.steps, L"What were you doing when it happened? (optional)");
         float y = fb.boxSteps.bottom + 14;
         Text(L"How often does it happen?", R(L + 24, y, L + 260, y + 32), u.fBody, t.text);
-        Seg(ID_FB_OFTEN, R(L + W - 24 - 330, y, L + W - 24, y + 32), {L"Once", L"Sometimes", L"Every time"}, fb.often);
+        {  // typed in: once, now and then, every time I...
+            const bool focused = fb.often && GetFocus() == fb.often;
+            Fill(fb.boxOften, face, 4);
+            Stroke(fb.boxOften, focused ? t.accent : t.ctrlStroke, 4, focused ? 2.f : 1.f);
+            AddHit(ID_FB_OFTEN, K_AREA, fb.boxOften);
+        }
         y += 32 + 14;
         Toggle(ID_FB_LOG, L + 24, y + 14, fb.withLog);
         Text(L"Include VideoBG's log (it helps find the cause)", R(L + 76, y, L + W - 24 - 130, y + 28), u.fBody, t.text);
@@ -4793,7 +4802,6 @@ void OnSeg(int id, int i) {
         case ID_DLG_TARGET:
             if (i + (dlg.target >= 2 ? 2 : 0) != dlg.target) DlgSetTarget(i + (dlg.target >= 2 ? 2 : 0));
             return;
-        case ID_FB_OFTEN: fb.often = i; return;
         case ID_KEEPSOUND: g_settings.keepSound = i == 1; break;
         case ID_CLK_SCOPE:
             if ((i == 0) == g_settings.clockVideoOwn) return;
@@ -4955,8 +4963,9 @@ void CloseFeedback() {
     if (fb.bug) {
         fb.doing = FbGet(fb.steps);
         fb.mail = FbGet(fb.email);
+        fb.howOften = FbGet(fb.often);
     }
-    for (HWND* e : {&fb.text, &fb.steps, &fb.email})
+    for (HWND* e : {&fb.text, &fb.steps, &fb.often, &fb.email})
         if (*e) {
             DestroyWindow(*e);
             *e = nullptr;
@@ -5044,7 +5053,7 @@ LRESULT CALLBACK FbEditProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
     }
-    if (m == WM_CHAR && (w == L'\t' || w == 27 || w == 1 || w == 10 || (w == L'\r' && h == fb.email))) return 0;  // no beeps
+    if (m == WM_CHAR && (w == L'\t' || w == 27 || w == 1 || w == 10 || (w == L'\r' && (h == fb.email || h == fb.often)))) return 0;  // no beeps
     return CallWindowProcW(fb.editProc, h, m, w, l);
 }
 
@@ -5093,6 +5102,11 @@ void OpenFeedback(bool bug) {
     fb.text = FbEdit(ID_FB_TEXT, fb.boxText, true, bug ? fb.what : fb.idea);
     if (bug) {
         fb.steps = FbEdit(ID_FB_STEPS, fb.boxSteps, true, fb.doing);
+        fb.often = FbEdit(ID_FB_OFTEN, fb.boxOften, false, fb.howOften);
+        if (fb.often) {
+            SendMessageW(fb.often, EM_SETLIMITTEXT, 40, 0);
+            SendMessageW(fb.often, 0x1501 /* EM_SETCUEBANNER */, TRUE, (LPARAM)L"Once, sometimes, every time...");
+        }
         fb.email = FbEdit(ID_FB_EMAIL, fb.boxEmail, false, fb.mail);
     }
     if (fb.text) {
@@ -5149,10 +5163,9 @@ FeedbackReport FeedbackCollect() {
     r.bug = fb.bug;
     r.text = FbGet(fb.text);
     if (fb.bug) {
-        static const wchar_t* often[] = {L"Once", L"Sometimes", L"Every time"};
         r.steps = FbGet(fb.steps);
         r.email = FbGet(fb.email);
-        r.often = fb.often >= 0 && fb.often < 3 ? often[fb.often] : L"";
+        r.often = FbGet(fb.often);
         r.system = FeedbackSystem();
         if (fb.withLog) r.log = Feedback_Log();
     }
@@ -6249,11 +6262,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             fb.sending = false;
             if (ok) {
                 if (fb.open && fb.bug == bug) {
-                    for (HWND e : {fb.text, fb.steps, fb.email})
+                    for (HWND e : {fb.text, fb.steps, fb.often, fb.email})
                         if (e) SetWindowTextW(e, L"");
                     CloseFeedback();
                 }
-                if (bug) fb.what.clear(), fb.doing.clear();
+                if (bug) fb.what.clear(), fb.doing.clear(), fb.howOften.clear();
                 else fb.idea.clear();
                 fb.pictures.clear();
                 fb.sent = L"Thanks, it's sent!";

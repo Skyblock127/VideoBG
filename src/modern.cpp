@@ -256,6 +256,8 @@ struct Picker {
     bool pvSeeking = false;
     bool pvMoving = false;            // the music screen: the player is being dragged to a new place
     D2D1_POINT_2F pvGrab{};           // where it was taken, from its centre
+    ULONGLONG pvClickAt = 0;          // clicked last (three quick clicks turn it off)
+    int pvClicks = 0;
     bool pvRotating = false;          // its handle is held: the player turns
     float pvRotFrom = 0, pvRotPointer = 0;  // its angle when taken, and the pointer's
     // How long drawing takes (logged when it closes)
@@ -1754,11 +1756,55 @@ void DrawMusicStage(float a) {
         }
         return;
     }
-    const float cx = (left + right) / 2, cy = P.H / 2;
-    const std::wstring t = L"No music player on the desktop: pick one in the panel";
-    const float tw = TextWidth(t, G.fBody) + 32;
-    PanelBox(R(cx - tw / 2, cy - 22, cx + tw / 2, cy + 22), a, 22);
-    Text(t, R(cx - tw / 2, cy - 22, cx + tw / 2, cy + 22), G.fBody, Col(0xFFFFFF, 0.8f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+    // No player on the desktop: the music's own controls in the middle of the screen (the song, its
+    // place, previous / play / next and the volume), with a line saying the player is off.
+    (void)left;
+    (void)right;
+    const float cx = P.W / 2, cy = P.H / 2, w = 440;
+    const int n = (int)Host_Songs().size();
+    const bool mine = g_settings.sound == 2 && n > 0;
+    const float h = mine ? 214 : 96;
+    const D2D1_RECT_F box = R(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
+    PanelBox(box, a, 20);
+    P.hits.push_back({ID_P_BG, box});
+    Text(L"The music player is off: pick one in the panel to put it on your desktop", R(box.left + 20, box.top + 14, box.right - 20, box.top + 34),
+         G.fSmall, Col(0xFFFFFF, 0.55f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+    if (!mine) {
+        Text(g_settings.sound == 2 ? L"Choose songs in the panel, and they play with the wallpaper"
+                                   : L"To play your own songs, choose My music on the Music page of All settings",
+             R(box.left + 20, box.top + 40, box.right - 20, box.bottom - 14), G.fWrap, Col(0xFFFFFF, 0.8f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+        return;
+    }
+    const MusicState ms = Host_MusicState();
+    const int track = ms.track >= 0 && ms.track < n ? ms.track : std::clamp(g_settings.musicTrack, 0, n - 1);
+    Text(FileTitle(Host_Songs()[track]), R(box.left + 24, box.top + 40, box.right - 24, box.top + 66), G.fBold, Col(0xFFFFFF, 0.95f * a),
+         DWRITE_TEXT_ALIGNMENT_CENTER);
+    // Its place in the song (dragged: the song goes there when let go).
+    const UINT dur = ms.track >= 0 ? ms.durMs : g_settings.musicDurMs, pos = ms.track >= 0 ? ms.posMs : g_settings.musicPosMs;
+    const float done = P.slide == ID_MU_SEEK && P.seekFrac >= 0 ? P.seekFrac : dur ? std::min(1.f, (float)pos / dur) : 0;
+    auto minutes = [](UINT ms) {
+        wchar_t t[16];
+        swprintf(t, 16, L"%u:%02u", ms / 60000, ms / 1000 % 60);
+        return std::wstring(t);
+    };
+    SliderCtl(ID_MU_SEEK, R(box.left + 16, box.top + 72, box.right - 16, box.top + 100), done,
+              dur ? minutes((UINT)(done * dur)) + L" / " + minutes(dur) : L"", a, ms.track >= 0 && dur > 0, 84);
+    // Previous, play / pause, next.
+    const float by = box.top + 136;
+    IconBtn(ID_MU_PREV, cx - 64, by, 18, L"\uE892", a);
+    {
+        const bool hot = P.hot == ID_MU_PLAY;
+        Circle(cx, by, 24, g_accent * ((hot ? 1.f : 0.9f) * a));
+        Text(g_settings.musicPlaying ? L"\uE769" : L"\uE768", R(cx - 24, by - 24, cx + 24, by + 24), G.fIcon, Col(0x000000, 0.85f * a),
+             DWRITE_TEXT_ALIGNMENT_CENTER);
+        P.hits.push_back({ID_MU_PLAY, R(cx - 24, by - 24, cx + 24, by + 24)});
+    }
+    IconBtn(ID_MU_NEXT, cx + 64, by, 18, L"\uE893", a);
+    // The volume.
+    wchar_t v[16];
+    swprintf(v, 16, L"%d%%", g_settings.volume);
+    Text(L"\uE767", R(box.left + 20, box.bottom - 40, box.left + 40, box.bottom - 12), G.fSmallIcon, Col(0xFFFFFF, 0.7f * a));
+    SliderCtl(ID_MU_VOLUME, R(box.left + 40, box.bottom - 40, box.right - 16, box.bottom - 12), g_settings.volume / 100.f, v, a);
 }
 
 // Its panel: the player (style, colour, opacity, corners, a reset), then the playlist with shuffle
@@ -1778,6 +1824,13 @@ void DrawMusicEditPanel(float a) {
                            : n == 1               ? L"My music  \u00B7  1 song"
                                                   : L"My music  \u00B7  " + std::to_wstring(n) + L" songs";
     Text(sub, R(x + 18, y + 34, box.right - 52, y + 52), G.fSmall, Col(0xFFFFFF, 0.55f * a));
+    if (has && !g_settings.playerLooks[style].IsDefault()) {  // back to how this style comes (once it's been changed)
+        const std::wstring t = L"Reset all";
+        const float tw = TextWidth(t, G.fSmall);
+        const D2D1_RECT_F r = R(box.right - 52 - tw, y + 34, box.right - 52, y + 52);
+        Text(t, r, G.fSmall, P.hot == ID_MU_RESET ? Col(0xFFFFFF, a) : g_accent * a);
+        P.hits.push_back({ID_MU_RESET, r});
+    }
     IconBtn(ID_P_SIDE, box.right - 30, y + 31, 16, P.panelSide ? L"\uE72A" : L"\uE72B", a);
     G.br->SetColor(Col(0xFFFFFF, 0.08f * a));
     G.ctx->DrawLine(D2D1::Point2F(box.left + 14, y + 60), D2D1::Point2F(box.right - 14, y + 60), G.br, 1);
@@ -1845,21 +1898,6 @@ void DrawMusicEditPanel(float a) {
     if (corners && look.corners >= 0) ResetBtn(ID_MU_RST_CORNERS, cx - 14, yy, a);
     swprintf(v, 32, L"%.0f", radius);
     SliderCtl(ID_MU_CORNERS, ctl(yy), radius / 40, corners ? v : L"", a, corners);
-    yy += kRow;
-    // Back to how this style comes (only when it's been changed).
-    if (has && !look.IsDefault()) {
-        const std::wstring t = L"Reset all";
-        const float tw = TextWidth(t, G.fBody);
-        const D2D1_RECT_F r = R(cr - tw, yy + 4, cr, yy + 26);
-        Text(t, r, G.fBody, P.hot == ID_MU_RESET ? Col(0xFFFFFF, a) : g_accent * a);
-        P.hits.push_back({ID_MU_RESET, r});
-    }
-    if (!has || !Player_HasVolume(style)) {  // (no volume on the player: here)
-        swprintf(v, 32, L"%d%%", g_settings.volume);
-        Label(L"Volume", lx, yy, a, g_settings.sound != 0);
-        SliderCtl(ID_MU_VOLUME, R(cx, yy + 6, has && !look.IsDefault() ? cr - 90 : cr, yy + kRow - 6), g_settings.volume / 100.f, v, a,
-                  g_settings.sound != 0);
-    }
     yy += kRow;
     G.br->SetColor(Col(0xFFFFFF, 0.08f * a));
     G.ctx->DrawLine(D2D1::Point2F(box.left + 14, yy + 2), D2D1::Point2F(box.right - 14, yy + 2), G.br, 1);
@@ -3364,6 +3402,16 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                     P.pvRotFrom = pl.rotate;
                     P.pvRotPointer = Clock_PointerAngle((P.playerBox.left + P.playerBox.right) / 2, (P.playerBox.top + P.playerBox.bottom) / 2, x, y);
                 }
+                break;
+            }
+            if (P.press == ID_MU_PREVIEW && ThirdClick(&P.pvClickAt, &P.pvClicks)) {  // three quick clicks: no player
+                g_settings.musicPlayer = 0;
+                Log(L"picker: the music player turned off by a triple click");
+                P.press = ID_NONE;
+                P.pvMoving = P.pvSeeking = P.pv.sliding = false;
+                Host_SettingsChanged();
+                UI_Refresh();
+                P.dirty = true;
                 break;
             }
             if (P.press == ID_MU_PREVIEW) {  // the player: a button, its volume or its place

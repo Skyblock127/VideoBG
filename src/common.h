@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"2.0.0"
+#define APP_VERSION  L"2.1.0"
 #define FEEDBACK_URL L"https://videobg-feedback.vercel.app/api/feedback"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
@@ -273,6 +273,15 @@ inline int SearchBest(const std::vector<std::wstring>& names, const std::wstring
         }
     }
     return best;
+}
+// A third click in quick succession (each within the double-click time of the one before).
+inline bool ThirdClick(ULONGLONG* last, int* count) {
+    const ULONGLONG now = GetTickCount64();
+    *count = now - *last <= GetDoubleClickTime() ? *count + 1 : 1;
+    *last = now;
+    if (*count < 3) return false;
+    *count = 0;
+    return true;
 }
 inline bool MusicShuffled(const std::vector<int>& o) {
     for (size_t i = 0; i < o.size(); i++)
