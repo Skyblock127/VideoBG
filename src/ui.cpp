@@ -64,7 +64,7 @@ enum Id {
     ID_PRS_REN0 = 2120,
     ID_PRS_DEL0 = 2130,
 };
-enum NavPage { NAV_VIDEO, NAV_CLOCK, NAV_SOUND, NAV_PLAYBACK, NAV_GENERAL, NAV_COUNT };  // sidebar order
+enum NavPage { NAV_VIDEO, NAV_PLAYBACK, NAV_CLOCK, NAV_SOUND, NAV_GENERAL, NAV_COUNT };  // sidebar order (the wallpaper, then the clock, the music, the rest)
 enum Kind { K_BUTTON, K_TOGGLE, K_SEG, K_SLIDER, K_AREA };
 enum Handle { H_NONE, H_NW, H_NE, H_SW, H_SE, H_N, H_S, H_W, H_E, H_MOVE, H_NEW };
 
@@ -1080,8 +1080,8 @@ struct NavItem {
     const wchar_t* icon;
     const wchar_t* label;
 };
-const NavItem kNav[NAV_COUNT] = {{L"\uE714", L"Video"},    {L"\uE121", L"Desktop clock"}, {L"\uE767", L"Sound"},
-                                 {L"\uE768", L"Playback"}, {L"\uE713", L"General"}};
+const NavItem kNav[NAV_COUNT] = {{L"\uE714", L"Video"}, {L"\uE768", L"Playback"}, {L"\uE121", L"Clock"}, {L"\uE8D6", L"Music"},
+                                 {L"\uE713", L"Settings"}};
 
 void PaintHeader() {
     const Theme& t = u.th;
@@ -1092,7 +1092,7 @@ void PaintHeader() {
         if (u.dc) u.dc->DrawBitmap(u.logo, &icon, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
         else u.rt->DrawBitmap(u.logo, &icon, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
     } else {
-        Fill(logo, Mix(t.accent, Rgb(0x7C5CFF), 0.5f), 9);
+        Fill(logo, t.accent, 9);
         Text(L"\uE768", logo, u.fIcon, Rgb(0xFFFFFF), DWRITE_TEXT_ALIGNMENT_CENTER);
     }
     Text(L"VideoBG", R(72, 16, 400, 42), u.fTitle, t.text);
@@ -1119,6 +1119,10 @@ void PaintSidebar() {
         Text(kNav[i].label, R(r.left + 44, r.top, r.right - 8, r.bottom), sel ? u.fStrong : u.fBody, t.text);
         AddHit(ID_NAV + i, K_BUTTON, r);
         y += 40;
+        if (i == NAV_PLAYBACK || i == NAV_SOUND) {  // groups: the wallpaper | the clock and the music | the rest
+            Line(kSideX + 14, y + 4, kSideX + kSideW - 14, y + 4, t.stroke);
+            y += 9;
+        }
     }
 
     // Status card at the bottom of the sidebar.
@@ -2148,6 +2152,7 @@ void PaintClockPage(float x, float w) {
     PopRounded(clip);
     if (on && (u.drag == ID_CLK_AREA || u.focus == ID_CLK_AREA || (u.overClock && u.hot == ID_CLK_AREA && !u.picking)))
         Badge(Fmt(L"%.1f%% across  \u00B7  %.1f%% down", look->x * 100, look->y * 100), box.left + 8, box.bottom - 28);
+    AddHit(ID_CLK_AREA, K_AREA, box, on);  // (first: the handle over it takes the clicks on it)
     // The handle that turns the clock, above it (below it near the top), quiet until pointed at; it
     // shows while the pointer is on the preview. A double click puts it upright; Shift turns it freely.
     if (on && look->show && !u.picking && (u.hot == ID_CLK_AREA || u.hot == ID_CLK_ROTATE || u.drag == ID_CLK_ROTATE || u.drag == ID_CLK_AREA)) {
@@ -2162,7 +2167,6 @@ void PaintClockPage(float x, float w) {
         AddHit(ID_CLK_ROTATE, K_AREA, R(hx - 12, hy - 12, hx + 12, hy + 12));
     }
     if (!on) Fill(box, D2D1::ColorF(t.card.r, t.card.g, t.card.b, 0.55f), 6);  // greyed out
-    AddHit(ID_CLK_AREA, K_AREA, box, on);
     float yy = box.bottom + 10;
 
     // The font and the colours (the text's and the glow's), the sizes and the glow, then the date and
@@ -2494,7 +2498,7 @@ void VerSelect(int i) {
     bool canShow = !current && v.w + 8 < pw;
     if (canShow && WantVideoAudio(g_settings)) {
         canShow = false;
-        ver.note = L"Turn the video's sound off (Sound page) to see versions on the desktop";
+        ver.note = L"Turn the video's sound off (Music page) to see versions on the desktop";
     } else if (canShow) {
         ver.note = L"Showing " + v.label + L" on your desktop: look around this window";
     } else if (current) {
@@ -3998,9 +4002,8 @@ void ClockDrag(float mx, float my, bool start) {
     ClockLook* look = EditedLook();
     if (start) {
         D2D1_RECT_F cr = ClockRectIn(b, *look);
-        // Grab the clock where it was clicked; clicking elsewhere brings its centre there.
-        u.clockGrab = In(cr, mx, my) ? D2D1::Point2F(mx - (cr.left + cr.right) / 2, my - (cr.top + cr.bottom) / 2)
-                                     : D2D1::Point2F(0, 0);
+        // Grab the clock where it was clicked (only the clock itself is dragged).
+        u.clockGrab = D2D1::Point2F(mx - (cr.left + cr.right) / 2, my - (cr.top + cr.bottom) / 2);
     }
     float fw, fh;
     ClockSize(&fw, &fh);
@@ -5717,7 +5720,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 return TRUE;
             }
             if (LOWORD(l) == HTCLIENT && u.page == 0 && u.nav == NAV_CLOCK && (u.hot == ID_CLK_AREA || u.drag == ID_CLK_AREA)) {
-                SetCursor(LoadCursorW(nullptr, u.overClock || u.drag ? IDC_SIZEALL : IDC_HAND));
+                SetCursor(LoadCursorW(nullptr, u.overClock || u.drag ? IDC_SIZEALL : IDC_ARROW));
                 return TRUE;
             }
             break;
@@ -5782,10 +5785,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     u.rotFrom = look->rotate;
                     u.rotPointer = Clock_PointerAngle((cr.left + cr.right) / 2, (cr.top + cr.bottom) / 2, x, y);
                 }
-            } else if (ht->id == ID_CLK_AREA) {
-                u.drag = ht->id;
-                u.overClock = true;
-                ClockDrag(x, y, true);
+            } else if (ht->id == ID_CLK_AREA) {  // the clock itself moves when dragged (a click beside it does nothing)
+                if (In(ClockRectIn(u.clockBox, *EditedLook()), x, y)) {
+                    u.drag = ht->id;
+                    u.overClock = true;
+                    ClockDrag(x, y, true);
+                }
             } else if (ht->id == ID_DLG_SV || ht->id == ID_DLG_HUE) {
                 u.drag = ht->id;
                 DlgDrag(ht->id, x, y);

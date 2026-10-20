@@ -198,7 +198,7 @@ FaultText DescribeFault(int fault, DWORD codec, HRESULT hr, const std::wstring& 
             break;
         case VF_SOUND_ONLY:
             t.what = L"This file has only sound, no picture";
-            t.fix = L"Choose a video file (for music, use the Sound page)";
+            t.fix = L"Choose a video file (for music, use the Music page)";
             break;
         case VF_NO_DECODER:
             if (const CodecFix* f = FixFor(codec)) {

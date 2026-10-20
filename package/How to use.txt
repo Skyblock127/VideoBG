@@ -22,7 +22,7 @@ Install (no admin rights needed)
   open VideoBG from the Start menu, to get the settings back.
 
 Using it
-  - Ctrl+Alt+B: wallpaper on/off (change the keys on the General page).
+  - Ctrl+Alt+B: wallpaper on/off (change the keys on the Settings page).
   - Two looks (switch at the top of the settings): Classic, this settings
     window; or Modern, the wallpaper picker:
       * Ctrl+Alt+B (or the tray icon) brings your wallpapers up as a deck of
@@ -59,9 +59,9 @@ Using it
       * VideoBG.exe --wallpapers opens the picker from a shortcut.
   - Pause/Break: plays or pauses My music, or mutes the video's audio (the
     video plays on, so the sound comes back in sync). It works in games too. Change it, or set
-    none with Backspace, on the General page.
+    none with Backspace, on the Settings page.
   - VideoBG starts the way you left it (on or off); change that on the
-    General page ("When app starts").
+    Settings page ("When app starts").
   - Video page: "Crop" (on the preview) picks the part of the video shown.
     With "Match screen shape" on, the desktop shows exactly that part; off,
     you can pick any shape (say, the whole of a wide video) and it's
@@ -92,7 +92,7 @@ Using it
     modern look's too), with their pictures: click one to make it your
     wallpaper, "Add videos" adds more, the bin takes one off the list (the
     file isn't touched).
-  - Desktop clock page:
+  - Clock page:
       * The row at the top picks the clock you're editing: Video / Still
         (the video wallpaper's or the still wallpaper's), then for the
         video wallpaper This video / All videos (a clock just for this
@@ -135,7 +135,7 @@ Using it
         clock the top row picks (it asks first; Show / Hide stays as it
         is). Rename and Delete are next to it. Tip: save your clock as a
         preset before changing it, so you can get it back later.
-  - My music (Sound page): choose songs, then press Play (the music never
+  - My music (Music page): choose songs, then press Play (the music never
     starts by itself). The player has a seek bar, previous/next, shuffle and
     repeat this song (the playlist always repeats); click the song's name to
     find it in the playlist. In the playlist, click a song to play it, drag
@@ -149,10 +149,10 @@ Using it
     place (the record, the ring, the dial...) to move in the song. Drag
     the rest of it to move it. When VideoBG starts with Windows the music
     stays paused until you press Play.
-  - Sound and Playback pages: sound source, speed, frame rate, and (under
+  - Music and Playback pages: sound source, speed, frame rate, and (under
     Power saving) pausing while apps cover the desktop or on battery.
   - Start with Windows: turn it on/off in Windows Settings > Apps > Startup.
-  - Feedback (General page): suggest a feature or report a problem. No
+  - Feedback (Settings page): suggest a feature or report a problem. No
     account needed. A report can include VideoBG's log (your user name and
     file names are taken out first); "See what's sent" shows all of it.
   - No mouse needed: Tab (Shift+Tab back) moves between controls, Enter or

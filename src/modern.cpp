@@ -1789,7 +1789,7 @@ void DrawMusicEditPanel(float a) {
     yy += 12;
     // The playlist: shuffle and repeat on its heading, then choosing songs; the songs fill the rest.
     if (!mine) {
-        Text(L"To play your own songs, choose My music under Sound in All settings.", R(x + 18, yy, box.right - 18, yy + 44), G.fWrap,
+        Text(L"To play your own songs, choose My music on the Music page of All settings.", R(x + 18, yy, box.right - 18, yy + 44), G.fWrap,
              Col(0xFFFFFF, 0.7f * a));
     } else {
         Text(L"Playlist", R(x + 18, yy, x + 120, yy + 24), G.fBold, Col(0xFFFFFF, 0.92f * a));
