@@ -173,7 +173,9 @@ If a video won't play
   HEVC (H.265) needs "HEVC Video Extensions" (small fee).
 
 Update (no need to uninstall first)
-  Tray icon > Exit, then extract the new zip to the same place as before:
+  Click "Update" at the bottom left of the settings window (classic look):
+  VideoBG downloads the new version, puts it in place and restarts.
+  Or by hand: tray icon > Exit, then extract the new zip to the same place as before:
   the folder that holds your VideoBG folder, for example C:\Tools (choose
   "Replace the files"). Then double-click Install.cmd again. Your settings
   are kept.

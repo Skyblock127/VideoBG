@@ -89,6 +89,7 @@ static bool RelaunchViaExplorer(const wchar_t* args) {
 //   VideoBG.exe --startup  start silently in the tray (used by the Windows startup entry)
 //   VideoBG.exe --toggle   toggle the wallpaper of the running instance
 //   VideoBG.exe --exit     close the running instance
+//   VideoBG.exe --updated [--on]  internal: the new version, started by the old one (wallpaper on as it was)
 //   VideoBG.exe --render   internal: the video renderer process
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     int argc = 0;
@@ -108,6 +109,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     bool startup = has(L"--startup"), toggle = has(L"--toggle"), exitCmd = has(L"--exit"), outside = has(L"--outside");
     bool ownPictures = has(L"--restore-pictures");
     bool picker = has(L"--wallpapers");  // the wallpaper picker (the modern look's), from a shortcut
+    bool updated = has(L"--updated"), wasOn = has(L"--on");
     LocalFree(argv);
 
     // Uninstalling: put the user's own lock screen and background back if VideoBG's frame is still
@@ -136,6 +138,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         return 0;
 
     HANDLE mutex = CreateMutexW(nullptr, TRUE, HOST_MUTEX);
+    for (int i = 0; updated && GetLastError() == ERROR_ALREADY_EXISTS && i < 50; i++) {  // the old version may still be closing
+        CloseHandle(mutex);
+        Sleep(100);
+        mutex = CreateMutexW(nullptr, TRUE, HOST_MUTEX);
+    }
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         for (int i = 0; i < 20 && !existing; i++) {  // the other instance may still be starting
             Sleep(100);
@@ -151,7 +158,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         }
         return 0;
     }
-    int r = HostMain(inst, !startup && !toggle && !picker, picker);
+    int r = HostMain(inst, !startup && !toggle && !picker, picker, updated ? wasOn : -1);
+    const bool on = Host_IsOn() || Host_BatteryOff();
     if (mutex) CloseHandle(mutex);
+    if (Update_Stage(nullptr, nullptr) == UP_RESTART) Update_Relaunch(on);
     return r;
 }

@@ -55,7 +55,10 @@ VideoBG then lives in the tray. Click its icon for the settings; right-click it 
 
 ## Update to a new version
 
-No need to uninstall; your settings are kept.
+Click **Update** at the bottom left of the settings window (classic look). VideoBG checks GitHub,
+then downloads the new version, puts it in place and restarts; your settings are kept.
+
+Or by hand (no need to uninstall):
 
 1. Download the new zip from the **[latest release](https://github.com/Skyblock127/VideoBG/releases/latest)**.
 2. Right-click the tray icon and choose **Exit**.

@@ -18,7 +18,7 @@ Settings g_settings;
 
 namespace {
 
-constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4;
+constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4, TIMER_UPDATE = 5;
 constexpr int HOTKEY_ID = 1, HOTKEY_MUSIC = 2;
 enum { CMD_TOGGLE = 100, CMD_SETTINGS, CMD_EXIT, CMD_PICKER, CMD_LOOK };
 
@@ -859,6 +859,15 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (w == TIMER_TRIM) { KillTimer(h, TIMER_TRIM); Host_TrimMemory(); }
             else if (w == TIMER_CLOCK) { KillTimer(h, TIMER_CLOCK); SyncClock(true); }
             else if (w == TIMER_STOP) FinishPendingStop();
+            else if (w == TIMER_UPDATE) { KillTimer(h, TIMER_UPDATE); Update_Done(); UI_Refresh(); }
+            return 0;
+        case WM_VBG_UPDATE:
+            if (w == UP_RESTART) {  // the new version is in place: close as usual, then main() starts it
+                DestroyWindow(h);
+                return 0;
+            }
+            if (w == UP_OFFLINE || w == UP_FAILED || w == UP_LATEST) SetTimer(h, TIMER_UPDATE, 5000, nullptr);  // the answer stays a while
+            UI_Refresh();
             return 0;
         case WM_VBG_CLOCK_LOST:  // the desktop went away with the clock in it: put it back once Explorer is up
             g_clockShown.clear();
@@ -930,6 +939,8 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 // Services for the settings UI
 
 bool Host_IsOn() { return g_on && !g_batteryOff; }
+
+void Host_Update() { Update_Start(g_wnd); }
 
 void Host_SetOn(bool on) {
     Log(L"tray: wallpaper turned %ls", on ? L"on" : L"off");
@@ -1328,7 +1339,7 @@ void Host_ClockMove(const ClockLook& look) {
 
 // ---------------------------------------------------------------------------------------
 
-int HostMain(HINSTANCE inst, bool openSettings, bool openPicker) {
+int HostMain(HINSTANCE inst, bool openSettings, bool openPicker, int wallpaperOn) {
     g_inst = inst;
     InstallCrashLog(L"tray app");
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -1370,7 +1381,8 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker) {
     if (GetSystemPowerStatus(&ps)) g_onBattery = ps.ACLineStatus == 0;
     g_power = RegisterPowerSettingNotification(g_wnd, &GUID_ACDC_POWER_SOURCE, DEVICE_NOTIFY_WINDOW_HANDLE);
 
-    g_on = g_settings.launch == 0 || (g_settings.launch == 1 && g_settings.lastOn);
+    g_on = wallpaperOn >= 0 ? wallpaperOn == 1 : g_settings.launch == 0 || (g_settings.launch == 1 && g_settings.lastOn);
+    if (wallpaperOn >= 0) Update_CleanUp();
     ApplyBatteryPolicy();
     Reconcile();
 

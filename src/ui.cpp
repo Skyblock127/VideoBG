@@ -39,7 +39,7 @@ enum Id {
     ID_SOUND, ID_MUSIC_PICK, ID_MUSIC_PLAY, ID_MUSIC_PREV, ID_MUSIC_NEXT, ID_MUSIC_SHUFFLE, ID_MUSIC_REPEAT, ID_MUSIC_SEEK,
     ID_MUSIC_LIST, ID_MUSIC_HEAD, ID_MUSIC_ADD, ID_MUSIC_SEARCH, ID_MUSIC_SEARCH_X, ID_UNMUTE, ID_KEEPSOUND, ID_OPEN_DATA, ID_OPEN_LOCAL, ID_FIX, ID_PLAYER_STYLE, ID_WALLS,
     ID_CLK_SHOW, ID_CLK_MODE, ID_CLK_SCOPE, ID_CLK_AREA, ID_CLK_ROTATE, ID_CLK_CUSTOM, ID_CLK_SIZE, ID_CLK_HOURS,
-    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO,
+    ID_CLK_OPACITY, ID_CLK_GLOW, ID_CLK_GLOWSIZE, ID_CLK_FONT, ID_CLK_DATE, ID_FNT_SCRIM, ID_FNT_DONE, ID_FNT_BAR, ID_FNT_OWN, ID_FNT_LANG, ID_FNT_DIGITS, ID_REPO, ID_UPDATE,
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_FNT_YES, ID_FNT_NO, ID_VER_YES, ID_VER_NO,
@@ -1166,7 +1166,24 @@ void PaintSidebar() {
     Text(u.gpu, R(x, yy + 84, right, yy + 100), u.fSmall, t.text3);
     AddHit(ID_MEMINFO, K_AREA, R(sc.left, yy - 2, sc.right, yy + 102));  // hover: what these numbers mean
     u.memInfo = R(sc.left, yy - 2, sc.right, yy + 102);
-    // The version, underlined: a link to VideoBG's page on GitHub.
+    // While updating (and a while after an answer), what the update is doing takes the row.
+    int percent = 0;
+    std::wstring latest;
+    const int up = Update_Stage(&percent, &latest);
+    if (up != UP_IDLE) {
+        const wchar_t* icon = up == UP_LATEST ? L"\uE73E" : up == UP_OFFLINE || up == UP_FAILED ? L"\uE783" : L"\uE896";
+        const std::wstring msg = up == UP_CHECKING      ? std::wstring(L"Checking for updates\u2026")
+                                 : up == UP_OFFLINE     ? std::wstring(L"You're offline")
+                                 : up == UP_FAILED      ? std::wstring(L"Couldn't update")
+                                 : up == UP_LATEST      ? L"Up to date (" + latest + L")"
+                                 : up == UP_DOWNLOADING ? Fmt(L"Downloading %ls\u2026 %d%%", latest.c_str(), percent)
+                                                        : std::wstring(L"Installing\u2026");
+        const D2D1_COLOR_F c = up == UP_OFFLINE || up == UP_FAILED ? t.warn : t.text2;
+        Text(icon, R(x, sc.bottom - 28, x + 16, sc.bottom - 10), u.fIconSmall, c);
+        Text(msg, R(x + 20, sc.bottom - 28, right, sc.bottom - 10), u.fSmall, c);
+        return;
+    }
+    // The version, underlined: a link to VideoBG's page on GitHub; Update on the right.
     const std::wstring version = L"VideoBG " APP_VERSION;
     const float vw = TextWidth(version, u.fSmall);
     const D2D1_RECT_F vr = R(x, sc.bottom - 28, x + vw, sc.bottom - 10);
@@ -1174,6 +1191,7 @@ void PaintSidebar() {
     Text(version, vr, u.fSmall, vhot ? t.accentHover : t.text2);
     Line(x, vr.bottom - 1, x + vw, vr.bottom - 1, vhot ? t.accentHover : t.text3);
     AddHit(ID_REPO, K_BUTTON, vr);
+    Link(ID_UPDATE, R(right - TextWidth(L"Update", u.fSmall) - 2, sc.bottom - 28, right, sc.bottom - 10), L"Update");
 }
 
 // Info rows under a preview: icon + message + optional link on the right.
@@ -1643,7 +1661,7 @@ void PaintPlaybackPage(float x, float w) {
     // On the iGPU the video's frames (the sidebar's Graphics memory) are in your RAM; the dGPU keeps
     // them in its own memory. The wallpaper's own RAM and the tray app's stay either way.
     Text(!twoGpus ? L"Uses " + u.gpu + L". This PC has one graphics chip, so there's nothing to switch."
-                  : L"Uses " + u.gpu +
+                  : L"Uses " + u.gpu + L". Changing modes doesn't affect the quality of the wallpaper."
                         L"\niGPU: Graphics memory, Wallpaper RAM and Tray app RAM are all on your RAM."
                         L"\ndGPU: Graphics memory is on the dGPU, but Wallpaper RAM and Tray app RAM stay on RAM.",
          R(lx, yy, x + w - kPad, yy + 56), u.fWrap, t.text2);
@@ -5359,6 +5377,7 @@ void OnClick(int id) {
         case ID_DLG_SAVE: DlgSaveSlot(); break;
         case ID_DLG_USE: DlgUseSlot(dlg.slot); break;
         case ID_REPO: ShellExecuteW(u.hwnd, L"open", APP_REPO, nullptr, nullptr, SW_SHOWNORMAL); break;
+        case ID_UPDATE: Host_Update(); break;
         case ID_OPEN_DATA: ShellExecuteW(u.hwnd, L"open", AppDataDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;
         case ID_OPEN_LOCAL: ShellExecuteW(u.hwnd, L"open", LocalDataDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;
         case ID_CHOOSE:

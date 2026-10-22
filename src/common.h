@@ -58,6 +58,7 @@ enum : UINT {
     WM_VBG_SHOWCASE_GROW,                // host -> renderer   ... the box grows to fill the screen: wParam = ms it takes, lParam = when it starts
     WM_VBG_HOLD,                         // host -> renderer   wParam 1 = hold the video still (the picker's frame slider), 0 = let it play
     WM_VBG_MEDIA_KEY,                    // media controls -> host: wParam = the button (a keyboard's play/pause, next, previous)
+    WM_VBG_UPDATE,                       // update thread -> host: wParam = the UP_* stage it's at
 };
 // A box on the showcase (target pixels), 16 bits a side.
 inline LPARAM PackBox(const RECT& r) {
@@ -325,7 +326,15 @@ FitRect ComputeFit(double videoAspect, const Crop& c, int scaleMode, double tw, 
 inline int CropMode(const Crop& c) { return c.stretch ? 2 : 0; }
 
 // Entry points
-int HostMain(HINSTANCE inst, bool openSettings, bool openPicker = false);
+int HostMain(HINSTANCE inst, bool openSettings, bool openPicker = false, int wallpaperOn = -1);  // wallpaperOn: after an update, as it was
+
+// update.cpp: the newest release from GitHub, in place of this copy.
+enum { UP_IDLE, UP_CHECKING, UP_OFFLINE, UP_FAILED, UP_LATEST, UP_DOWNLOADING, UP_INSTALLING, UP_RESTART };
+void Update_Start(HWND notify);  // checks, then downloads and puts it in place; notify gets WM_VBG_UPDATE
+int Update_Stage(int* percent, std::wstring* latest);
+void Update_Done();               // an answer (offline, up to date, failed) has been shown long enough
+void Update_Relaunch(bool wallpaperOn);  // starts the new exe (after this one has let go of its mutex)
+void Update_CleanUp();            // the new exe: deletes the old one and the download
 int RendererMain(HINSTANCE inst, HWND host);
 
 // Host services used by the settings UI (host.cpp)
@@ -389,6 +398,7 @@ struct ShowcaseLook {
 void Host_ShowcaseLook(const ShowcaseLook* look);  // nullptr: the showcase as usual
 void Host_HoldWallpaper(bool hold);                          // the video holds still (while a frame is picked), then plays on
 void Host_SetLook(int look);  // 0 classic, 1 modern
+void Host_Update();           // check for a new version and install it
 void Host_PreviewVideo(const std::wstring& path, double time, UINT seq);
 struct FaultText;
 bool Host_PlayFailed(FaultText* why);               // the wallpaper was turned off because the video couldn't play
