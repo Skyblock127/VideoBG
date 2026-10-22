@@ -18,7 +18,7 @@ namespace {
 
 constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4;
 constexpr int HOTKEY_ID = 1, HOTKEY_MUSIC = 2;
-enum { CMD_TOGGLE = 100, CMD_SETTINGS, CMD_CHOOSE, CMD_EXIT, CMD_PICKER };
+enum { CMD_TOGGLE = 100, CMD_SETTINGS, CMD_EXIT, CMD_PICKER, CMD_LOOK };
 
 HINSTANCE g_inst;
 HWND g_wnd;
@@ -338,27 +338,32 @@ void OnRendererExit() {
     UI_Refresh();
 }
 
+// The tray icon's menu: what the shortcut does in this look (the wallpapers, or the video wallpaper
+// on/off), the look itself, the settings, and Exit. Switching the look shows the menu again at once,
+// with the first item for the new look.
 void ShowTrayMenu(POINT pt) {
-    HMENU m = CreatePopupMenu();
-    bool on = Host_IsOn();
-    const bool modern = g_settings.look == 1;
-    std::wstring keys = HotkeyToString(g_settings.hkMods, g_settings.hkVk);
-    if (modern) {
-        AppendMenuW(m, MF_STRING, CMD_PICKER, (L"Wallpapers\u2026\t" + keys).c_str());
-        AppendMenuW(m, MF_STRING | (on ? MF_CHECKED : 0), CMD_TOGGLE, L"Video wallpaper on");
-    } else {
-        AppendMenuW(m, MF_STRING | (on ? MF_CHECKED : 0), CMD_TOGGLE, (L"Video wallpaper on\t" + keys).c_str());
+    for (;;) {
+        HMENU m = CreatePopupMenu();
+        const bool modern = g_settings.look == 1;
+        const std::wstring keys = HotkeyToString(g_settings.hkMods, g_settings.hkVk);
+        if (modern) AppendMenuW(m, MF_STRING, CMD_PICKER, (L"Wallpapers\u2026\t" + keys).c_str());
+        else AppendMenuW(m, MF_STRING | (Host_IsOn() ? MF_CHECKED : 0), CMD_TOGGLE, (L"Video wallpaper on\t" + keys).c_str());
+        AppendMenuW(m, MF_STRING | (modern ? MF_CHECKED : 0), CMD_LOOK, L"Modern look");
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(m, MF_STRING, CMD_SETTINGS, L"Settings\u2026");
+        AppendMenuW(m, MF_STRING, CMD_EXIT, L"Exit");
+        SetMenuDefaultItem(m, modern ? CMD_PICKER : CMD_SETTINGS, FALSE);
+        SetForegroundWindow(g_wnd);
+        const UINT cmd = (UINT)TrackPopupMenuEx(m, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, g_wnd, nullptr);
+        PostMessageW(g_wnd, WM_NULL, 0, 0);
+        DestroyMenu(m);
+        if (cmd == CMD_LOOK) {
+            Host_SetLook(modern ? 0 : 1);
+            continue;  // (shown again, for the look it's in now)
+        }
+        if (cmd) PostMessageW(g_wnd, WM_COMMAND, cmd, 0);
+        return;
     }
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, CMD_SETTINGS, L"Settings\u2026");
-    if (!modern) AppendMenuW(m, MF_STRING, CMD_CHOOSE, L"Choose video\u2026");
-    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, CMD_EXIT, L"Exit");
-    SetMenuDefaultItem(m, modern ? CMD_PICKER : CMD_SETTINGS, FALSE);
-    SetForegroundWindow(g_wnd);
-    TrackPopupMenuEx(m, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, g_wnd, nullptr);
-    PostMessageW(g_wnd, WM_NULL, 0, 0);
-    DestroyMenu(m);
 }
 
 // Multi-select song picker for "my music". Returns false if cancelled.
@@ -561,7 +566,6 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             switch (LOWORD(w)) {
                 case CMD_TOGGLE: Host_SetOn(!Host_IsOn()); break;
                 case CMD_SETTINGS: UI_Show(); break;
-                case CMD_CHOOSE: PickVideo(nullptr); break;
                 case CMD_PICKER: Modern_Open(0); break;
                 case CMD_EXIT: DestroyWindow(h); break;
             }
@@ -769,6 +773,9 @@ bool Host_LockScreen(HRESULT* lastResult, int* lsf) {
 void Host_SetVideo(const std::wstring& path, const Crop* keepCrop) {
     Log(L"tray: video set to %ls", path.c_str());
     g_settings.video = path;
+    // Its version is remembered for its original (both looks' lists play it from now on).
+    const std::wstring orig = LightCopyOriginalPath(path);
+    SetVideoVersion(orig.empty() ? path : orig, orig.empty() ? L"" : path);
     g_failedVideo.clear();
     g_failText = FaultText{};
     LoadVideoProfile(g_settings);  // its crop and clock look, wherever the file lives now

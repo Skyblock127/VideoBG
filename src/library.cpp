@@ -250,7 +250,7 @@ void Make(IWICImagingFactory* wic, FrameGrabber& grab, const Want& want, int scr
     WriteFileList(base + L".txt", {std::to_wstring(info->vw), std::to_wstring(info->vh), num[0], num[1], info->sound ? L"1" : L"0",
                                    info->codec.empty() ? L"?" : info->codec, num[2]});
     if (!want.frame) {  // only asked for the card: no need to keep the big one in memory
-        info->frame.clear();
+        std::vector<uint32_t>().swap(info->frame);  // (clear() alone keeps the memory)
         info->fw = info->fh = 0;
     }
 }

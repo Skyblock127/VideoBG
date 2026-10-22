@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"2.1.0"
+#define APP_VERSION  L"2.1.1"
 #define FEEDBACK_URL L"https://videobg-feedback.vercel.app/api/feedback"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
@@ -532,7 +532,8 @@ float Player_VolumeAt(int style, float x, float y);  // the volume (0..1) where 
 float Player_SeekAt(int style, float x, float y);   // the place (0..1) at x, y, while it's held
 bool Player_HasVolume(int style);
 bool Player_HasCorners(int style);  // its card's corners can be changed (PlayerLook::corners)
-float Player_Corners(int style);    // its corner radius now (DIPs)
+float Player_Corners(int style);
+float Player_CornersMax(int style);  // the roundest its corners go: a capsule (half its height)    // its corner radius now (DIPs)
 void Player_Seek(float frac);  // the song moves there (and shows there at once)
 void Player_Size(int style, float* w, float* h, bool turned = false);  // DIPs (turned: the box round it as it's turned)
 std::wstring Player_About(int style);             // what it is, in a few words (0: none)

@@ -74,8 +74,8 @@ Using it
     With several displays, the sizes follow the largest one the video plays
     on (Playback page, Displays): every display shows the same video, so
     more displays hardly add memory.
-  - Laptops with two graphics chips: Playback page, "Graphics chip". Power
-    saving uses the built-in one; High performance uses the dedicated one
+  - Laptops with two graphics chips: Playback page, "Graphics chip". iGPU
+    uses the built-in one; dGPU uses the dedicated one
     (NVIDIA/AMD), which keeps the video in its own memory instead of your
     RAM but uses more power, so mind your battery.
   - While the wallpaper is paused for a while (PC locked, screen off, or

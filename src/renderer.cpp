@@ -1599,6 +1599,7 @@ void PreviewVideo(const std::wstring& path, double time, UINT seq) {
     UpdateRects();
     if (!StartPlayback(pos)) return;
     ArmPark();
+    SetTimer(g.ctl, TIMER_TRIM, 4000, nullptr);  // the old video's decoder lets go of its frames a little later
 }
 
 void Reload() {
@@ -1775,6 +1776,11 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (w == TIMER_MUSIC) ReportMusic();
             else if (w == TIMER_TRIM) {
                 KillTimer(h, TIMER_TRIM);
+                IDXGIDevice3* d3 = nullptr;  // what the graphics driver still keeps for freed frames goes back too
+                if (g.dev && SUCCEEDED(g.dev->QueryInterface(__uuidof(IDXGIDevice3), (void**)&d3))) {
+                    d3->Trim();
+                    d3->Release();
+                }
                 HeapCompact(GetProcessHeap(), 0);
                 SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
             } else if (w == TIMER_DISPLAY) {

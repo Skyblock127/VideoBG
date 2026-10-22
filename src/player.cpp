@@ -1851,7 +1851,11 @@ bool Player_HasCorners(int style) {  // its card's corners can be changed (the c
 float Player_Corners(int style) {  // the corner radius it has now (DIPs)
     static const float own[] = {0, 20, 0, 41.5f, 20, 20, 20, 22, 0, 27.5f};  // each style's own (Card radius; Disc and Mini: pills)
     const float c = LookOf(style).corners;
-    return c >= 0 ? c : style >= 1 && style < (int)std::size(own) ? own[style] : 20;
+    return std::min(c >= 0 ? c : style >= 1 && style < (int)std::size(own) ? own[style] : 20.f, Player_CornersMax(style));
+}
+
+float Player_CornersMax(int style) {
+    return style >= 1 && style <= (int)std::size(kStyles) ? floorf(kStyles[style - 1].h / 2) : 40;
 }
 
 std::wstring Player_About(int style) {

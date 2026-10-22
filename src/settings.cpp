@@ -698,7 +698,7 @@ void LoadSettings(Settings& s) {
         pl.body = ReadStr(ini, L"Player", (k + L"Body").c_str());
         pl.size = ReadFloat(ini, L"Player", (k + L"Size").c_str(), 1, 0.7f, 1.5f);
         pl.opacity = ReadFloat(ini, L"Player", (k + L"Opacity").c_str(), 1, 0.2f, 1);
-        pl.corners = ReadFloat(ini, L"Player", (k + L"Corners").c_str(), -1, -1, 60);
+        pl.corners = ReadFloat(ini, L"Player", (k + L"Corners").c_str(), -1, -1, 200);
         pl.rotate = ReadFloat(ini, L"Player", (k + L"Rotate").c_str(), 0, -180, 180);
     }
     s.playerY = ReadFloat(ini, L"General", L"PlayerY", 0.9f, 0, 1);

@@ -682,6 +682,16 @@ float TextWidth(const std::wstring& s, IDWriteTextFormat* f) {
     return m.widthIncludingTrailingWhitespace;
 }
 
+float TextHeight(const std::wstring& s, IDWriteTextFormat* f, float maxWidth) {
+    if (s.empty() || maxWidth <= 0) return 0;
+    IDWriteTextLayout* l = nullptr;
+    if (FAILED(u.dw->CreateTextLayout(s.c_str(), (UINT32)s.size(), f, maxWidth, 10000.f, &l))) return 0;
+    DWRITE_TEXT_METRICS m{};
+    l->GetMetrics(&m);
+    l->Release();
+    return m.height;
+}
+
 void AddHit(int id, Kind k, const D2D1_RECT_F& r, bool enabled = true, std::vector<float> segs = {}) {
     u.hits.push_back(Hit{id, k, r, enabled, std::move(segs)});
 }
@@ -1605,7 +1615,7 @@ void PaintPlaybackPage(float x, float w) {
     const Theme& t = u.th;
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const bool twoGpus = !u.gpuLow.empty() && !u.gpuHigh.empty() && u.gpuLow != u.gpuHigh;  // laptops with a dedicated chip
-    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 4 * kRowH + 92);
+    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 4 * kRowH + 110);
     Card(card, L"\uE768", L"Playback");
     float yy = y + kCardHead;
     Row(lx, yy, kLabelW, L"Speed");
@@ -1627,13 +1637,16 @@ void PaintPlaybackPage(float x, float w) {
     // Which chip decodes and draws the video: a choice only on PCs with two (laptops with a dedicated one).
     yy += 44;
     Row(lx, yy, kLabelW, L"Graphics chip", kRowH, twoGpus);
-    Seg(ID_GPU, SegRect(cx, yy, cw), {L"Power saving", L"High performance"},
+    Seg(ID_GPU, SegRect(cx, yy, cw), {L"iGPU", L"dGPU"},
         !twoGpus ? -1 : g_settings.gpu ? g_settings.gpu - 1 : (u.gpuAutoHigh ? 1 : 0), twoGpus);
     yy += kRowH;
+    // On the iGPU the video's frames (the sidebar's Graphics memory) are in your RAM; the dGPU keeps
+    // them in its own memory. The wallpaper's own RAM and the tray app's stay either way.
     Text(!twoGpus ? L"Uses " + u.gpu + L". This PC has one graphics chip, so there's nothing to switch."
-                  : L"Uses " + u.gpu + L". High performance keeps the video in the dedicated chip's own memory instead of your RAM, "
-                                       L"but uses more power, which matters on battery.",
-         R(lx, yy, x + w - kPad, yy + 38), u.fWrap, t.text2);
+                  : L"Uses " + u.gpu +
+                        L"\niGPU: Graphics memory, Wallpaper RAM and Tray app RAM are all on your RAM."
+                        L"\ndGPU: Graphics memory is on the dGPU, but Wallpaper RAM and Tray app RAM stay on RAM.",
+         R(lx, yy, x + w - kPad, yy + 56), u.fWrap, t.text2);
     PaintPowerCard(x, card.bottom + 12, w);
 }
 
@@ -1910,6 +1923,7 @@ struct PlayerDialog {
     ID2D1Bitmap* pic = nullptr;       // the player, drawn for it
     std::wstring picKey;
     DWORD picAt = 0;
+    Settings::PlayerLook was[std::extent<decltype(Settings::playerLooks)>::value];  // the looks when it opened (put back unless Done)
 } pd;
 
 Settings::PlayerLook& PdLook() { return g_settings.playerLooks[std::clamp(g_settings.musicPlayer, 1, (int)std::size(g_settings.playerLooks) - 1)]; }
@@ -2812,6 +2826,19 @@ void OpenWallpapers() {
             current = at;
         }
     }
+    // The wallpaper as a lighter version is on its original's row (the list holds the original);
+    // the other rows play the version last picked for each, as the modern look's cards do.
+    const std::wstring wallOrig = LightCopyOriginalPath(g_settings.video);
+    for (size_t i = 0; i < g_walls.size(); i++) {
+        WallRow& w = g_walls[i];
+        if (!wallOrig.empty() && SamePath(w.path, wallOrig)) {
+            w.play = g_settings.video;
+            current = (int)i;
+        } else if (!SamePath(w.play, g_settings.video)) {
+            const std::wstring v = VideoVersion(w.path);
+            if (!v.empty()) w.play = v;
+        }
+    }
     ReleaseFontSamples();
     Library_Start(u.hwnd, WM_UI_WALL, u.screenW, u.screenH);
     for (const WallRow& w : g_walls) Library_Request(w.path, false, false);
@@ -2829,7 +2856,7 @@ void WallInfo(WallpaperInfo* raw) {
         w.thumb.swap(info->thumb);
         w.tw = info->tw;
         w.th = info->th;
-        info->frame.clear();
+        std::vector<uint32_t>().swap(info->frame);  // (clear() alone keeps the memory)
         w.info = std::move(*info);
         if (i < fnt.samples.size()) {
             SafeRelease(fnt.samples[i]);
@@ -2901,10 +2928,18 @@ void WallsRemove(int i) {
 void OpenPlayerDialog() {
     pd.open = true;
     pd.picKey.clear();
+    std::copy(std::begin(g_settings.playerLooks), std::end(g_settings.playerLooks), pd.was);
 }
 
-void ClosePlayerDialog() {
+// Done keeps the player's look as it is now; Esc puts back how it was when the dialog opened (the
+// style chosen stays either way).
+void ClosePlayerDialog(bool keep = true) {
     if (!pd.open) return;
+    if (!keep) {
+        std::copy(std::begin(pd.was), std::end(pd.was), g_settings.playerLooks);
+        Player_Update();
+        Log(L"ui: the music player's look put back as it was");
+    }
     pd.open = false;
     SafeRelease(pd.pic);
     pd.picKey.clear();
@@ -3060,7 +3095,7 @@ void PaintPlayerDialog() {
     reset(ID_PD_RST_SIZE, rx, look.size != 1);
     y += 44;
     const bool corners = has && Player_HasCorners(style);
-    slider(ID_PD_CORNERS, lx, L"Corners", has ? Player_Corners(style) / 40 : 0, corners ? Fmt(L"%.0f", Player_Corners(style)) : L"", corners);
+    slider(ID_PD_CORNERS, lx, L"Corners", has ? Player_Corners(style) / Player_CornersMax(style) : 0, corners ? Fmt(L"%.0f", Player_Corners(style)) : L"", corners);
     reset(ID_PD_RST_CORNERS, lx, corners && look.corners >= 0);
     slider(ID_PD_ROTATE, rx, L"Rotate", (look.rotate + 180) / 360, Fmt(L"%.0f\u00B0", look.rotate), has);
     reset(ID_PD_RST_ROTATE, rx, look.rotate != 0);
@@ -3819,12 +3854,17 @@ void PaintMemoryTip() {
 void PaintLookTip() {
     const Theme& t = u.th;
     const float w = 360, right = kW - 24 - 40 - 12 - 60 - 16, top = 60;
+    const std::wstring key = HotkeyToString(g_settings.hkMods, g_settings.hkVk);
     const std::wstring text =
-        L"Classic is this window. Modern brings up your wallpapers full screen (the shortcut and the tray icon open them), "
-        L"with this window for the rest of the settings.\n\nWhile it's open, the modern look uses about 180 MB of memory (RAM "
-        L"and graphics memory together), about four times this window's 45 MB. Both give it back when they close, so in "
-        L"between, the two looks cost the same.";
-    const D2D1_RECT_F r = R(right - w, top, right, top + 152);
+
+        L"Classic:\nThe standard UI of VideoBG (current window). Pressing the hotkey (" + key + L") in this mode switches between Video and Still wallpaper.\n\n"
+        L"Modern:\nA new UI to switch easily between video wallpapers. Pressing the hotkey in this mode opens a full-screen overlay for browsing your video wallpapers.\n\n"
+        L"Modern UI is for switching video wallpapers quickly and editing clock and music players on the fly. It has all the everyday settings that you need, but for more advanced settings, click 'Settings -> All Settings' to open the classic UI.\n\n"
+        L"Modern UI uses about 150 MB total memory while it's open, compared to about 50 MB for the classic UI. Both free it up after closing them.";
+        
+    const float th = TextHeight(text, u.fWrap, w - 28);
+    const float h = th > 0 ? ceilf(th) + 24 : 152;
+    const D2D1_RECT_F r = R(right - w, top, right, top + h);
     Fill(R(r.left - 1, r.top + 1, r.right + 1, r.bottom + 3), D2D1::ColorF(0, 0, 0, 0.18f), 8);  // shadow
     Fill(r, t.dark ? Rgb(0x2B2B2B) : Rgb(0xFFFFFF), 8);
     Stroke(r, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
@@ -4649,7 +4689,7 @@ void OnSlider(int id, float frac, bool final) {
                     else if (fabsf(r - step) < 2) r = step;
                     pl.rotate = r <= -180 ? 180 : r;
                 }
-                else pl.corners = roundf(frac * 40);
+                else pl.corners = roundf(frac * Player_CornersMax(g_settings.musicPlayer));
                 Player_Update();
                 if (final) SaveSettings(g_settings);
             }
@@ -4768,7 +4808,7 @@ void OnSeg(int id, int i) {
         case ID_FPS: g_settings.fpsCap = kFpsValues[i]; break;
         case ID_GPU:
             g_settings.gpu = i + 1;
-            Log(L"ui: graphics chip set to %ls", i ? L"high performance" : L"power saving");
+            Log(L"ui: graphics chip set to %ls", i ? L"the dGPU" : L"the iGPU");
             Host_SettingsChanged();  // the wallpaper restarts on that chip
             QueryGpu();
             return;
@@ -5119,7 +5159,7 @@ void OpenFeedback(bool bug) {
 // The PC, the video and the settings, for a problem report: nothing personal.
 std::wstring FeedbackSystem() {
     std::wstring s = Feedback_Windows() + L"\n";
-    s += L"Graphics: " + u.gpu + (g_settings.gpu == 1 ? L" (power saving chosen)" : g_settings.gpu == 2 ? L" (high performance chosen)" : L"") +
+    s += L"Graphics: " + u.gpu + (g_settings.gpu == 1 ? L" (iGPU chosen)" : g_settings.gpu == 2 ? L" (dGPU chosen)" : L"") +
          L"\n";
     std::wstring ds;
     EnumDisplayMonitors(
@@ -5763,7 +5803,7 @@ bool OnKeyInner(UINT vk) {
     }
     if (dlg.open) return DlgKey(vk);
     if (pd.open && (vk == VK_ESCAPE || vk == VK_RETURN) && !u.keySlider) {
-        ClosePlayerDialog();
+        ClosePlayerDialog(vk == VK_RETURN);
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }

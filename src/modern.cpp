@@ -12,6 +12,7 @@
 #include "mfhelp.h"
 #include "resource.h"
 #include <d2d1_1.h>
+#include <dwmapi.h>
 #include <d2d1_1helper.h>
 #include <d2d1effects.h>
 #include <dcomp.h>
@@ -258,6 +259,10 @@ struct Picker {
     D2D1_POINT_2F pvGrab{};           // where it was taken, from its centre
     ULONGLONG pvClickAt = 0;          // clicked last (three quick clicks turn it off)
     int pvClicks = 0;
+    Settings::PlayerLook looksWas[std::extent<decltype(Settings::playerLooks)>::value];  // the Music screen: as it opened (put back unless Done)
+    float playerXWas = 0, playerYWas = 0;
+    std::vector<uint32_t> shot;       // the eyedropper: the screen as it came out (reading it live is slow)
+    int shotW = 0, shotH = 0;
     bool pvRotating = false;          // its handle is held: the player turns
     float pvRotFrom = 0, pvRotPointer = 0;  // its angle when taken, and the pointer's
     // How long drawing takes (logged when it closes)
@@ -797,6 +802,14 @@ void LoadCards() {
             P.applied = i;
         }
     }
+    if (P.applied < 0 && !g_settings.video.empty()) {  // the wallpaper is a lighter version: its original's card
+        const std::wstring orig = OriginalOfCopy(g_settings.video);
+        const int i = CardIndex(orig.empty() ? g_settings.video : orig);
+        if (i >= 0) {
+            SetPlay(P.cards[i], g_settings.video);
+            P.applied = i;
+        }
+    }
     for (int i = 0; i < (int)P.cards.size(); i++) {  // the others: the version last picked for each
         if (i == P.applied) continue;
         const std::wstring v = VideoVersion(P.cards[i].path);
@@ -838,7 +851,7 @@ void AskPictures() {
                 c.frameAsked = true;
             }
         });
-    for (int r = 5; r < n; r++)  // far away now: their big pictures can go
+    for (int r = 3; r < n; r++)  // out of reach now (past the two either side): their big pictures can go
         each(r, [&](Card& c) {
             if (c.frame) {
                 SafeRelease(c.frame);
@@ -866,8 +879,8 @@ void OnInfo(WallpaperInfo* raw) {
         SafeRelease(c.brush);
     }
     if (!info->frame.empty() && !c.frame) c.frame = BitmapFrom(info->frame, info->fw, info->fh);
-    info->thumb.clear();
-    info->frame.clear();
+    std::vector<uint32_t>().swap(info->thumb);  // (the pixels are on the graphics card now: clear() alone keeps the memory)
+    std::vector<uint32_t>().swap(info->frame);
     c.info = std::move(*info);
     c.info.ok = true;
     FillRows(c);
@@ -1824,13 +1837,6 @@ void DrawMusicEditPanel(float a) {
                            : n == 1               ? L"My music  \u00B7  1 song"
                                                   : L"My music  \u00B7  " + std::to_wstring(n) + L" songs";
     Text(sub, R(x + 18, y + 34, box.right - 52, y + 52), G.fSmall, Col(0xFFFFFF, 0.55f * a));
-    if (has && !g_settings.playerLooks[style].IsDefault()) {  // back to how this style comes (once it's been changed)
-        const std::wstring t = L"Reset all";
-        const float tw = TextWidth(t, G.fSmall);
-        const D2D1_RECT_F r = R(box.right - 52 - tw, y + 34, box.right - 52, y + 52);
-        Text(t, r, G.fSmall, P.hot == ID_MU_RESET ? Col(0xFFFFFF, a) : g_accent * a);
-        P.hits.push_back({ID_MU_RESET, r});
-    }
     IconBtn(ID_P_SIDE, box.right - 30, y + 31, 16, P.panelSide ? L"\uE72A" : L"\uE72B", a);
     G.br->SetColor(Col(0xFFFFFF, 0.08f * a));
     G.ctx->DrawLine(D2D1::Point2F(box.left + 14, y + 60), D2D1::Point2F(box.right - 14, y + 60), G.br, 1);
@@ -1897,7 +1903,7 @@ void DrawMusicEditPanel(float a) {
     Label(L"Corners", lx, yy, a, corners);
     if (corners && look.corners >= 0) ResetBtn(ID_MU_RST_CORNERS, cx - 14, yy, a);
     swprintf(v, 32, L"%.0f", radius);
-    SliderCtl(ID_MU_CORNERS, ctl(yy), radius / 40, corners ? v : L"", a, corners);
+    SliderCtl(ID_MU_CORNERS, ctl(yy), has ? radius / Player_CornersMax(style) : 0, corners ? v : L"", a, corners);
     yy += kRow;
     G.br->SetColor(Col(0xFFFFFF, 0.08f * a));
     G.ctx->DrawLine(D2D1::Point2F(box.left + 14, yy + 2), D2D1::Point2F(box.right - 14, yy + 2), G.br, 1);
@@ -2489,8 +2495,11 @@ void ShowToast(const std::wstring& t) {
     P.dirty = true;
 }
 
+void EndMusicEdit(bool keep);
+
 void BeginClose(const wchar_t* why) {
     if (P.phase == CLOSING) return;
+    if (P.mode == 3) EndMusicEdit(false);  // (the player's look is kept only by Done)
     Log(L"picker: closing (%ls)", why);
     if (!P.used) AskPreview(g_settings.video, 0);  // nothing chosen: the wallpaper's own video again
     P.phase = CLOSING;
@@ -2823,6 +2832,9 @@ void StartMusicEdit() {
     P.actions = P.versions = P.binArmed = false;
     KillTimer(P.hwnd, TIMER_DWELL);
     P.editPlay = card >= 0 ? P.cards[card].play : g_settings.video;
+    std::copy(std::begin(g_settings.playerLooks), std::end(g_settings.playerLooks), P.looksWas);
+    P.playerXWas = g_settings.playerX;
+    P.playerYWas = g_settings.playerY;
     if (card < 0 || !P.cards[card].failed) AskPreview(P.editPlay, card >= 0 ? P.cards[card].info.time : 0);
     P.songDrag = -1;
     P.gridFor = P.picking = 0;
@@ -2838,9 +2850,21 @@ void StartMusicEdit() {
     PreviewChanged();
 }
 
-void EndMusicEdit() {
+// Done keeps the player's look and place; Esc puts them back (the player chosen, and the music, stay).
+void EndMusicEdit(bool keep) {
     if (P.mode != 3) return;
-    if (P.picking) EndPick(true);
+    if (P.picking) EndPick(keep);
+    if (keep) {
+        SaveSettings(g_settings);
+    } else {
+        std::copy(std::begin(P.looksWas), std::end(P.looksWas), g_settings.playerLooks);
+        g_settings.playerX = P.playerXWas;
+        g_settings.playerY = P.playerYWas;
+        SaveSettings(g_settings);
+        Player_Update();
+        Player_Place();
+        Log(L"picker: the music player's look put back as it was");
+    }
     P.mode = 0;
     P.gridFor = 0;
     P.slide = ID_NONE;
@@ -2881,10 +2905,9 @@ std::wstring& PickColour(int row) {
 }
 
 // The player's look changed: shown on the screen and the desktop; kept (saved) when done.
-void PlayerLookChanged(bool keep) {
+void PlayerLookChanged(bool) {  // (kept by Done)
     PreviewChanged();
     Player_Update();
-    if (keep) SaveSettings(g_settings);
 }
 
 bool IsSlider(int id) {
@@ -2913,7 +2936,7 @@ void SetSlider(int id, float f) {
                 Settings::PlayerLook& pl = g_settings.playerLooks[g_settings.musicPlayer];
                 if (id == ID_MU_OPACITY) pl.opacity = roundf((0.2f + f * 0.8f) * 100) / 100;
                 else if (id == ID_MU_SIZE) pl.size = roundf((0.7f + f * 0.8f) * 20) / 20;  // (5% steps)
-                else pl.corners = roundf(f * 40);
+                else pl.corners = roundf(f * Player_CornersMax(g_settings.musicPlayer));
                 PlayerLookChanged(false);
             }
             return;
@@ -2942,7 +2965,44 @@ void SetSlider(int id, float f) {
 
 // The eyedropper: the colour under the pointer goes on the clock as it moves (not from the clock
 // itself); a click keeps it, Esc or a right-click puts the old one back. The rest steps aside.
+// The screen (the picker's), copied once as the eyedropper comes out: reading the screen a pixel at a
+// time as the pointer moves waits on the compositor each time, and the pointer lags.
+void GrabScreen() {
+    const int w = P.mon.right - P.mon.left, h = P.mon.bottom - P.mon.top;
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void* bits = nullptr;
+    // Without the picker itself (its panel's shadow and dimming would darken what's read): the
+    // wallpaper as it really is, under it.
+    const bool hidden = SetWindowDisplayAffinity(P.hwnd, 0x11 /* WDA_EXCLUDEFROMCAPTURE */) != 0;
+    if (hidden) DwmFlush();
+    HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen);
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    P.shot.clear();
+    P.shotW = P.shotH = 0;
+    if (bmp) {
+        HGDIOBJ old = SelectObject(dc, bmp);
+        if (BitBlt(dc, 0, 0, w, h, screen, P.mon.left, P.mon.top, SRCCOPY | CAPTUREBLT)) {
+            GdiFlush();
+            P.shot.assign((uint32_t*)bits, (uint32_t*)bits + (size_t)w * h);
+            P.shotW = w;
+            P.shotH = h;
+        }
+        SelectObject(dc, old);
+        DeleteObject(bmp);
+    }
+    DeleteDC(dc);
+    ReleaseDC(nullptr, screen);
+    if (hidden) SetWindowDisplayAffinity(P.hwnd, WDA_NONE);
+}
+
 UINT32 ScreenColour(POINT pt) {
+    const int x = pt.x - P.mon.left, y = pt.y - P.mon.top;
+    if (x >= 0 && y >= 0 && x < P.shotW && y < P.shotH) return P.shot[(size_t)y * P.shotW + x] & 0xFFFFFF;
     HDC dc = GetDC(nullptr);
     const COLORREF c = GetPixel(dc, pt.x, pt.y);
     ReleaseDC(nullptr, dc);
@@ -2950,6 +3010,7 @@ UINT32 ScreenColour(POINT pt) {
 }
 
 void StartPick(int row) {
+    GrabScreen();
     P.picking = row;
     P.pickWas = PickColour(row);
     P.pickRgb = RgbOf(row == 2 && !P.look.glowColor.empty() ? P.look.glowColor : row >= 3 ? P.pickWas : P.look.color);
@@ -2967,6 +3028,9 @@ void EndPick(bool keep) {
     const int row = P.picking;
     P.picking = 0;
     P.toastOn = false;
+    P.shot.clear();
+    P.shot.shrink_to_fit();
+    P.shotW = P.shotH = 0;
     if (row >= 3) PlayerLookChanged(true);
     else ClockEdited();
 }
@@ -2984,7 +3048,7 @@ void PickMouse(UINT m, float x, float y) {
         GetCursorPos(&pt);
         P.pickRgb = ScreenColour(pt);
         PickColour(P.picking) = RgbText(P.pickRgb);
-        if (P.picking >= 3) PlayerLookChanged(false);
+        if (P.picking >= 3) PreviewChanged();  // (the desktop's when it's taken)
         else ClockEdited();
     }
     P.dirty = true;
@@ -3013,7 +3077,7 @@ void Command(int id) {
             P.music = false;
             break;
         case ID_MUSIC: StartMusicEdit(); break;
-        case ID_MU_DONE: EndMusicEdit(); break;
+        case ID_MU_DONE: EndMusicEdit(true); break;
         case ID_MU_PICK_COL: StartPick(3); break;
         case ID_MU_PICK_BODY: StartPick(4); break;
         case ID_MU_GRID_COL:
@@ -3513,7 +3577,6 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             if (P.pvRotating) {
                 P.pvRotating = false;
                 P.press = ID_NONE;
-                SaveSettings(g_settings);
                 Log(L"picker: the music player turned to %.0f degrees", g_settings.playerLooks[std::clamp(g_settings.musicPlayer, 0, 9)].rotate);
                 P.dirty = true;
                 break;
@@ -3522,7 +3585,6 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 const int part = P.pv.press;
                 if (P.pvMoving) {
                     P.pvMoving = false;
-                    SaveSettings(g_settings);
                     Log(L"picker: the music player moved to %.1f%%, %.1f%%", g_settings.playerX * 100, g_settings.playerY * 100);
                 } else if (P.pv.sliding) {
                     Host_SettingsChanged();
@@ -3677,7 +3739,8 @@ void OnKey(WPARAM vk) {
     }
     if (P.mode == 3) {
         if (vk == VK_ESCAPE && P.gridFor) P.gridFor = 0;
-        else if (vk == VK_ESCAPE || vk == VK_RETURN || (vk == 'M' && GetKeyState(VK_CONTROL) >= 0 && GetKeyState(VK_MENU) >= 0)) EndMusicEdit();
+        else if (vk == VK_RETURN) EndMusicEdit(true);
+        else if (vk == VK_ESCAPE || (vk == 'M' && GetKeyState(VK_CONTROL) >= 0 && GetKeyState(VK_MENU) >= 0)) EndMusicEdit(false);
         P.dirty = true;
         return;
     }
