@@ -6479,6 +6479,7 @@ void UI_ShowVersions() {
 void UI_Show() {
     if (u.hwnd) {
         if (IsIconic(u.hwnd)) ShowWindow(u.hwnd, SW_RESTORE);
+        else if (!IsWindowVisible(u.hwnd)) ShowWindow(u.hwnd, SW_SHOW);  // started hidden (a launcher's show flag)
         SetForegroundWindow(u.hwnd);
         return;
     }
