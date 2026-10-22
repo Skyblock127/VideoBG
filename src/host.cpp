@@ -3,11 +3,13 @@
 #include "common.h"
 #include "resource.h"
 #include <shellapi.h>
+#include <dwmapi.h>
 #include <shobjidl.h>
 #include <knownfolders.h>
 #include <psapi.h>
 #include <windowsx.h>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <cwchar>
@@ -339,31 +341,266 @@ void OnRendererExit() {
 }
 
 // The tray icon's menu: what the shortcut does in this look (the wallpapers, or the video wallpaper
-// on/off), the look itself, the settings, and Exit. Switching the look shows the menu again at once,
-// with the first item for the new look.
-void ShowTrayMenu(POINT pt) {
-    for (;;) {
-        HMENU m = CreatePopupMenu();
-        const bool modern = g_settings.look == 1;
-        const std::wstring keys = HotkeyToString(g_settings.hkMods, g_settings.hkVk);
-        if (modern) AppendMenuW(m, MF_STRING, CMD_PICKER, (L"Wallpapers\u2026\t" + keys).c_str());
-        else AppendMenuW(m, MF_STRING | (Host_IsOn() ? MF_CHECKED : 0), CMD_TOGGLE, (L"Video wallpaper on\t" + keys).c_str());
-        AppendMenuW(m, MF_STRING | (modern ? MF_CHECKED : 0), CMD_LOOK, L"Modern look");
-        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(m, MF_STRING, CMD_SETTINGS, L"Settings\u2026");
-        AppendMenuW(m, MF_STRING, CMD_EXIT, L"Exit");
-        SetMenuDefaultItem(m, modern ? CMD_PICKER : CMD_SETTINGS, FALSE);
-        SetForegroundWindow(g_wnd);
-        const UINT cmd = (UINT)TrackPopupMenuEx(m, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, g_wnd, nullptr);
-        PostMessageW(g_wnd, WM_NULL, 0, 0);
-        DestroyMenu(m);
-        if (cmd == CMD_LOOK) {
-            Host_SetLook(modern ? 0 : 1);
-            continue;  // (shown again, for the look it's in now)
+// on/off), the look itself, the settings, and Exit. Windows' own menus close on every click, so this
+// is VideoBG's own small window, drawn like Windows 11's menus: switching the look or the wallpaper
+// changes it in place, and its size never changes (it's as wide as either look needs).
+struct TrayMenu {
+    HWND hwnd = nullptr;
+    HFONT font = nullptr, bold = nullptr, glyphs = nullptr;
+    int hot = -1;       // the item under the pointer, or chosen with the keys
+    float k = 1;        // pixels per DIP
+    bool dark = true;   // Windows' own (taskbar) theme
+    bool tracking = false;
+    HWND foreground = nullptr;  // what had the focus once it showed (another one coming up puts it away)
+} g_tm;
+
+struct TrayItem {
+    int cmd = 0;  // 0: a line between groups
+    std::wstring text, keys;
+    bool check = false, isDefault = false;
+};
+
+std::vector<TrayItem> TrayItems() {
+    const bool modern = g_settings.look == 1;
+    const std::wstring keys = HotkeyToString(g_settings.hkMods, g_settings.hkVk);
+    std::vector<TrayItem> v;
+    if (modern) v.push_back({CMD_PICKER, L"Wallpapers\u2026", keys, false, true});
+    else v.push_back({CMD_TOGGLE, L"Video wallpaper on", keys, Host_IsOn(), false});
+    v.push_back({CMD_LOOK, L"Modern look", L"", modern, false});
+    v.push_back({});
+    v.push_back({CMD_SETTINGS, L"Settings\u2026", L"", false, !modern});
+    v.push_back({CMD_EXIT, L"Exit", L"", false, false});
+    return v;
+}
+
+constexpr float kTmPad = 4, kTmItemH = 30, kTmLineH = 9, kTmCheckW = 34, kTmRight = 14;
+
+float TrayItemH(const TrayItem& it) { return it.cmd ? kTmItemH : kTmLineH; }
+
+int TrayItemAt(int px, int py) {
+    const float y = py / g_tm.k;
+    float top = kTmPad;
+    const std::vector<TrayItem> v = TrayItems();
+    for (int i = 0; i < (int)v.size(); i++) {
+        const float h = TrayItemH(v[i]);
+        if (y >= top && y < top + h) return v[i].cmd ? i : -1;
+        top += h;
+    }
+    (void)px;
+    return -1;
+}
+
+void TrayMenuClose() {
+    if (!g_tm.hwnd) return;
+    HWND h = g_tm.hwnd;
+    g_tm.hwnd = nullptr;
+    DestroyWindow(h);
+    for (HFONT* f : {&g_tm.font, &g_tm.bold, &g_tm.glyphs})
+        if (*f) {
+            DeleteObject(*f);
+            *f = nullptr;
         }
-        if (cmd) PostMessageW(g_wnd, WM_COMMAND, cmd, 0);
+}
+
+// An item chosen: the wallpaper on/off and the look change right here; the rest close the menu first.
+void TrayMenuDo(int i) {
+    const std::vector<TrayItem> v = TrayItems();
+    if (i < 0 || i >= (int)v.size() || !v[i].cmd) return;
+    const int cmd = v[i].cmd;
+    if (cmd == CMD_TOGGLE) {
+        Host_SetOn(!Host_IsOn());
+    } else if (cmd == CMD_LOOK) {
+        Host_SetLook(g_settings.look == 1 ? 0 : 1);
+    } else {
+        TrayMenuClose();
+        PostMessageW(g_wnd, WM_COMMAND, cmd, 0);
         return;
     }
+    InvalidateRect(g_tm.hwnd, nullptr, FALSE);
+}
+
+void TrayMenuPaint(HWND h) {
+    PAINTSTRUCT ps;
+    HDC wdc = BeginPaint(h, &ps);
+    RECT rc;
+    GetClientRect(h, &rc);
+    HDC dc = CreateCompatibleDC(wdc);
+    HBITMAP bmp = CreateCompatibleBitmap(wdc, rc.right, rc.bottom);
+    HGDIOBJ oldBmp = SelectObject(dc, bmp);
+    const bool d = g_tm.dark;
+    const COLORREF bg = d ? RGB(0x2C, 0x2C, 0x2C) : RGB(0xF9, 0xF9, 0xF9), hover = d ? RGB(0x3D, 0x3D, 0x3D) : RGB(0xEA, 0xEA, 0xEA);
+    const COLORREF ink = d ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x1A, 0x1A, 0x1A), ink2 = d ? RGB(0xA6, 0xA6, 0xA6) : RGB(0x6B, 0x6B, 0x6B);
+    const COLORREF line = d ? RGB(0x45, 0x45, 0x45) : RGB(0xE0, 0xE0, 0xE0);
+    HBRUSH b = CreateSolidBrush(bg);
+    FillRect(dc, &rc, b);
+    DeleteObject(b);
+    SetBkMode(dc, TRANSPARENT);
+    const float k = g_tm.k;
+    auto px = [&](float v) { return (int)lroundf(v * k); };
+    float top = kTmPad;
+    const std::vector<TrayItem> v = TrayItems();
+    for (int i = 0; i < (int)v.size(); i++) {
+        const TrayItem& it = v[i];
+        const float ih = TrayItemH(it);
+        if (!it.cmd) {
+            RECT l{px(kTmPad + 8), px(top + ih / 2), rc.right - px(kTmPad + 8), px(top + ih / 2) + std::max(1, px(1))};
+            HBRUSH lb = CreateSolidBrush(line);
+            FillRect(dc, &l, lb);
+            DeleteObject(lb);
+            top += ih;
+            continue;
+        }
+        RECT r{px(kTmPad), px(top), rc.right - px(kTmPad), px(top + ih)};
+        if (i == g_tm.hot) {
+            HBRUSH hb = CreateSolidBrush(hover);
+            HGDIOBJ ob = SelectObject(dc, hb), op = SelectObject(dc, GetStockObject(NULL_PEN));
+            RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, px(8), px(8));
+            SelectObject(dc, ob);
+            SelectObject(dc, op);
+            DeleteObject(hb);
+        }
+        if (it.check) {
+            SelectObject(dc, g_tm.glyphs);
+            SetTextColor(dc, ink);
+            RECT c{r.left, r.top, r.left + px(kTmCheckW), r.bottom};
+            DrawTextW(dc, L"\uE73E", 1, &c, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        SelectObject(dc, it.isDefault ? g_tm.bold : g_tm.font);
+        SetTextColor(dc, ink);
+        RECT t{r.left + px(kTmCheckW), r.top, r.right - px(kTmRight), r.bottom};
+        DrawTextW(dc, it.text.c_str(), (int)it.text.size(), &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        if (!it.keys.empty()) {
+            SelectObject(dc, g_tm.font);
+            SetTextColor(dc, ink2);
+            DrawTextW(dc, it.keys.c_str(), (int)it.keys.size(), &t, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        top += ih;
+    }
+    BitBlt(wdc, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(dc);
+    EndPaint(h, &ps);
+}
+
+void TrayMenuMove(int dir) {
+    const std::vector<TrayItem> v = TrayItems();
+    const int n = (int)v.size();
+    int i = g_tm.hot;
+    for (int step = 0; step < n; step++) {
+        i = i < 0 ? (dir > 0 ? 0 : n - 1) : (i + dir + n) % n;
+        if (v[i].cmd) break;
+    }
+    g_tm.hot = i;
+    InvalidateRect(g_tm.hwnd, nullptr, FALSE);
+}
+
+LRESULT CALLBACK TrayMenuProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+        case WM_PAINT: TrayMenuPaint(h); return 0;
+        case WM_ERASEBKGND: return 1;
+        case WM_MOUSEMOVE: {
+            if (!g_tm.tracking) {
+                TRACKMOUSEEVENT t{sizeof t, TME_LEAVE, h, 0};
+                g_tm.tracking = TrackMouseEvent(&t) != 0;
+            }
+            const int i = TrayItemAt(GET_X_LPARAM(l), GET_Y_LPARAM(l));
+            if (i != g_tm.hot) {
+                g_tm.hot = i;
+                InvalidateRect(h, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            g_tm.tracking = false;
+            g_tm.hot = -1;
+            InvalidateRect(h, nullptr, FALSE);
+            return 0;
+        case WM_LBUTTONUP:
+        case WM_RBUTTONUP: TrayMenuDo(TrayItemAt(GET_X_LPARAM(l), GET_Y_LPARAM(l))); return 0;
+        case WM_KEYDOWN:
+            if (w == VK_ESCAPE) TrayMenuClose();
+            else if (w == VK_DOWN) TrayMenuMove(1);
+            else if (w == VK_UP) TrayMenuMove(-1);
+            else if (w == VK_RETURN || w == VK_SPACE) TrayMenuDo(g_tm.hot);
+            return 0;
+        case WM_ACTIVATE:
+            if (LOWORD(w) == WA_INACTIVE) PostMessageW(h, WM_CLOSE, 0, 0);  // clicking anywhere else puts it away
+            return 0;
+        case WM_CLOSE: TrayMenuClose(); return 0;
+        case WM_TIMER: {  // (if it didn't get the focus) a click anywhere else, or another app coming up, puts it away too
+            RECT r;
+            GetWindowRect(h, &r);
+            POINT p;
+            GetCursorPos(&p);
+            const bool pressed = GetAsyncKeyState(VK_LBUTTON) < 0 || GetAsyncKeyState(VK_RBUTTON) < 0;
+            if ((pressed && !PtInRect(&r, p)) || GetForegroundWindow() != g_tm.foreground) PostMessageW(h, WM_CLOSE, 0, 0);
+            return 0;
+        }
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+void ShowTrayMenu(POINT pt) {
+    TrayMenuClose();
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSW wc{};
+        wc.style = CS_DROPSHADOW;
+        wc.lpfnWndProc = TrayMenuProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"VideoBG.TrayMenu";
+        registered = RegisterClassW(&wc) != 0;
+    }
+    g_tm.hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"VideoBG.TrayMenu", APP_NAME, WS_POPUP, pt.x, pt.y, 1, 1, nullptr, nullptr,
+                                GetModuleHandleW(nullptr), nullptr);
+    if (!g_tm.hwnd) return;
+    g_tm.k = GetDpiForWindow(g_tm.hwnd) / 96.f;
+    g_tm.hot = -1;
+    g_tm.tracking = false;
+    DWORD light = 0, size = sizeof light;
+    g_tm.dark = !(RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"SystemUsesLightTheme",
+                               RRF_RT_REG_DWORD, nullptr, &light, &size) == ERROR_SUCCESS && light);
+    const int fh = -(int)lroundf(12 * g_tm.k);
+    g_tm.font = CreateFontW(fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    g_tm.bold = CreateFontW(fh, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    g_tm.glyphs = CreateFontW(-(int)lroundf(12 * g_tm.k), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0,
+                              L"Segoe Fluent Icons");
+    // As wide as the widest item in either look (so switching never resizes it).
+    HDC dc = GetDC(g_tm.hwnd);
+    const std::wstring keys = HotkeyToString(g_settings.hkMods, g_settings.hkVk);
+    int textW = 0;
+    for (const wchar_t* t : {L"Wallpapers\u2026", L"Video wallpaper on", L"Modern look", L"Settings\u2026", L"Exit"}) {
+        SIZE sz{};
+        SelectObject(dc, g_tm.bold);
+        GetTextExtentPoint32W(dc, t, (int)wcslen(t), &sz);
+        textW = std::max(textW, (int)sz.cx);
+    }
+    SIZE kz{};
+    SelectObject(dc, g_tm.font);
+    GetTextExtentPoint32W(dc, keys.c_str(), (int)keys.size(), &kz);
+    ReleaseDC(g_tm.hwnd, dc);
+    float hh = 2 * kTmPad;
+    for (const TrayItem& it : TrayItems()) hh += TrayItemH(it);
+    const int w = std::max((int)lroundf(200 * g_tm.k), textW + (int)kz.cx + (int)lroundf((2 * kTmPad + kTmCheckW + kTmRight + 32) * g_tm.k));
+    const int h = (int)lroundf(hh * g_tm.k);
+    // Above the pointer, as Windows puts the tray's menus; kept on the screen it's on.
+    MONITORINFO mi{sizeof mi};
+    GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
+    const RECT& wa = mi.rcWork;
+    int x = pt.x, y = pt.y - h;
+    if (x + w > wa.right) x = pt.x - w;
+    x = std::clamp(x, (int)wa.left, std::max((int)wa.left, (int)wa.right - w));
+    y = std::clamp(y, (int)wa.top, std::max((int)wa.top, (int)wa.bottom - h));
+    const int corners = 3;  // DWMWCP_ROUNDSMALL (Windows 11), like its menus
+    DwmSetWindowAttribute(g_tm.hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corners, sizeof corners);
+    const COLORREF border = g_tm.dark ? RGB(0x40, 0x40, 0x40) : RGB(0xD9, 0xD9, 0xD9);
+    DwmSetWindowAttribute(g_tm.hwnd, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof border);
+    SetWindowPos(g_tm.hwnd, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW);
+    SetForegroundWindow(g_tm.hwnd);
+    g_tm.foreground = GetForegroundWindow();
+    SetTimer(g_tm.hwnd, 1, 50, nullptr);
 }
 
 // Multi-select song picker for "my music". Returns false if cancelled.
