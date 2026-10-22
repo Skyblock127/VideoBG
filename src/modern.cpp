@@ -2036,7 +2036,7 @@ void DrawTopBar(float a) {
         tips = {std::to_wstring(P.cards.size()) + (P.cards.size() == 1 ? L" video" : L" videos"), L"\u2190 \u2192 browse",
                 L"Enter sets", L"\1the middle card: more", L"Esc closes"};
     }
-    const std::wstring ram = P.mode == 0 ? P.ram : L"";
+    const std::wstring& ram = P.ram;  // (on every screen: the wallpaper's RAM and the tray app's)
     const float ramW = ram.empty() ? 0 : TextWidth(ram, G.fSmall) + 14;
     const float w = 60 + std::max(TextWidth(title, G.fTitle) + ramW, Tips(tips, 0, 0, a, false)) + 18;
     const D2D1_RECT_F box = R(20, y, 20 + w, y + 52);
