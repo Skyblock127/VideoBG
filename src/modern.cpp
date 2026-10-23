@@ -195,6 +195,7 @@ struct Picker {
     float chosenRot = 0, chosenScale = 1;
     bool used = false;
     bool chosenClose = false;         // closing once the chosen video fills the screen (no dip to black)
+    bool closeCovered = false;        // closing (nothing chosen): the dark covers the screen, the wallpaper's own video is back
     double holeAt = 0;                // when its picture gave way to its video, playing in its place
     double revealAt = 0;              // when the card started fading away around its playing picture
     int lookSent = 0;                 // how much of the choosing the renderer has been told (SendLook)
@@ -2435,7 +2436,7 @@ void Paint() {
         if (k > 0) Fill(R(0, 0, P.W, P.H), Col(0x000000, k));
     }
     DrawClock(P.phase == SELECTING ? 1 - Clamp01((float)(Now() - P.chosenAt) * 3)
-              : P.chosenClose          ? 0
+              : P.chosenClose || P.closeCovered ? 0
               : P.mode == 1 && !P.look.show ? 0.35f
                                         : 1);
     if (P.dark > 0) Fill(R(0, 0, P.W, P.H), Col(0x000000, P.dark));
@@ -3927,9 +3928,14 @@ bool Step(double now) {
                 P.darkTo = 0;
                 if (t > 0.2f)
                     for (auto& s : P.stills) s.a = std::max(0.f, s.a - dt * 3);
-            } else if (t < 0.26f) {  // dark comes up over the live wallpaper
-                if (P.stills[1].a < 0.99f) P.darkTo = 1;
+            } else if (!P.closeCovered && (t < 0.26f || (P.darkTo > 0 && P.dark < 1) || (!SameFile(P.live, g_settings.video) && t < 2))) {
+                // Dark comes up over the live wallpaper, and stays until the wallpaper's own video is back under
+                // it (a card being looked at was playing): nothing of that card shows on the desktop.
+                if (P.stills[1].a < 0.99f || P.stills[1].card != P.applied) P.darkTo = 1;
             } else {  // dark covers it: the apps come back under it, then the dark goes
+                P.closeCovered = true;
+                for (auto& s : P.stills)
+                    if (s.card != P.applied) s.a = 0;  // only the wallpaper's own picture fades into it
                 if (P.showcaseAsked) {
                     P.showcaseAsked = false;
                     Host_Showcase(nullptr);
@@ -4137,6 +4143,7 @@ bool Modern_Open(int mode) {
     P.phaseAt = P.last = Now();
     P.dark = 0;
     P.darkTo = 1;
+    P.closeCovered = false;
     if (mode == 1) StartClockEdit();
     else if (!P.cards.empty()) {
         P.look = LookFor(P.cards[P.focus].path);
