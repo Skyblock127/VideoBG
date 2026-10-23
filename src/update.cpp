@@ -1,11 +1,13 @@
-// Update from the General sidebar: finds the newest release on GitHub, downloads its zip, puts its
+// Update (the sidebar's button, or by itself on start and every 3 hours, asking first): finds the newest release on GitHub, downloads its zip, puts its
 // files in place of this copy's and starts the new VideoBG. No signing is needed: a file downloaded
 // here has no "from the internet" mark, so Windows doesn't stop the new exe. The running exe can't
 // be overwritten but can be renamed, so it steps aside as VideoBG.old.exe (deleted by the new one).
 #include "common.h"
 #include <winhttp.h>
+#include <shellapi.h>
 #include <atomic>
 #include <thread>
+#include "resource.h"
 
 namespace {
 
@@ -125,28 +127,112 @@ bool PutInPlace(const std::wstring& from, const std::wstring& to) {
     return true;
 }
 
-void Work() {
+// What's new in a release: its notes on GitHub, as plain text (the install steps under them left out).
+std::wstring ReleaseNotes(const std::wstring& tag) {
+    Http h;
+    std::wstring api = APP_REPO L"/releases/tags/v" + tag;
+    api.replace(0, wcslen(L"https://github.com/"), L"https://api.github.com/repos/");
+    if (!h.Get(api, true) || h.Status() != 200) return L"";
+    std::string json;
+    char buf[8192];
+    DWORD got = 0;
+    while (json.size() < 1 << 20 && WinHttpReadData(h.req, buf, sizeof buf, &got) && got) json.append(buf, got);
+    size_t at = json.find("\"body\":\"");
+    if (at == std::string::npos) return L"";
+    std::string body;  // the JSON string, unescaped (UTF-8)
+    for (size_t i = at + 8; i < json.size() && json[i] != '"'; i++) {
+        if (json[i] != '\\' || i + 1 >= json.size()) { body += json[i]; continue; }
+        const char e = json[++i];
+        if (e == 'n') body += '\n';
+        else if (e == 'u' && i + 4 < json.size()) {
+            wchar_t c = (wchar_t)strtoul(json.substr(i + 1, 4).c_str(), nullptr, 16);
+            char u8[8];
+            const int n = WideCharToMultiByte(CP_UTF8, 0, &c, 1, u8, sizeof u8, nullptr, nullptr);
+            body.append(u8, n > 0 ? n : 0);
+            i += 4;
+        } else if (e != 'r') body += e == 't' ? ' ' : e;
+    }
+    const int n = MultiByteToWideChar(CP_UTF8, 0, body.data(), (int)body.size(), nullptr, 0);
+    std::wstring md(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, body.data(), (int)body.size(), md.data(), n);
+    // Markdown to plain text: no headings or bold, a dot for each point.
+    std::wstring out, line;
+    md += L'\n';
+    for (wchar_t c : md) {
+        if (c != L'\n') { line += c; continue; }
+        if (line.rfind(L"### Install", 0) == 0) break;
+        if (!line.empty() && line[0] != L'#') {
+            for (size_t b; (b = line.find(L"**")) != std::wstring::npos;) line.erase(b, 2);
+            if (line.rfind(L"- ", 0) == 0) line.replace(0, 2, L"\u2022 ");
+            out += line + L"\n";
+        }
+        line.clear();
+    }
+    while (!out.empty() && out.back() == L'\n') out.pop_back();
+    if (out.size() > 1500) out = out.substr(0, 1500) + L"\u2026";
+    return out;
+}
+
+// A question or a note with VideoBG's icon (no sound), over everything.
+int Ask(const std::wstring& text, UINT buttons) {
+    MSGBOXPARAMSW mb{sizeof mb};
+    mb.hInstance = GetModuleHandleW(nullptr);
+    mb.lpszText = text.c_str();
+    mb.lpszCaption = L"VideoBG";
+    mb.lpszIcon = MAKEINTRESOURCEW(IDI_APP);
+    mb.dwStyle = buttons | MB_USERICON | MB_TOPMOST | MB_SETFOREGROUND;
+    return MessageBoxIndirectW(&mb);
+}
+
+std::atomic<bool> g_busy{false};
+std::wstring g_available, g_asked;  // a newer version that's out; the one already asked about (once per run)
+
+// quiet: the check by itself (on start, then every 3 hours): nothing shows unless there's a new version,
+// and then it asks first.
+void Work(bool quiet) {
     // The latest release: github.com/.../releases/latest points to .../releases/tag/v<version>.
     std::wstring tag;
     {
         Http h;
         if (!h.Get(APP_REPO L"/releases/latest", false)) {
             Log(L"update: no connection, error %lu", h.error);
-            return SetStage(h.Offline() ? UP_OFFLINE : UP_FAILED);
+            if (!quiet) SetStage(h.Offline() ? UP_OFFLINE : UP_FAILED);
+            return;
         }
         const std::wstring where = h.Header(WINHTTP_QUERY_LOCATION);
         const size_t at = where.rfind(L"/tag/v");
         if (at == std::wstring::npos) {
             Log(L"update: no release found (status %lu)", h.Status());
-            return SetStage(UP_FAILED);
+            if (!quiet) SetStage(UP_FAILED);
+            return;
         }
         tag = where.substr(at + 6);
     }
     g_latest = tag;
-    if (!Newer(tag, APP_VERSION)) return SetStage(UP_LATEST);
+    if (!Newer(tag, APP_VERSION)) {
+        if (!quiet) SetStage(UP_LATEST);
+        return;
+    }
+    if (g_available != tag) {
+        g_available = tag;
+        PostMessageW(g_notify, WM_VBG_UPDATE, UP_IDLE, 0);  // the sidebar marks Update
+    }
+    const std::wstring notes = ReleaseNotes(tag);
+    if (quiet) {
+        if (g_asked == tag) return;  // "Not now" holds until VideoBG starts again
+        QUERY_USER_NOTIFICATION_STATE busy;  // a full-screen game, a presentation: the next check asks
+        if (SUCCEEDED(SHQueryUserNotificationState(&busy)) && busy != QUNS_ACCEPTS_NOTIFICATIONS && busy != QUNS_QUIET_TIME) return;
+        g_asked = tag;
+        Log(L"update: %ls is out, asking", tag.c_str());
+        const std::wstring q = L"VideoBG " + tag + L" is out (you have " APP_VERSION L")." +
+                               (notes.empty() ? L"" : L"\n\nWhat's new:\n" + notes) +
+                               L"\n\nUpdate now? VideoBG restarts by itself, and your settings are kept.";
+        if (Ask(q, MB_YESNO) != IDYES) return;
+    }
     Log(L"update: %ls -> %ls", APP_VERSION, tag.c_str());
 
     // Download the zip.
+    g_percent = 0;
     SetStage(UP_DOWNLOADING);
     const std::wstring dir = LocalDataDir() + L"\\update", zip = dir + L"\\VideoBG.zip", out = dir + L"\\files";
     RunHidden(L"cmd.exe /c rd /s /q \"" + dir + L"\"");
@@ -191,19 +277,30 @@ void Work() {
         return SetStage(UP_FAILED);
     }
     if (!PutInPlace(out + L"\\VideoBG", ExeDir())) return SetStage(UP_FAILED);
+    // The new version shows what's new once it's up.
+    const std::wstring note = tag + L"\n" + notes;
+    HANDLE f = CreateFileW((LocalDataDir() + L"\\whatsnew.txt").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD wrote = 0;
+        WriteFile(f, note.data(), (DWORD)(note.size() * sizeof(wchar_t)), &wrote, nullptr);
+        CloseHandle(f);
+    }
     Log(L"update: %ls is in place, restarting", tag.c_str());
     SetStage(UP_RESTART);
 }
 
+void Run(bool quiet) {
+    Work(quiet);
+    g_busy = false;
+}
+
 }  // namespace
 
-void Update_Start(HWND notify) {
-    const int s = g_stage;
-    if (s == UP_CHECKING || s == UP_DOWNLOADING || s == UP_INSTALLING || s == UP_RESTART) return;
+void Update_Start(HWND notify, bool quiet) {
+    if (g_busy.exchange(true)) return;  // already checking (or asking, or updating)
     g_notify = notify;
-    g_percent = 0;
-    g_stage = UP_CHECKING;
-    std::thread(Work).detach();
+    if (!quiet) g_stage = UP_CHECKING;
+    std::thread(Run, quiet).detach();
 }
 
 int Update_Stage(int* percent, std::wstring* latest) {
@@ -211,6 +308,8 @@ int Update_Stage(int* percent, std::wstring* latest) {
     if (latest && g_stage >= UP_LATEST) *latest = g_latest;
     return g_stage;
 }
+
+bool Update_Available() { return !g_busy && !g_available.empty(); }
 
 void Update_Done() {
     if (g_stage != UP_RESTART) g_stage = UP_IDLE;
@@ -227,11 +326,26 @@ void Update_Relaunch(bool wallpaperOn) {
     }
 }
 
-// After an update: the old exe goes once its processes have ended, and so do the downloaded files.
+// After an update: what's new shows, and the old exe goes once its processes have ended, and so do
+// the downloaded files.
 void Update_CleanUp() {
     std::thread([] {
         const std::wstring old = ExeDir() + L"\\VideoBG.old.exe";
         for (int i = 0; i < 40 && GetFileAttributesW(old.c_str()) != INVALID_FILE_ATTRIBUTES && !DeleteFileW(old.c_str()); i++) Sleep(250);
         RunHidden(L"cmd.exe /c rd /s /q \"" + LocalDataDir() + L"\\update\"");
+    }).detach();
+    const std::wstring file = LocalDataDir() + L"\\whatsnew.txt";
+    HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    std::wstring note(GetFileSize(f, nullptr) / sizeof(wchar_t), L'\0');
+    DWORD got = 0;
+    ReadFile(f, note.data(), (DWORD)(note.size() * sizeof(wchar_t)), &got, nullptr);
+    CloseHandle(f);
+    DeleteFileW(file.c_str());
+    const size_t nl = note.find(L'\n');
+    if (nl == std::wstring::npos || note.substr(0, nl) != APP_VERSION) return;  // not for this version
+    const std::wstring notes = note.substr(nl + 1);
+    std::thread([notes] {
+        Ask(L"VideoBG is updated to " APP_VERSION L"." + (notes.empty() ? L"" : L"\n\nWhat's new:\n" + notes), MB_OK);
     }).detach();
 }

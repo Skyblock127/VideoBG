@@ -174,7 +174,8 @@ If a video won't play
 
 Update (no need to uninstall first)
   Click "Update" at the bottom left of the settings window (classic look):
-  VideoBG downloads the new version, puts it in place and restarts.
+  VideoBG downloads the new version, puts it in place and restarts. It also
+  looks by itself when it starts (and every few hours) and asks first.
   Or by hand: tray icon > Exit, then extract the new zip to the same place as before:
   the folder that holds your VideoBG folder, for example C:\Tools (choose
   "Replace the files"). Then double-click Install.cmd again. Your settings

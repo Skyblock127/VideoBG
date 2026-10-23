@@ -318,6 +318,7 @@ struct UI {
     int screenW = 1920, screenH = 1080;
     int playW = 1920, playH = 1080, playCount = 1;
     float songScroll = 0, songTarget = 0, songMax = 0;  // the playlist: scrolled this far, gliding there, at most
+    bool songJump = false;     // the Music page was just opened: the list starts at the song playing
     D2D1_RECT_F songView{};    // where the playlist's rows show
     // A press on a song: a click plays it, a drag scrolls the list, a drag by its grip moves the song.
     int songPress = -1;        // the song (playlist index)
@@ -1191,7 +1192,9 @@ void PaintSidebar() {
     Text(version, vr, u.fSmall, vhot ? t.accentHover : t.text2);
     Line(x, vr.bottom - 1, x + vw, vr.bottom - 1, vhot ? t.accentHover : t.text3);
     AddHit(ID_REPO, K_BUTTON, vr);
-    Link(ID_UPDATE, R(right - TextWidth(L"Update", u.fSmall) - 2, sc.bottom - 28, right, sc.bottom - 10), L"Update");
+    const float uw = TextWidth(L"Update", u.fSmall);
+    Link(ID_UPDATE, R(right - uw - 2, sc.bottom - 28, right, sc.bottom - 10), L"Update");
+    if (Update_Available()) Circle(right - uw - 9, sc.bottom - 19, 3, t.accent);  // a new version is out
 }
 
 // Info rows under a preview: icon + message + optional link on the right.
@@ -1511,6 +1514,11 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
     const int current = ms.track >= 0 ? ms.track : on ? -1 : std::clamp(g_settings.musicTrack, -1, (int)n - 1);
     const float rowH = kSongRowH, viewH = view.bottom - view.top;
     u.songMax = std::max(0.f, n * rowH - viewH);
+    if (u.songJump) {  // straight to the song playing, in the middle of the list
+        u.songJump = false;
+        for (size_t p = 0; p < order.size(); p++)
+            if (order[p] == current) u.songScroll = u.songTarget = p * rowH - (viewH - rowH) / 2;
+    }
     u.songScroll = std::clamp(u.songScroll, 0.f, u.songMax);
     u.songTarget = std::clamp(u.songTarget, 0.f, u.songMax);
     // A song being moved leaves a gap where it would land; it follows the cursor up and down, inside the list.
@@ -5289,6 +5297,7 @@ void OnClick(int id) {
     if (id >= ID_NAV && id < ID_NAV + (int)NAV_COUNT) {
         StopRecording();
         u.picking = false;
+        if (id - ID_NAV == NAV_SOUND && u.nav != NAV_SOUND) u.songJump = true;
         if (id - ID_NAV == NAV_CLOCK) ShowClockPage();
         else u.nav = id - ID_NAV;
         InvalidateRect(u.hwnd, nullptr, FALSE);

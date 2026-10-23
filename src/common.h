@@ -330,8 +330,10 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker = false, int wal
 
 // update.cpp: the newest release from GitHub, in place of this copy.
 enum { UP_IDLE, UP_CHECKING, UP_OFFLINE, UP_FAILED, UP_LATEST, UP_DOWNLOADING, UP_INSTALLING, UP_RESTART };
-void Update_Start(HWND notify);  // checks, then downloads and puts it in place; notify gets WM_VBG_UPDATE
+void Update_Start(HWND notify, bool quiet);  // checks, then downloads and puts it in place; notify gets WM_VBG_UPDATE
+                                             // quiet: shows nothing unless there's a new version, then asks first
 int Update_Stage(int* percent, std::wstring* latest);
+bool Update_Available();          // a newer version is out (found by a check)
 void Update_Done();               // an answer (offline, up to date, failed) has been shown long enough
 void Update_Relaunch(bool wallpaperOn);  // starts the new exe (after this one has let go of its mutex)
 void Update_CleanUp();            // the new exe: deletes the old one and the download

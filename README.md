@@ -56,7 +56,8 @@ VideoBG then lives in the tray. Click its icon for the settings; right-click it 
 ## Update to a new version
 
 Click **Update** at the bottom left of the settings window (classic look). VideoBG checks GitHub,
-then downloads the new version, puts it in place and restarts; your settings are kept.
+then downloads the new version, puts it in place and restarts; your settings are kept. VideoBG
+also looks for a new version each time it starts (and every few hours) and asks before updating.
 
 Or by hand (no need to uninstall):
 

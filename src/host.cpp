@@ -18,7 +18,7 @@ Settings g_settings;
 
 namespace {
 
-constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4, TIMER_UPDATE = 5;
+constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4, TIMER_UPDATE = 5, TIMER_CHECK = 6;
 constexpr int HOTKEY_ID = 1, HOTKEY_MUSIC = 2;
 enum { CMD_TOGGLE = 100, CMD_SETTINGS, CMD_EXIT, CMD_PICKER, CMD_LOOK };
 
@@ -860,6 +860,10 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (w == TIMER_CLOCK) { KillTimer(h, TIMER_CLOCK); SyncClock(true); }
             else if (w == TIMER_STOP) FinishPendingStop();
             else if (w == TIMER_UPDATE) { KillTimer(h, TIMER_UPDATE); Update_Done(); UI_Refresh(); }
+            else if (w == TIMER_CHECK) {  // a look for a new version, then again every 3 hours
+                SetTimer(h, TIMER_CHECK, 3 * 3600 * 1000, nullptr);
+                Update_Start(h, true);
+            }
             return 0;
         case WM_VBG_UPDATE:
             if (w == UP_RESTART) {  // the new version is in place: close as usual, then main() starts it
@@ -940,7 +944,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 bool Host_IsOn() { return g_on && !g_batteryOff; }
 
-void Host_Update() { Update_Start(g_wnd); }
+void Host_Update() { Update_Start(g_wnd, false); }
 
 void Host_SetOn(bool on) {
     Log(L"tray: wallpaper turned %ls", on ? L"on" : L"off");
@@ -1395,6 +1399,7 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker, int wallpaperOn
         Modern_Open(0);
     }
     SetTimer(g_wnd, TIMER_TRIM, 3000, nullptr);
+    SetTimer(g_wnd, TIMER_CHECK, 15000, nullptr);  // a new version? (once VideoBG has settled in)
 
     MSG msg;
     for (;;) {

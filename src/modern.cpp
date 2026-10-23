@@ -237,6 +237,7 @@ struct Picker {
     float seekFrac = -1;              // while its place is dragged
     D2D1_RECT_F songView{};           // the playlist
     float songScroll = 0, songTarget = 0, songMax = 0;  // scrolled this far, gliding there, at most
+    bool songJump = false;  // the Music screen was just opened: the list starts at the song playing
     int songDrag = -1, songIns = 0;   // a song being moved, and where it would land
     float songGrab = 0, songY = 0;
     double songEdgeAt = 0;            // moving one: since when it's been near the list's edge
@@ -1651,6 +1652,11 @@ void DrawSongs(const D2D1_RECT_F& view, float a) {
     P.songView = view;
     P.hits.push_back({ID_MU_LIST, view});
     P.songMax = std::max(0.f, n * kSongRow - (view.bottom - view.top));
+    if (P.songJump) {  // straight to the song playing, in the middle of the list
+        P.songJump = false;
+        for (size_t p = 0; p < order.size(); p++)
+            if (order[p] == current) P.songScroll = P.songTarget = p * kSongRow - (view.bottom - view.top - kSongRow) / 2;
+    }
     P.songScroll = std::clamp(P.songScroll, 0.f, P.songMax);
     P.songTarget = std::clamp(P.songTarget, 0.f, P.songMax);
     std::vector<int> shown = order;
@@ -2837,6 +2843,7 @@ void StartMusicEdit() {
     P.playerYWas = g_settings.playerY;
     if (card < 0 || !P.cards[card].failed) AskPreview(P.editPlay, card >= 0 ? P.cards[card].info.time : 0);
     P.songDrag = -1;
+    P.songJump = true;
     P.gridFor = P.picking = 0;
     P.panelHidden = false;
     P.panelSide = g_panelSide;
