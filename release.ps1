@@ -26,7 +26,7 @@ Download the zip below. It holds a **VideoBG** folder.
 - **Updating from 2.1.2 or later:** click **Update** at the bottom left of the settings window (classic look); VideoBG does the rest.
 - **Updating from an older version:** right-click the VideoBG tray icon and choose **Exit**. Extract the zip to the same place as before (the folder that holds your VideoBG folder, for example `C:\Tools`) and choose **Replace the files**, then run **Install.cmd** again. No need to uninstall; your settings are kept.
 '@
-$text = if ($Notes) { (Get-Content -Raw $Notes).TrimEnd() + "`r`n" } else { '' }
+$text = if ($Notes) { (Get-Content -Raw -Encoding UTF8 $Notes).TrimEnd() + "`r`n" } else { '' }
 $notesFile = "$root\build\release-notes.md"
 [IO.File]::WriteAllText($notesFile, $text + $howTo)  # UTF-8 without a BOM
 $gh += @('--notes-file', $notesFile)
