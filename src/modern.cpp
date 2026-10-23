@@ -97,6 +97,9 @@ struct Gfx {
 // ---------------------------------------------------------------------------------------
 // State
 
+// What the keyboard is on in the Music screen (Tab goes round them in this order).
+enum { FOC_NONE, FOC_STYLE, FOC_SONGS, FOC_SEARCH, FOC_SHUFFLE, FOC_REPEAT, FOC_ADD, FOC_PICK, FOC_COUNT };
+
 struct Card {
     std::wstring path, title, meta;  // the video (the original of its versions); its name; "MP4 \u00B7 its folder"
     std::wstring play;               // the version it plays: the wallpaper's, if it's one of them, else the original
@@ -239,6 +242,8 @@ struct Picker {
     D2D1_RECT_F songView{};           // the playlist
     float songScroll = 0, songTarget = 0, songMax = 0;  // scrolled this far, gliding there, at most
     bool songJump = false;  // the Music screen was just opened: the list starts at the song playing
+    int kf = FOC_NONE, kfSong = -1;  // the keyboard's focus there (FOC_*), and the song it's on
+    int kfLast = FOC_NONE, kfLastSong = -1;  // where it was before it let go: Tab picks up there
     int songDrag = -1, songIns = 0;   // a song being moved, and where it would land
     float songGrab = 0, songY = 0;
     double songEdgeAt = 0;            // moving one: since when it's been near the list's edge
@@ -1311,8 +1316,30 @@ void SliderCtl(int id, const D2D1_RECT_F& r, float frac, const std::wstring& val
 }
 
 // A round icon button (no background until pointed at).
+// The control the Music screen's keyboard focus is on (ID_NONE: the player, the songs or nothing).
+int FocusId() {
+    switch (P.mode == 3 ? P.kf : FOC_NONE) {
+        case FOC_SEARCH: return ID_MU_SEARCH;
+        case FOC_SHUFFLE: return ID_MU_SHUFFLE;
+        case FOC_REPEAT: return ID_MU_REPEAT;
+        case FOC_ADD: return ID_MU_ADD;
+        case FOC_PICK: return ID_MU_PICK;
+    }
+    return ID_NONE;
+}
+
+// The keyboard's focus lets go (Enter, Esc, a click), remembering where it was.
+void LetGo() {
+    if (P.kf) {
+        P.kfLast = P.kf;
+        P.kfLastSong = P.kfSong;
+    }
+    P.kf = FOC_NONE;
+}
+
 void IconBtn(int id, float cx, float cy, float r, const wchar_t* icon, float a, bool on = true, D2D1_COLOR_F ink = D2D1::ColorF(1, 1, 1)) {
     if (on && P.hot == id) Circle(cx, cy, r, Col(0xFFFFFF, (P.press == id ? 0.14f : 0.09f) * a));
+    if (on && FocusId() == id) Ring(cx, cy, r + 2, Col(0xFFFFFF, 0.85f * a), 1.5f);
     Text(icon, R(cx - r, cy - r, cx + r, cy + r), G.fIcon, ink * ((on ? 0.92f : 0.3f) * a), DWRITE_TEXT_ALIGNMENT_CENTER);
     if (on) P.hits.push_back({id, R(cx - r, cy - r, cx + r, cy + r)});
 }
@@ -1681,6 +1708,8 @@ void DrawSongs(const D2D1_RECT_F& view, float a) {
             Fill(r, Col(0xFFFFFF, 0.07f * a), 7);
         }
         if (P.searchOn && song == P.searchHit && !lifted) Stroke(r, g_accent * a, 7, 1);  // what the search found
+        if (P.kf == FOC_SONGS && song == P.kfSong && !lifted) Stroke(R(r.left + 0.75f, r.top + 0.75f, r.right - 0.75f, r.bottom - 0.75f),
+                                                                  Col(0xFFFFFF, 0.85f * a), 7, 1.5f);  // the keyboard's
         if (cur) Text(L"\uE767", R(r.left + 4, r.top, r.left + 30, r.bottom), G.fSmallIcon, g_accent * a, DWRITE_TEXT_ALIGNMENT_CENTER);
         else Text(std::to_wstring(place + 1), R(r.left + 4, r.top, r.left + 30, r.bottom), G.fSmall, Col(0xFFFFFF, 0.4f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
         Text(FileTitle(Host_Songs()[song]), R(r.left + 34, r.top, r.right - (hot ? 62 : 34), r.bottom), cur ? G.fBold : G.fBody,
@@ -1857,6 +1886,7 @@ void DrawMusicEditPanel(float a) {
         const int k = std::clamp(style, 0, (int)styles.size());
         const D2D1_RECT_F r = ctl(yy);
         Fill(r, Col(0xFFFFFF, 0.06f * a), 8);
+        if (P.kf == FOC_STYLE) Stroke(R(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2), Col(0xFFFFFF, 0.85f * a), 10, 1.5f);  // left / right step
         Text(k ? styles[k - 1] : L"Off", R(r.left + 26, r.top, r.right - 26, r.bottom), G.fBody, Col(0xFFFFFF, 0.9f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
         IconBtn(ID_MU_STYLE_PREV, r.left + 14, (r.top + r.bottom) / 2, 12, L"\uE76B", a);
         IconBtn(ID_MU_STYLE_NEXT, r.right - 14, (r.top + r.bottom) / 2, 12, L"\uE76C", a);
@@ -1959,6 +1989,10 @@ void DrawMusicEditPanel(float a) {
             P.hits.push_back({ID_MU_ADD, ar});
         }
         Text(pick, pr, G.fBody, P.hot == ID_MU_PICK ? Col(0xFFFFFF, a) : g_accent * a);
+        if (FocusId() == ID_MU_ADD || FocusId() == ID_MU_PICK) {
+            const D2D1_RECT_F f = FocusId() == ID_MU_ADD ? ar : pr;
+            Stroke(R(f.left - 7, f.top - 2, f.right + 7, f.bottom + 2), Col(0xFFFFFF, 0.85f * a), 7, 1.5f);
+        }
         P.hits.push_back({ID_MU_PICK, pr});
         if (n) {
             const int rows = std::max(1, (int)((fy - 6 - yy) / kSongRow));
@@ -2031,7 +2065,7 @@ void DrawTopBar(float a) {
         tips = {L"Drag it where you want it", L"Arrow keys nudge it", L"Esc goes back"};
     } else if (P.mode == 3) {
         title = L"Music";
-        tips = {L"The player works here as on your desktop", L"Esc goes back"};
+        tips = {L"The player works here as on your desktop", L"\u2191 \u2193 songs", L"Tab the controls", L"Esc goes back"};
     } else if (P.mode == 2) {
         title = L"Crop";
         tips = {L"Drag to move it", L"Scroll to zoom", L"Esc goes back"};
@@ -2845,6 +2879,7 @@ void StartMusicEdit() {
     if (card < 0 || !P.cards[card].failed) AskPreview(P.editPlay, card >= 0 ? P.cards[card].info.time : 0);
     P.songDrag = -1;
     P.songJump = true;
+    P.kf = P.kfLast = FOC_NONE;
     P.gridFor = P.picking = 0;
     P.panelHidden = false;
     P.panelSide = g_panelSide;
@@ -3457,6 +3492,7 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
         case WM_LBUTTONDOWN:
         case WM_LBUTTONDBLCLK: {
             SetCapture(P.hwnd);
+            LetGo();  // a click lets go of the keyboard's focus
             P.press = HitControl(x, y);
             if ((P.menu || P.music || P.actions) && P.press == ID_NONE) {  // a click outside a dropdown closes it
                 P.menu = P.music = false;
@@ -3715,6 +3751,128 @@ void OnWheel(int delta, LPARAM l) {
     }
 }
 
+// The song playing (or the one that plays next), -1 none.
+int MusicCurrent() {
+    const MusicState ms = Host_MusicState();
+    return ms.track >= 0 ? ms.track : std::clamp(g_settings.musicTrack, -1, (int)Host_Songs().size() - 1);
+}
+
+// The list glides just far enough to show place p.
+void ShowSongAt(int p) {
+    const float viewH = P.songView.bottom - P.songView.top, top = p * kSongRow;
+    if (top < P.songTarget) P.songTarget = top;
+    else if (top + kSongRow > P.songTarget + viewH) P.songTarget = top + kSongRow - viewH;
+}
+
+// The focus onto the song `step` places from `from` in the play order (from a song not in it: the
+// first or the last).
+void FocusSong(int from, int step) {
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
+    if (order.empty()) return;
+    int p = (int)(std::find(order.begin(), order.end(), from) - order.begin());
+    if (p >= (int)order.size()) p = step > 0 ? -1 : (int)order.size();
+    p = std::clamp(p + step, 0, (int)order.size() - 1);
+    P.kf = FOC_SONGS;
+    P.kfSong = order[p];
+    ShowSongAt(p);
+}
+
+bool FocusUsable(int kf) {
+    const int n = g_settings.sound == 2 ? (int)Host_Songs().size() : 0;
+    switch (kf) {
+        case FOC_STYLE: return true;
+        case FOC_SONGS:
+        case FOC_SEARCH:
+        case FOC_REPEAT:
+        case FOC_ADD: return n > 0;
+        case FOC_SHUFFLE: return n > 1;
+        case FOC_PICK: return g_settings.sound == 2;
+    }
+    return false;
+}
+
+// The Music screen's keys. Tab (Shift+Tab back) goes round the player's style, the songs, the
+// search, shuffle, repeat and adding or choosing songs (after the focus let go: from where it was);
+// the colours and the rest are for the mouse. Up and down move over the songs (from the one playing)
+// without playing them; Alt with them moves the song. Left / right step the style when it has the
+// focus. Enter uses what has the focus and lets go of it (with nothing focused, Enter is Done); Space
+// uses it and keeps it; Esc lets go. Shift+N / P (or Shift+right / left): the next or previous song,
+// whatever has the focus. True if the key was used.
+bool MusicKey(WPARAM vk) {
+    if (P.picking || P.gridFor) return false;
+    const bool shift = GetKeyState(VK_SHIFT) < 0, alt = GetKeyState(VK_MENU) < 0;
+    const int n = g_settings.sound == 2 ? (int)Host_Songs().size() : 0;
+    if (!FocusUsable(P.kf)) P.kf = FOC_NONE;  // (the songs or the player went)
+    if (P.kf == FOC_SONGS && (P.kfSong < 0 || P.kfSong >= n)) P.kf = FOC_NONE;
+    if (vk == VK_TAB) {
+        if (!P.kf && FocusUsable(P.kfLast)) {  // back where it let go
+            P.kf = P.kfLast;
+            if (P.kf == FOC_SONGS) FocusSong(P.kfLastSong >= 0 && P.kfLastSong < n ? P.kfLastSong : MusicCurrent(), 0);
+            return true;
+        }
+        int k = P.kf;
+        for (int i = 0; i < FOC_COUNT; i++) {
+            k = shift ? (k <= 1 ? FOC_COUNT - 1 : k - 1) : (k >= FOC_COUNT - 1 ? 1 : k + 1);
+            if (FocusUsable(k)) break;
+        }
+        if (FocusUsable(k)) {
+            P.kf = k;
+            if (k == FOC_SONGS) FocusSong(MusicCurrent(), 0);
+        }
+        return true;
+    }
+    if (vk == VK_ESCAPE && P.kf) {
+        LetGo();
+        return true;
+    }
+    if (shift && n && (vk == 'N' || vk == 'P' || vk == VK_RIGHT || vk == VK_LEFT)) {
+        Host_SkipMusic(vk == 'N' || vk == VK_RIGHT);
+        return true;
+    }
+    if ((vk == VK_UP || vk == VK_DOWN) && n) {
+        const int step = vk == VK_DOWN ? 1 : -1;
+        if (P.kf == FOC_SONGS && alt) {  // the song moves up or down the list
+            const std::vector<int> order = MusicOrderFor(g_settings, n);
+            const int p = (int)(std::find(order.begin(), order.end(), P.kfSong) - order.begin());
+            if (p < n && p + step >= 0 && p + step < n) {
+                Host_PlaceSong(n, P.kfSong, p + step);
+                ShowSongAt(p + step);
+                UI_Refresh();
+            }
+        } else if (!alt) {
+            FocusSong(P.kf == FOC_SONGS ? P.kfSong : MusicCurrent(), step);
+        }
+        return true;
+    }
+    if (P.kf == FOC_STYLE && (vk == VK_LEFT || vk == VK_RIGHT)) {
+        Command(vk == VK_RIGHT ? ID_MU_STYLE_NEXT : ID_MU_STYLE_PREV);
+        return true;
+    }
+    if ((vk == VK_RETURN || vk == VK_SPACE) && P.kf) {
+        const int kf = P.kf;
+        if (vk == VK_RETURN) LetGo();
+        switch (kf) {
+            case FOC_SONGS:  // it plays (the one playing: from the start)
+                Host_MusicCommand(MC_PLAY_INDEX, P.kfSong);
+                Host_PlayMusic(true);
+                break;
+            case FOC_SEARCH:
+                LetGo();  // the letters go to the search
+                Command(ID_MU_SEARCH);
+                break;
+            case FOC_SHUFFLE: Command(ID_MU_SHUFFLE); break;
+            case FOC_REPEAT: Command(ID_MU_REPEAT); break;
+            case FOC_ADD:
+            case FOC_PICK:
+                LetGo();
+                Command(kf == FOC_ADD ? ID_MU_ADD : ID_MU_PICK);
+                break;
+        }
+        return true;
+    }
+    return P.kf != FOC_NONE && (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_SPACE);  // (nothing else to do with them)
+}
+
 void OnKey(WPARAM vk) {
     if (P.phase != BROWSING && P.phase != OPENING) return;  // choosing or closing: nearly done
     if (P.mode == 3 && P.searchOn && !P.picking) {  // the letters come as WM_CHAR
@@ -3746,6 +3904,10 @@ void OnKey(WPARAM vk) {
         return;
     }
     if (P.mode == 3) {
+        if (MusicKey(vk)) {
+            P.dirty = true;
+            return;
+        }
         if (vk == VK_ESCAPE && P.gridFor) P.gridFor = 0;
         else if (vk == VK_RETURN) EndMusicEdit(true);
         else if (vk == VK_ESCAPE || (vk == 'M' && GetKeyState(VK_CONTROL) >= 0 && GetKeyState(VK_MENU) >= 0)) EndMusicEdit(false);
