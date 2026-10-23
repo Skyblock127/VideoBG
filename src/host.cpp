@@ -1353,6 +1353,11 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker, int wallpaperOn
         SaveSettings(g_settings);
         Log(L"tray: started with Windows, so the music stays paused");
     }
+    if (!openSettings && !openPicker && g_settings.sound == 1 && !g_settings.videoMuted) {  // and the video's sound starts muted
+        g_settings.videoMuted = true;  // (the video plays; the sound shortcut or Unmute brings the sound back)
+        SaveSettings(g_settings);
+        Log(L"tray: started with Windows, so the video's sound starts muted");
+    }
 
     g_job = CreateJobObjectW(nullptr, nullptr);
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION jl{};

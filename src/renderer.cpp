@@ -1250,7 +1250,13 @@ bool FindDesktop() {
 LRESULT CALLBACK WallProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
         case WM_ERASEBKGND: return 1;
-        case WM_PAINT: ValidateRect(h, nullptr); return 0;
+        case WM_PAINT: {  // (BeginPaint, not ValidateRect: before its first frame that leaves it asking again
+                          // forever, and the WM_PAINTs starve the timers: the cover check, the decoder's release)
+            PAINTSTRUCT ps;
+            BeginPaint(h, &ps);
+            EndPaint(h, &ps);
+            return 0;
+        }
         case WM_NCHITTEST: return HTTRANSPARENT;
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
         case WM_DESTROY:
