@@ -2467,8 +2467,9 @@ void PaintColorDialog() {
     Text(Fmt(L"RGB  %d, %d, %d", cr, cg, cb), R(rx, iy, rx + 150, iy + 20), u.fSmall, t.text2);
     D2D1_RECT_F ch = R(rx + 152, iy + 1, rx + rw, iy + 19);
     clip = PushRounded(ch, 4);
-    const std::wstring& before = dlg.target == 0 ? dlg.beforeText : dlg.beforeGlow;
-    Fill(R(ch.left, ch.top, (ch.left + ch.right) / 2, ch.bottom), LookColor(before.empty() ? dlg.beforeText : before));
+    const std::wstring& before = dlg.target == 0 || dlg.target == 2 ? dlg.beforeText : dlg.beforeGlow;  // (2, 3: the player's colour, its body)
+    Fill(R(ch.left, ch.top, (ch.left + ch.right) / 2, ch.bottom),
+         LookColor(!before.empty() ? before : dlg.target >= 2 ? PdDefault(dlg.target) : dlg.beforeText));
     Fill(R((ch.left + ch.right) / 2, ch.top, ch.right, ch.bottom), cur);
     PopRounded(clip);
     Stroke(ch, t.ctrlStroke, 4);
@@ -4809,6 +4810,23 @@ bool StepSlider(int dir) {
             LiveClock(true);
             break;
         }
+        case ID_PD_OPACITY:
+        case ID_PD_SIZE:
+        case ID_PD_CORNERS:
+        case ID_PD_ROTATE: {  // the music player's look: a percent, 5%, a pixel or a degree a step
+            const int style = g_settings.musicPlayer;
+            if (style <= 0 || (u.keySlider == ID_PD_CORNERS && !Player_HasCorners(style))) return false;
+            Settings::PlayerLook& pl = PdLook();
+            if (u.keySlider == ID_PD_OPACITY) pl.opacity = std::clamp(roundf(pl.opacity * 100 + dir) / 100, 0.2f, 1.0f);
+            if (u.keySlider == ID_PD_SIZE) pl.size = std::clamp(roundf(pl.size * 20 + dir) / 20, 0.7f, 1.5f);
+            if (u.keySlider == ID_PD_CORNERS) pl.corners = std::clamp(roundf(Player_Corners(style)) + dir, 0.f, floorf(Player_CornersMax(style)));
+            if (u.keySlider == ID_PD_ROTATE) {
+                const float r = roundf(pl.rotate) + dir;
+                pl.rotate = r > 180 ? r - 360 : r <= -180 ? r + 360 : r;
+            }
+            Player_Update();
+            break;
+        }
         default: return false;
     }
     u.keyStepped = true;
@@ -4825,6 +4843,10 @@ void FinishStep() {
             Host_FrameChanged();
             SetTimer(u.hwnd, TIMER_HOLD, 1000, nullptr);
             break;
+        case ID_PD_OPACITY:
+        case ID_PD_SIZE:
+        case ID_PD_CORNERS:
+        case ID_PD_ROTATE: SaveSettings(g_settings); break;
         default: ClockEdited();
     }
 }
@@ -6384,12 +6406,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 while (PeekMessageW(&msg, h, WM_UI_WALL, WM_UI_WALL, PM_REMOVE)) delete (WallpaperInfo*)msg.lParam;
             }
             CloseVersions();
-            if (dlg.open) {  // closed with the colour dialog open: as Cancel
-                EditedLook()->color = dlg.beforeText;
-                EditedLook()->glowColor = dlg.beforeGlow;
-                dlg = ColorDialog{};
-                Host_SettingsChanged();
-            }
+            if (dlg.open) CloseColorDialog(false);  // closed with the colour dialog open: as Cancel (the clock's or the player's)
+            dlg = ColorDialog{};
+            ClosePlayerDialog(false);  // and the player's dialog: its look as it was (only Done keeps it)
             PresetEditEnd(false);  // closed while editing a preset: as Cancel
             prs = PresetUI{};
             CloseFeedback();  // what was typed is kept for next time

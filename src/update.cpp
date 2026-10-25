@@ -13,6 +13,7 @@ namespace {
 
 std::atomic<int> g_stage{UP_IDLE}, g_percent{0};
 std::wstring g_latest;  // the newest version's number, once known
+SRWLOCK g_lock = SRWLOCK_INIT;  // g_latest and g_available: written by the update thread, read by the sidebar
 HWND g_notify;          // told (WM_VBG_UPDATE) whenever the stage changes
 
 void SetStage(int stage) {
@@ -208,13 +209,17 @@ void Work(bool quiet) {
         }
         tag = where.substr(at + 6);
     }
+    AcquireSRWLockExclusive(&g_lock);
     g_latest = tag;
+    ReleaseSRWLockExclusive(&g_lock);
     if (!Newer(tag, APP_VERSION)) {
         if (!quiet) SetStage(UP_LATEST);
         return;
     }
     if (g_available != tag) {
+        AcquireSRWLockExclusive(&g_lock);
         g_available = tag;
+        ReleaseSRWLockExclusive(&g_lock);
         PostMessageW(g_notify, WM_VBG_UPDATE, UP_IDLE, 0);  // the sidebar marks Update
     }
     const std::wstring notes = ReleaseNotes(tag);
@@ -305,11 +310,20 @@ void Update_Start(HWND notify, bool quiet) {
 
 int Update_Stage(int* percent, std::wstring* latest) {
     if (percent) *percent = g_percent;
-    if (latest && g_stage >= UP_LATEST) *latest = g_latest;
+    if (latest && g_stage >= UP_LATEST) {
+        AcquireSRWLockShared(&g_lock);
+        *latest = g_latest;
+        ReleaseSRWLockShared(&g_lock);
+    }
     return g_stage;
 }
 
-bool Update_Available() { return !g_busy && !g_available.empty(); }
+bool Update_Available() {
+    AcquireSRWLockShared(&g_lock);
+    const bool out = !g_available.empty();
+    ReleaseSRWLockShared(&g_lock);
+    return out && !g_busy;
+}
 
 void Update_Done() {
     if (g_stage != UP_RESTART) g_stage = UP_IDLE;

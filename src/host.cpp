@@ -42,7 +42,8 @@ UINT g_taskbarCreated;
 NOTIFYICONDATAW g_nid;
 HICON g_icoOn, g_icoOff;
 ULONGLONG g_crashes[3];
-HPOWERNOTIFY g_power;
+HPOWERNOTIFY g_power, g_powerDisplay;
+bool g_displayOff;  // the screen is off (for the still wallpaper: the renderer reports it while it runs)
 int g_track = -1;       // playlist index the renderer is playing
 MusicState g_music;     // what the renderer last said about the music
 bool g_exiting;         // quitting / logging off
@@ -890,6 +891,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     g_override = false;
                     ApplyBatteryPolicy();
                 }
+                if (ps->PowerSetting == GUID_CONSOLE_DISPLAY_STATE && ps->DataLength >= sizeof(DWORD)) g_displayOff = *(DWORD*)ps->Data == 0;
             }
             return TRUE;
         case WM_QUERYENDSESSION: return TRUE;
@@ -1028,6 +1030,7 @@ void Host_SetVideo(const std::wstring& path, const Crop* keepCrop) {
     // Its version is remembered for its original (both looks' lists play it from now on).
     const std::wstring orig = LightCopyOriginalPath(path);
     SetVideoVersion(orig.empty() ? path : orig, orig.empty() ? L"" : path);
+    LoadWallpapers(path);  // on both looks' list of wallpapers from now on, however it was chosen
     g_failedVideo.clear();
     g_failText = FaultText{};
     LoadVideoProfile(g_settings);  // its crop and clock look, wherever the file lives now
@@ -1102,6 +1105,17 @@ void Host_PreviewSize(UINT w, UINT h) {
 
 void Host_PreviewCrop(const Crop* c) {
     if (g_ctl) PostMessageW(g_ctl, WM_VBG_PREVIEW_CROP, c ? (c->stretch ? 2 : 1) : 0, c ? PackCrop(*c) : 0);
+}
+
+// Nobody can see the desktop: covered, locked or the screen off. The renderer tells while it runs;
+// with the still wallpaper, VideoBG looks for itself (not covered: the still one costs nothing there).
+bool Host_DesktopUnseen() {
+    if (g_proc) return (g_rmask & (PR_COVERED | PR_LOCKED | PR_DISPLAY_OFF)) != 0;
+    if (g_displayOff) return true;
+    HDESK d = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);  // locked: the input desktop isn't ours to open
+    if (!d) return true;
+    CloseDesktop(d);
+    return false;
 }
 
 RendererState Host_RendererState(LPARAM* mask) {
@@ -1389,6 +1403,7 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker, int wallpaperOn
     SYSTEM_POWER_STATUS ps{};
     if (GetSystemPowerStatus(&ps)) g_onBattery = ps.ACLineStatus == 0;
     g_power = RegisterPowerSettingNotification(g_wnd, &GUID_ACDC_POWER_SOURCE, DEVICE_NOTIFY_WINDOW_HANDLE);
+    g_powerDisplay = RegisterPowerSettingNotification(g_wnd, &GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
 
     g_on = wallpaperOn >= 0 ? wallpaperOn == 1 : g_settings.launch == 0 || (g_settings.launch == 1 && g_settings.lastOn);
     if (wallpaperOn >= 0) Update_CleanUp();
@@ -1429,6 +1444,7 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker, int wallpaperOn
         if (quit) break;
     }
     if (g_power) UnregisterPowerSettingNotification(g_power);
+    if (g_powerDisplay) UnregisterPowerSettingNotification(g_powerDisplay);
     CloseHandle(g_job);
     CoUninitialize();
     return 0;

@@ -85,7 +85,7 @@ brings up your wallpapers in the modern look.
 | **Video** | **Choose video**, or pick from **Your wallpapers**. **Crop** it, pick the lock screen frame with the **Preview** slider, and make lighter **Versions**. |
 | **Playback** | Speed, a frame-rate cap and which displays to use. On laptops with two graphics chips, **iGPU** keeps the video's frames in your RAM and **dGPU** in its own memory (more power). **Power saving**: pause when apps cover the desktop, and what to do on battery. |
 | **Clock** | Drag the clock on the preview to place it, and turn it with the handle above it. Pick its style, colours (with an eyedropper), size, opacity, glow, date, language and 12/24-hour time. Set it for the video wallpaper and the still one, or give one video its own clock. **Presets** keep up to 5 looks. |
-| **Music** | Nothing, the video's sound, or **My music**: play/pause, seek, previous/next, shuffle and repeat, and a playlist (click **Playlist** to find the song playing; search it, drag songs to reorder, **×** to remove; **Add songs** or **Choose songs**). **Player** puts a music player on your desktop and sets its style, colours, opacity, size, corners and angle; **Done** keeps them. On the desktop its buttons, volume and song position work, and three quick clicks turn it off. |
+| **Music** | Nothing, the video's sound, or **My music**: play/pause, seek, previous/next, shuffle and repeat, and a playlist (click **Playlist** to find the song playing; search it, drag songs to reorder, **×** to remove; **Add songs** or **Choose songs**). **Player** puts a music player on your desktop and sets its style, colours, opacity, size, corners and angle; **Done** keeps them. On the desktop its buttons, volume and song position work. |
 | **Settings** | The hotkey and the **pause / mute sound** shortcut (Pause/Break by default; works in games), whether the wallpaper starts on, your data folders, and **Feedback** (an idea or a problem report, with up to 3 pictures; no account needed). |
 
 ### Modern look
@@ -110,8 +110,10 @@ While open, the modern look uses about 170 MB of memory (RAM and graphics memory
 about 45 MB for the classic window; both give it back when they close.
 `VideoBG.exe --wallpapers` opens the wallpapers from a shortcut.
 
-**Keyboard:** **Tab** moves between controls, **Enter** or **Space** uses one, the **arrow keys** move
-sliders, the clock and the crop box, and **Esc** lets go (again to close).
+**Keyboard:** in the settings window, **Tab** moves between controls, **Enter** or **Space** uses one,
+the **arrow keys** move sliders, the clock and the crop box, and **Esc** lets go (again to close). In
+the modern look, the arrow keys browse, nudge the clock and move the crop box; on Music, **↑ ↓**
+move over the songs and **Tab** goes round the controls.
 To stop starting with Windows: **Windows Settings > Apps > Startup**.
 
 ## If a video won't play

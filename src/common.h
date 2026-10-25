@@ -16,7 +16,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"2.1.4"
+#define APP_VERSION  L"2.1.5"
 #define FEEDBACK_URL L"https://videobg-feedback.vercel.app/api/feedback"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
@@ -275,15 +275,6 @@ inline int SearchBest(const std::vector<std::wstring>& names, const std::wstring
     }
     return best;
 }
-// A third click in quick succession (each within the double-click time of the one before).
-inline bool ThirdClick(ULONGLONG* last, int* count) {
-    const ULONGLONG now = GetTickCount64();
-    *count = now - *last <= GetDoubleClickTime() ? *count + 1 : 1;
-    *last = now;
-    if (*count < 3) return false;
-    *count = 0;
-    return true;
-}
 inline bool MusicShuffled(const std::vector<int>& o) {
     for (size_t i = 0; i < o.size(); i++)
         if (o[i] != (int)i) return true;
@@ -350,6 +341,7 @@ void Host_SetVideo(const std::wstring& path, const Crop* keepCrop = nullptr);
 void Host_PreviewCrop(const Crop* c);        // nullptr = end preview
 void Host_PreviewSize(UINT w, UINT h);       // the wallpaper as a w x h version of the video would look; 0, 0 = end
 RendererState Host_RendererState(LPARAM* pauseMask);
+bool Host_DesktopUnseen();                   // covered, locked or the screen off (the flip clock and the player stop moving)
 bool Host_BatteryOff();                      // off only because of the "on battery: turn off" policy
 bool Host_RendererMemory(SIZE_T* privateWs, SIZE_T* graphics);  // graphics: decoder frames, swap chains (RAM on most laptops)
 SIZE_T Host_SelfMemory();

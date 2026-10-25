@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
+#include <map>
 #include <memory>
 
 namespace {
@@ -99,6 +100,8 @@ struct Gfx {
 
 // What the keyboard is on in the Music screen (Tab goes round them in this order).
 enum { FOC_NONE, FOC_STYLE, FOC_SONGS, FOC_SEARCH, FOC_SHUFFLE, FOC_REPEAT, FOC_ADD, FOC_PICK, FOC_COUNT };
+// ... and in the Clock screen.
+enum { CF_NONE, CF_SHOW, CF_STYLE, CF_LANG, CF_DIGITS, CF_DATE, CF_TIME, CF_COUNT };
 
 struct Card {
     std::wstring path, title, meta;  // the video (the original of its versions); its name; "MP4 \u00B7 its folder"
@@ -244,6 +247,7 @@ struct Picker {
     bool songJump = false;  // the Music screen was just opened: the list starts at the song playing
     int kf = FOC_NONE, kfSong = -1;  // the keyboard's focus there (FOC_*), and the song it's on
     int kfLast = FOC_NONE, kfLastSong = -1;  // where it was before it let go: Tab picks up there
+    int cf = CF_NONE, cfLast = CF_NONE;      // the Clock screen's (CF_*), and where it was
     int songDrag = -1, songIns = 0;   // a song being moved, and where it would land
     float songGrab = 0, songY = 0;
     double songEdgeAt = 0;            // moving one: since when it's been near the list's edge
@@ -264,8 +268,6 @@ struct Picker {
     bool pvSeeking = false;
     bool pvMoving = false;            // the music screen: the player is being dragged to a new place
     D2D1_POINT_2F pvGrab{};           // where it was taken, from its centre
-    ULONGLONG pvClickAt = 0;          // clicked last (three quick clicks turn it off)
-    int pvClicks = 0;
     Settings::PlayerLook looksWas[std::extent<decltype(Settings::playerLooks)>::value];  // the Music screen: as it opened (put back unless Done)
     float playerXWas = 0, playerYWas = 0;
     std::vector<uint32_t> shot;       // the eyedropper: the screen as it came out (reading it live is slow)
@@ -383,7 +385,12 @@ void Text(const std::wstring& s, const D2D1_RECT_F& r, IDWriteTextFormat* f, D2D
     G.ctx->DrawText(s.c_str(), (UINT32)s.size(), f, r, G.br, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
+// Widths measured once (the top bar measures the same words every frame), by format and words.
+std::map<std::pair<IDWriteTextFormat*, std::wstring>, float> g_widths;
+
 float TextWidth(const std::wstring& s, IDWriteTextFormat* f) {
+    auto key = std::make_pair(f, s);
+    if (auto it = g_widths.find(key); it != g_widths.end()) return it->second;
     IDWriteTextLayout* l = nullptr;
     float w = 0;
     if (SUCCEEDED(G.dw->CreateTextLayout(s.c_str(), (UINT32)s.size(), f, 4000, 100, &l))) {
@@ -391,6 +398,8 @@ float TextWidth(const std::wstring& s, IDWriteTextFormat* f) {
         if (SUCCEEDED(l->GetMetrics(&m))) w = m.widthIncludingTrailingWhitespace;
         l->Release();
     }
+    if (g_widths.size() > 512) g_widths.clear();  // (song names and times come and go)
+    g_widths.emplace(std::move(key), w);
     return w;
 }
 
@@ -651,6 +660,7 @@ void ReleaseCardBitmaps(Card& c) {
 }
 
 void ReleaseGraphics() {
+    g_widths.clear();  // (its formats go)
     for (auto& c : P.cards) ReleaseCardBitmaps(c);
     SafeRelease(P.clockBmp);
     SafeRelease(P.player);
@@ -1334,8 +1344,13 @@ void LetGo() {
         P.kfLast = P.kf;
         P.kfLastSong = P.kfSong;
     }
+    if (P.cf) P.cfLast = P.cf;
     P.kf = FOC_NONE;
+    P.cf = CF_NONE;
 }
+
+// The keyboard's ring round a control.
+void FocusRing(const D2D1_RECT_F& r, float a) { Stroke(R(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2), Col(0xFFFFFF, 0.85f * a), 10, 1.5f); }
 
 void IconBtn(int id, float cx, float cy, float r, const wchar_t* icon, float a, bool on = true, D2D1_COLOR_F ink = D2D1::ColorF(1, 1, 1)) {
     if (on && P.hot == id) Circle(cx, cy, r, Col(0xFFFFFF, (P.press == id ? 0.14f : 0.09f) * a));
@@ -1510,6 +1525,7 @@ void DrawClockPanel(float a) {
     auto ctl = [&](float top) { return R(cx, top + 6, cr, top + kRow - 6); };
     Label(L"Clock", lx, yy, a);
     Segs(ID_P_SHOW, ctl(yy), {L"Show", L"Hide"}, on ? 0 : 1, a);
+    if (P.cf == CF_SHOW) FocusRing(ctl(yy), a);
     yy += kRow;
     // A row that steps through the choices, like the date's.
     auto stepper = [&](float top, int prev, int next, const std::wstring& s, bool en, IDWriteTextFormat* f) {
@@ -1521,6 +1537,7 @@ void DrawClockPanel(float a) {
     };
     Label(L"Style", lx, yy, a, on);
     stepper(yy, ID_P_STYLE_PREV, ID_P_STYLE_NEXT, Clock_StyleName(L), on, G.fBody);
+    if (P.cf == CF_STYLE) FocusRing(ctl(yy), a);
     yy += kRow;
     // The language of its words (greyed when the style has none), and its own digits when it has them.
     const bool words = on && Clock_UsesWords(L);
@@ -1531,11 +1548,13 @@ void DrawClockPanel(float a) {
     Text(P.langsOpen ? L"\uE70E" : L"\uE70D", R(lb.right - 28, lb.top, lb.right - 8, lb.bottom), G.fSmallIcon,
          Col(0xFFFFFF, (words ? 0.6f : 0.3f) * a), DWRITE_TEXT_ALIGNMENT_CENTER);
     if (words) P.hits.push_back({ID_P_LANG, lb});
+    if (P.cf == CF_LANG) FocusRing(lb, a);
     yy += kRow;
     if (HasOwnDigits()) {
         const bool digits = on && Clock_UsesDigits(L);
         Label(L"Digits", lx, yy, a, digits);
         Segs(ID_P_DIG_LATIN, ctl(yy), {std::wstring(L"123"), Clock_NativeDigits(L.lang).substr(1, 3)}, L.nativeDigits ? 1 : 0, a, digits);
+        if (P.cf == CF_DIGITS) FocusRing(ctl(yy), a);
         yy += kRow;
     }
     // The text's colour, then the glow's: the eyedropper, any colour (a grid), then quick ones (the
@@ -1589,10 +1608,12 @@ void DrawClockPanel(float a) {
     GetLocalTime(&now);
     const std::wstring date = Clock_DateText(L, L.date, now);
     stepper(yy, ID_P_DATE_PREV, ID_P_DATE_NEXT, date.empty() ? L"No date" : date, dated, G.fSmall);
+    if (P.cf == CF_DATE) FocusRing(ctl(yy), a);
     yy += kRow;
     const bool hours = on && Clock_UsesHours(L);
     Label(L"Time", lx, yy, a, hours);
     Segs(ID_P_H12, ctl(yy), {L"12-hour", L"24-hour"}, L.h24 ? 1 : 0, a, hours);
+    if (P.cf == CF_TIME) FocusRing(ctl(yy), a);
 
     // Any colour's grid, under its row; or the languages, over the rows under theirs.
     if (P.gridFor && (P.gridFor == 1 ? on : glowOn)) {
@@ -2062,7 +2083,7 @@ void DrawTopBar(float a) {
     std::vector<std::wstring> tips;
     if (P.mode == 1) {
         title = L"Clock";
-        tips = {L"Drag it where you want it", L"Arrow keys nudge it", L"Esc goes back"};
+        tips = {L"Drag it where you want it", L"Arrow keys nudge it", L"Tab the settings", L"Esc goes back"};
     } else if (P.mode == 3) {
         title = L"Music";
         tips = {L"The player works here as on your desktop", L"\u2191 \u2193 songs", L"Tab the controls", L"Esc goes back"};
@@ -2538,9 +2559,16 @@ void ShowToast(const std::wstring& t) {
 
 void EndMusicEdit(bool keep);
 
+void ReleaseHold();
+
 void BeginClose(const wchar_t* why) {
     if (P.phase == CLOSING) return;
     if (P.mode == 3) EndMusicEdit(false);  // (the player's look is kept only by Done)
+    if (P.mode == 2) {                     // and the crop only by Save: the wallpaper as it was
+        if (Card* c = WallpaperCard()) c->crop = P.cropWas;
+        Host_PreviewCrop(nullptr);
+        ReleaseHold();
+    }
     Log(L"picker: closing (%ls)", why);
     if (!P.used) AskPreview(g_settings.video, 0);  // nothing chosen: the wallpaper's own video again
     P.phase = CLOSING;
@@ -2830,6 +2858,7 @@ void StartClockEdit() {
     P.langsOpen = P.panelHidden = false;
     P.gridFor = P.picking = 0;
     P.langScroll = 0;
+    P.cf = P.cfLast = CF_NONE;
     P.panelSide = g_panelSide;
     P.panelPos = (float)P.panelSide;
     P.panelV = 0;
@@ -3512,16 +3541,6 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 }
                 break;
             }
-            if (P.press == ID_MU_PREVIEW && ThirdClick(&P.pvClickAt, &P.pvClicks)) {  // three quick clicks: no player
-                g_settings.musicPlayer = 0;
-                Log(L"picker: the music player turned off by a triple click");
-                P.press = ID_NONE;
-                P.pvMoving = P.pvSeeking = P.pv.sliding = false;
-                Host_SettingsChanged();
-                UI_Refresh();
-                P.dirty = true;
-                break;
-            }
             if (P.press == ID_MU_PREVIEW) {  // the player: a button, its volume or its place
                 P.pv.press = PreviewPart(x, y);
                 const float px = (x - P.playerBox.left) / P.playerK, py = (y - P.playerBox.top) / P.playerK;
@@ -3621,7 +3640,7 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             if (P.pvRotating) {
                 P.pvRotating = false;
                 P.press = ID_NONE;
-                Log(L"picker: the music player turned to %.0f degrees", g_settings.playerLooks[std::clamp(g_settings.musicPlayer, 0, 9)].rotate);
+                Log(L"picker: the music player turned to %.0f degrees", g_settings.playerLooks[std::clamp(g_settings.musicPlayer, 0, (int)std::size(g_settings.playerLooks) - 1)].rotate);
                 P.dirty = true;
                 break;
             }
@@ -3873,6 +3892,81 @@ bool MusicKey(WPARAM vk) {
     return P.kf != FOC_NONE && (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_SPACE);  // (nothing else to do with them)
 }
 
+// The next language (or the one before) in the list, used at once; the list follows it.
+void StepLanguage(int dir) {
+    if (P.langs.empty()) P.langs = Clock_Languages();
+    const int n = (int)P.langs.size();
+    if (!n) return;
+    int at = 0;
+    for (int i = 0; i < n; i++)
+        if (P.langs[i].code == P.look.lang) at = i;
+    at = (at + dir + n) % n;
+    P.look.lang = P.langs[at].code;
+    if (!HasOwnDigits()) P.look.nativeDigits = false;
+    P.langScroll = std::max(0.f, (at - 3.f) * 32);
+    ClockEdited();
+}
+
+bool ClockFocusUsable(int cf) {
+    const ClockLook& L = P.look;
+    switch (cf) {
+        case CF_SHOW: return true;
+        case CF_STYLE: return L.show;
+        case CF_LANG: return L.show && Clock_UsesWords(L);
+        case CF_DIGITS: return L.show && HasOwnDigits() && Clock_UsesDigits(L);
+        case CF_DATE: return L.show && Clock_UsesDate(L);
+        case CF_TIME: return L.show && Clock_UsesHours(L);
+    }
+    return false;
+}
+
+// The Clock screen's keys, as on Music: Tab (Shift+Tab back) goes round showing it, its style, the
+// language, the digits, the date and 12 / 24 hours (after the focus let go: from where it was); the
+// colours and sliders are for the mouse. Left / right change what has the focus (up / down still nudge
+// the clock); Space the next choice; Enter lets go (with nothing focused, Enter saves; on the language
+// it opens the list); Esc lets go. True if the key was used.
+bool ClockKey(WPARAM vk) {
+    if (P.picking || P.gridFor) return false;
+    const bool shift = GetKeyState(VK_SHIFT) < 0;
+    if (!ClockFocusUsable(P.cf)) P.cf = CF_NONE;
+    if (vk == VK_TAB) {
+        if (!P.cf && ClockFocusUsable(P.cfLast)) {  // back where it let go
+            P.cf = P.cfLast;
+            return true;
+        }
+        int k = P.cf;
+        for (int i = 0; i < CF_COUNT; i++) {
+            k = shift ? (k <= 1 ? CF_COUNT - 1 : k - 1) : (k >= CF_COUNT - 1 ? 1 : k + 1);
+            if (ClockFocusUsable(k)) break;
+        }
+        if (ClockFocusUsable(k)) P.cf = k;
+        return true;
+    }
+    if (!P.cf) return false;
+    if (vk == VK_ESCAPE) {
+        LetGo();
+        return true;
+    }
+    if (vk == VK_RETURN) {
+        const int cf = P.cf;
+        LetGo();
+        if (cf == CF_LANG) Command(ID_P_LANG);
+        return true;
+    }
+    if (vk != VK_LEFT && vk != VK_RIGHT && vk != VK_SPACE) return false;
+    const bool next = vk != VK_LEFT;
+    auto seg = [&](int first, bool second) { Command(vk == VK_SPACE ? (second ? first : first + 1) : next ? first + 1 : first); };
+    switch (P.cf) {
+        case CF_SHOW: seg(ID_P_SHOW, !P.look.show); break;  // (Show, Hide)
+        case CF_STYLE: Command(next ? ID_P_STYLE_NEXT : ID_P_STYLE_PREV); break;
+        case CF_LANG: StepLanguage(next ? 1 : -1); break;
+        case CF_DIGITS: seg(ID_P_DIG_LATIN, P.look.nativeDigits); break;
+        case CF_DATE: Command(next ? ID_P_DATE_NEXT : ID_P_DATE_PREV); break;
+        case CF_TIME: seg(ID_P_H12, P.look.h24); break;
+    }
+    return true;
+}
+
 void OnKey(WPARAM vk) {
     if (P.phase != BROWSING && P.phase != OPENING) return;  // choosing or closing: nearly done
     if (P.mode == 3 && P.searchOn && !P.picking) {  // the letters come as WM_CHAR
@@ -3914,13 +4008,18 @@ void OnKey(WPARAM vk) {
         P.dirty = true;
         return;
     }
-    if (P.mode == 1 && P.langsOpen) {  // the languages: a letter jumps, Esc puts them away
+    if (P.mode == 1 && P.langsOpen) {  // the languages: a letter jumps, up / down choose, Enter or Esc puts them away
         if (vk >= 'A' && vk <= 'Z') LanguageJump((wchar_t)vk);
-        else if (vk == VK_ESCAPE) P.langsOpen = false;
+        else if (vk == VK_UP || vk == VK_DOWN) StepLanguage(vk == VK_DOWN ? 1 : -1);
+        else if (vk == VK_ESCAPE || vk == VK_RETURN) P.langsOpen = false;
         P.dirty = true;
         return;
     }
     if (P.mode == 1) {
+        if (ClockKey(vk)) {
+            P.dirty = true;
+            return;
+        }
         const float step = shift ? 10.f : 1.f;
         switch (vk) {
             case VK_LEFT: Nudge(-step, 0); break;
@@ -4162,12 +4261,17 @@ void Destroy() {
     if (!P.hwnd) return;
     Log(L"picker: closed (%d frames drawn, %.1f ms each on average, %.1f ms at most)", P.frames,
         P.frames ? P.drawTime * 1000 / P.frames : 0.0, P.drawMax * 1000);
+    if (P.mode == 2) {  // (closed at once, while cropping)
+        Host_PreviewCrop(nullptr);
+        ReleaseHold();
+    }
     if (P.showcaseAsked) Host_Showcase(nullptr);
     if (!P.used) AskPreview(g_settings.video, 0);  // back to the wallpaper's own video
     Library_Stop();
     Player_FreePreview();
     HWND h = P.hwnd;
     P.hwnd = nullptr;
+    Player_Update();  // the desktop player can be seen again: it turns again
     MSG msg;
     while (PeekMessageW(&msg, h, WM_PK_INFO, WM_PK_INFO, PM_REMOVE)) delete (WallpaperInfo*)msg.lParam;
     ReleaseGraphics();
@@ -4305,6 +4409,7 @@ bool Modern_Open(int mode) {
     P.phaseAt = P.last = Now();
     P.dark = 0;
     P.darkTo = 1;
+    Player_Update();  // the desktop player is behind the picker now: it stops turning
     P.closeCovered = false;
     if (mode == 1) StartClockEdit();
     else if (!P.cards.empty()) {

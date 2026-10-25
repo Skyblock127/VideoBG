@@ -269,21 +269,26 @@ void IniBatch::Set(const wchar_t* sec, const std::wstring& key, const wchar_t* v
         return;
     }
     size_t last = i;  // the section's last line that isn't blank
-    for (size_t j = i + 1; j < lines_.size() && !IsSection(lines_[j], nullptr); j++) {
+    bool found = false;
+    for (size_t j = i + 1; j < lines_.size() && !IsSection(lines_[j], nullptr);) {
         const size_t eq = lines_[j].find(L'=');
         if (eq != std::wstring::npos && !_wcsicmp(Trim(lines_[j].substr(0, eq)).c_str(), key.c_str())) {
-            if (!value) {
+            if (!value || found) {  // removed, or a second copy (only the first was ever read)
                 lines_.erase(lines_.begin() + (ptrdiff_t)j);
                 changed_ = true;
-            } else if (lines_[j] != key + L"=" + value) {
+                continue;
+            }
+            if (lines_[j] != key + L"=" + value) {
                 lines_[j] = key + L"=" + value;
                 changed_ = true;
             }
-            return;
+            found = true;
+        } else if (!Trim(lines_[j]).empty()) {
+            last = j;
         }
-        if (!Trim(lines_[j]).empty()) last = j;
+        j++;
     }
-    if (!value) return;
+    if (!value || found) return;
     lines_.insert(lines_.begin() + (ptrdiff_t)last + 1, key + L"=" + value);
     changed_ = true;
 }

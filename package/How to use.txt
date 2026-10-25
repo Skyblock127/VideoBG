@@ -150,7 +150,7 @@ Using it
     Vinyl, Cassette, Disc, Bars, Wave, Halo, Cover, Radio or Mini. Its
     buttons and volume work there; click or drag what shows the song's
     place (the record, the ring, the dial...) to move in the song. Drag
-    the rest of it to move it; three quick clicks on it turn it off. Its settings also turn it (Rotate) and give
+    the rest of it to move it. Its settings also turn it (Rotate) and give
     each colour an eyedropper. When VideoBG starts with Windows the music
     stays paused until you press Play.
   - Music and Playback pages: sound source, speed, frame rate, and (under

@@ -297,7 +297,8 @@ void WaitShown() {
     if (SUCCEEDED(g.dev->CreateQuery(&qd, &q))) {
         g.ctx->End(q);
         BOOL done = FALSE;
-        for (int i = 0; i < 200 && g.ctx->GetData(q, &done, sizeof done, 0) != S_OK; i++) Sleep(1);
+        const double until = Now() + 0.2;  // (yielding, not Sleep(1): that takes a whole timer tick, about 16 ms)
+        while (g.ctx->GetData(q, &done, sizeof done, 0) != S_OK && Now() < until) SwitchToThread();
         q->Release();
     }
     for (int i = 0; i < 2; i++) WaitRefresh();

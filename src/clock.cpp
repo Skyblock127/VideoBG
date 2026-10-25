@@ -69,7 +69,7 @@ std::wstring MonthAfterDay(const std::wstring& lang, int month) {
     size_t at = s.find(L"15");  // the day number goes, with the spaces and dots around it
     if (at == std::wstring::npos) return L"";
     s.erase(at, 2);
-    const wchar_t* trim = L" .,";
+    const wchar_t* trim = L" .,\u00A0\u202F";
     size_t first = s.find_first_not_of(trim), last = s.find_last_not_of(trim);
     return first == std::wstring::npos ? L"" : s.substr(first, last - first + 1);
 }
@@ -476,9 +476,7 @@ void DrawClock() {
     const std::wstring style = Clock_StyleKey(W.look) + std::to_wstring(k), key = Clock_StyleKey(W.look) + when;
     if (W.drawn != key) {
         // Only the minute changed, on a flip clock that can be seen: its flaps fall over.
-        LPARAM mask = 0;
-        Host_RendererState(&mask);
-        const bool flip = Clock_Flips(W.look) && W.drawnStyle == style && !(mask & (PR_COVERED | PR_LOCKED | PR_DISPLAY_OFF));
+        const bool flip = Clock_Flips(W.look) && W.drawnStyle == style && !Host_DesktopUnseen();
         ClockImage img;
         if (Clock_Paint(W.look, k, t, &img, flip ? 0 : 1) && ShowPicture(img)) {
             W.drawn = key;
@@ -552,7 +550,7 @@ void AddGlow(uint32_t* px, int w, int h, float radius, float strength, D2D1_COLO
     for (size_t i = 0; i < (size_t)w * h; i++) {
         uint32_t v = px[i];
         float ta = (v >> 24) / 255.f, r = (v >> 16 & 0xFF) / 255.f, g = (v >> 8 & 0xFF) / 255.f, b = (v & 0xFF) / 255.f;
-        if (!a.empty()) {
+        if (!a.empty() && a[i] > 0) {
             float ga = (1 - expf(-a[i] * gain)) * (1 - ta);
             r += color.r * ga;
             g += color.g * ga;
@@ -989,7 +987,7 @@ void LineDesign(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, 
     const float px = 64 * u, cap = P.faces[F_MICHROMA].cap * px;
     const std::wstring time = s.hh + L":" + s.mm;
     const float tw = Width(time, F_MICHROMA, px, 0);
-    const float mw = s.mark.empty() ? 0 : Width(s.mark, F_SYNCOPATE, 14 * u, 3 * u, kThick) + 10 * u;
+    const float mw = s.mark.empty() ? 0 : Width(s.mark, F_SYNCOPATE, 14 * u, s.joined ? 0 : 3 * u, kThick) + 10 * u;
     const float dayPx = 17 * u, datePx = 19 * u;
     const float rw = std::max(Width(s.day, F_SYNCOPATE, dayPx, s.joined ? 0 : 4 * u, kThick), s.date.empty() ? 0 : Width(s.date, F_QUICKSAND, datePx, 1.5f * u));
     const float x0 = -(tw + mw + 52 * u + rw) / 2, top = -cap / 2;

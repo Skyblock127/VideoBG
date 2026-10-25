@@ -89,8 +89,6 @@ struct PlayerWindow {
     float scale = 1;
     int w = 0, h = 0;  // pixels (the player upright)
     int ow = 0, oh = 0;  // the window's (round the player as it's turned)
-    ULONGLONG clickAt = 0;  // clicked last (three quick clicks turn the player off)
-    int clicks = 0;
     float deg = 0;       // turned this far (the window's picture)
     HDC tdc = nullptr;   // the turned picture
     HBITMAP tdib = nullptr;
@@ -1267,11 +1265,7 @@ bool Settled() {
 }
 
 // The desktop can be seen (nothing covers it, the screen's on and unlocked).
-bool DesktopSeen() {
-    LPARAM mask = 0;
-    Host_RendererState(&mask);
-    return !(mask & (PR_COVERED | PR_LOCKED | PR_DISPLAY_OFF));
-}
+bool DesktopSeen() { return !Host_DesktopUnseen() && !Modern_IsOpen(); }  // (the picker covers it, showcase and all)
 
 const Settings::PlayerLook& LookOf(int style) {
     return g_settings.playerLooks[std::clamp(style, 0, (int)std::size(g_settings.playerLooks) - 1)];
@@ -1660,20 +1654,8 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 Draw();
             }
             return 0;
-        case WM_APP:  // three quick clicks: no player on the desktop (it's chosen again in the settings)
-            g_settings.musicPlayer = 0;
-            Log(L"player: turned off by a triple click");
-            Host_SettingsChanged();
-            UI_Refresh();
-            return 0;
         case WM_LBUTTONDOWN:
         case WM_LBUTTONDBLCLK:
-            if (ThirdClick(&W.clickAt, &W.clicks)) {
-                W.press = W.hot = PART_NONE;
-                W.dragging = W.sliding = W.seeking = false;
-                PostMessageW(h, WM_APP, 0, 0);
-                return 0;
-            }
             SetCapture(h);
             W.press = HitPart(Style(), x, y);
             if (W.press == PART_VOLUME) {
