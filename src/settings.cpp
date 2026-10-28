@@ -682,6 +682,8 @@ void LoadSettings(Settings& s) {
     }
     s.musicRepeat = ReadInt(ini, L"MusicRepeat", 1, 1, 2);  // the playlist always repeats; 2: just the song
     s.musicPlaying = ReadInt(ini, L"MusicPlaying", 1, 0, 1) != 0;
+    s.musicSource = ReadStr(ini, L"General", L"MusicSource");
+    s.musicResume = ReadInt(ini, L"MusicResume", 0, 0, 1) != 0;
     s.musicTrack = ReadInt(ini, L"MusicTrack", 0, 0, 1 << 20) - 1;  // stored + 1: 0 = none
     s.musicPosMs = (UINT)ReadInt(ini, L"MusicPosition", 0, 0, 0x7FFFFFFF);
     s.musicDurMs = (UINT)ReadInt(ini, L"MusicLength", 0, 0, 0x7FFFFFFF);
@@ -758,6 +760,8 @@ void SaveSettings(const Settings& s) {
     ini.Set(L"General", L"MusicOrder", order.empty() ? nullptr : order.c_str());
     WriteInt(ini, L"MusicRepeat", s.musicRepeat);
     WriteInt(ini, L"MusicPlaying", s.musicPlaying ? 1 : 0);
+    ini.Set(L"General", L"MusicSource", s.musicSource.empty() ? nullptr : s.musicSource.c_str());
+    WriteInt(ini, L"MusicResume", s.musicResume ? 1 : 0);
     WriteInt(ini, L"MusicTrack", s.musicTrack + 1);
     WriteInt(ini, L"MusicPosition", (int)s.musicPosMs);
     WriteInt(ini, L"MusicLength", (int)s.musicDurMs);

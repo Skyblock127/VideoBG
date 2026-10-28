@@ -52,7 +52,7 @@ enum Id {
     // the music's
     ID_MU_PREV, ID_MU_PLAY, ID_MU_NEXT, ID_MU_SEEK, ID_MU_VOLUME, ID_MU_SHUFFLE, ID_MU_REPEAT, ID_MU_PICK, ID_MU_LIST,
     ID_MU_HEAD, ID_MU_ADD, ID_MU_SEARCH, ID_MU_SEARCH_X, ID_MU_RST_COL, ID_MU_RST_BODY, ID_MU_RST_SIZE, ID_MU_RST_OPACITY, ID_MU_RST_CORNERS, ID_MU_ROTATE,
-    ID_MU_STYLE_PREV, ID_MU_STYLE_NEXT, ID_MU_PREVIEW, ID_P_ROTATE,
+    ID_MU_STYLE_PREV, ID_MU_STYLE_NEXT, ID_MU_PREVIEW, ID_P_ROTATE, ID_MU_SRC_PREV, ID_MU_SRC_NEXT,
     ID_MU_DONE, ID_MU_PICK_COL, ID_MU_GRID_COL, ID_MU_OPACITY, ID_MU_CORNERS, ID_MU_RESET, ID_MU_SIZE, ID_MU_PICK_BODY, ID_MU_GRID_BODY,
     ID_MU_COL0,         // + swatch (0: the Windows accent colour)
     ID_MU_BODY0 = 560,  // + swatch (0: the style's own)
@@ -99,7 +99,7 @@ struct Gfx {
 // State
 
 // What the keyboard is on in the Music screen (Tab goes round them in this order).
-enum { FOC_NONE, FOC_STYLE, FOC_SONGS, FOC_SEARCH, FOC_SHUFFLE, FOC_REPEAT, FOC_ADD, FOC_PICK, FOC_COUNT };
+enum { FOC_NONE, FOC_SOURCE, FOC_STYLE, FOC_SONGS, FOC_SEARCH, FOC_SHUFFLE, FOC_REPEAT, FOC_ADD, FOC_PICK, FOC_COUNT };
 // ... and in the Clock screen.
 enum { CF_NONE, CF_SHOW, CF_STYLE, CF_LANG, CF_DIGITS, CF_DATE, CF_TIME, CF_COUNT };
 
@@ -1832,7 +1832,7 @@ void DrawMusicStage(float a) {
     (void)right;
     const float cx = P.W / 2, cy = P.H / 2, w = 440;
     const int n = (int)Host_Songs().size();
-    const bool mine = g_settings.sound == 2 && n > 0;
+    const bool app = Music_FromApp(), mine = g_settings.sound == 2 && (n > 0 || app);
     const float h = mine ? 214 : 96;
     const D2D1_RECT_F box = R(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
     PanelBox(box, a, 20);
@@ -1841,8 +1841,35 @@ void DrawMusicStage(float a) {
          G.fSmall, Col(0xFFFFFF, 0.55f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
     if (!mine) {
         Text(g_settings.sound == 2 ? L"Choose songs in the panel, and they play with the wallpaper"
-                                   : L"To play your own songs, choose My music on the Music page of All settings",
+                                   : L"To play music, pick where it comes from in the panel",
              R(box.left + 20, box.top + 40, box.right - 20, box.bottom - 14), G.fWrap, Col(0xFFFFFF, 0.8f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+        return;
+    }
+    auto minutes = [](UINT ms) {
+        wchar_t t[16];
+        swprintf(t, 16, L"%u:%02u", ms / 60000, ms / 1000 % 60);
+        return std::wstring(t);
+    };
+    if (app) {  // another app's song: its buttons, as far as it takes them (its volume is its own)
+        const NowPlaying np = NowPlaying_Get();
+        Text(!np.on ? L"Nothing playing in " + np.app : np.title.empty() ? np.app : np.title, R(box.left + 24, box.top + 40, box.right - 24, box.top + 66),
+             G.fBold, Col(0xFFFFFF, 0.95f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+        const UINT dur = np.durMs;
+        const float done = P.slide == ID_MU_SEEK && P.seekFrac >= 0 ? P.seekFrac : dur ? std::min(1.f, (float)np.PosNow() / dur) : 0;
+        SliderCtl(ID_MU_SEEK, R(box.left + 16, box.top + 72, box.right - 16, box.top + 100), done,
+                  dur ? minutes((UINT)(done * dur)) + L" / " + minutes(dur) : L"", a, np.canSeek, 84);
+        const float by = box.top + 136;
+        IconBtn(ID_MU_PREV, cx - 64, by, 18, L"\uE892", a, np.canPrev);
+        {
+            const bool hot = P.hot == ID_MU_PLAY && np.canPlay;
+            Circle(cx, by, 24, g_accent * ((hot ? 1.f : np.canPlay ? 0.9f : 0.4f) * a));
+            Text(np.playing ? L"\uE769" : L"\uE768", R(cx - 24, by - 24, cx + 24, by + 24), G.fIcon, Col(0x000000, 0.85f * a),
+                 DWRITE_TEXT_ALIGNMENT_CENTER);
+            if (np.canPlay) P.hits.push_back({ID_MU_PLAY, R(cx - 24, by - 24, cx + 24, by + 24)});
+        }
+        IconBtn(ID_MU_NEXT, cx + 64, by, 18, L"\uE893", a, np.canNext);
+        Text(np.on ? np.artist.empty() ? np.app : np.artist + L"  \u00B7  " + np.app : L"Start it there, and it shows here",
+             R(box.left + 20, box.bottom - 40, box.right - 20, box.bottom - 12), G.fSmall, Col(0xFFFFFF, 0.6f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
         return;
     }
     const MusicState ms = Host_MusicState();
@@ -1852,11 +1879,6 @@ void DrawMusicStage(float a) {
     // Its place in the song (dragged: the song goes there when let go).
     const UINT dur = ms.track >= 0 ? ms.durMs : g_settings.musicDurMs, pos = ms.track >= 0 ? ms.posMs : g_settings.musicPosMs;
     const float done = P.slide == ID_MU_SEEK && P.seekFrac >= 0 ? P.seekFrac : dur ? std::min(1.f, (float)pos / dur) : 0;
-    auto minutes = [](UINT ms) {
-        wchar_t t[16];
-        swprintf(t, 16, L"%u:%02u", ms / 60000, ms / 1000 % 60);
-        return std::wstring(t);
-    };
     SliderCtl(ID_MU_SEEK, R(box.left + 16, box.top + 72, box.right - 16, box.top + 100), done,
               dur ? minutes((UINT)(done * dur)) + L" / " + minutes(dur) : L"", a, ms.track >= 0 && dur > 0, 84);
     // Previous, play / pause, next.
@@ -1889,8 +1911,10 @@ void DrawMusicEditPanel(float a) {
     PanelBox(box, a);
     P.hits.push_back({ID_P_BG, box});
     Text(L"Music player", R(x + 18, y + 12, box.right - 52, y + 34), G.fTitle, Col(0xFFFFFF, a));
+    const bool app = Music_FromApp();
     const std::wstring sub = g_settings.sound == 0 ? L"Sound is off"
                            : !mine                ? L"Playing the video's own sound"
+                           : app                  ? NowPlaying_Get().app + (NowPlaying_Get().on ? L"" : L"  \u00B7  not open")
                            : n == 1               ? L"My music  \u00B7  1 song"
                                                   : L"My music  \u00B7  " + std::to_wstring(n) + L" songs";
     Text(sub, R(x + 18, y + 34, box.right - 52, y + 52), G.fSmall, Col(0xFFFFFF, 0.55f * a));
@@ -1900,6 +1924,18 @@ void DrawMusicEditPanel(float a) {
     const float lx = x + 16, cx = x + 16 + kLabelW, cr = box.right - 16;
     auto ctl = [&](float top) { return R(cx, top + 6, cr, top + kRow - 6); };
     float yy = y + 64;
+    // Where the music comes from: My music or an app playing now (step through them).
+    Label(L"Music from", lx, yy, a);
+    {
+        const D2D1_RECT_F r = ctl(yy);
+        Fill(r, Col(0xFFFFFF, 0.06f * a), 8);
+        if (P.kf == FOC_SOURCE) Stroke(R(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2), Col(0xFFFFFF, 0.85f * a), 10, 1.5f);
+        const std::wstring name = !mine ? L"Off" : app ? NowPlaying_Name(g_settings.musicSource) : L"My music";
+        Text(name, R(r.left + 26, r.top, r.right - 26, r.bottom), G.fBody, Col(0xFFFFFF, 0.9f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+        IconBtn(ID_MU_SRC_PREV, r.left + 14, (r.top + r.bottom) / 2, 12, L"\uE76B", a);
+        IconBtn(ID_MU_SRC_NEXT, r.right - 14, (r.top + r.bottom) / 2, 12, L"\uE76C", a);
+    }
+    yy += kRow;
     // Which player: off, or a style (step through them).
     Label(L"Player", lx, yy, a);
     {
@@ -1968,7 +2004,7 @@ void DrawMusicEditPanel(float a) {
     yy += 12;
     // The playlist: shuffle and repeat on its heading, then choosing songs; the songs fill the rest.
     if (!mine) {
-        Text(L"To play your own songs, choose My music on the Music page of All settings.", R(x + 18, yy, box.right - 18, yy + 44), G.fWrap,
+        Text(L"To play your own songs, pick My music under Music from.", R(x + 18, yy, box.right - 18, yy + 44), G.fWrap,
              Col(0xFFFFFF, 0.7f * a));
     } else {
         const float hy = yy + 12;
@@ -3180,7 +3216,19 @@ void Command(int id) {
                 PlayerLookChanged(true);
             }
             break;
-        case ID_MU_PLAY: Host_PlayMusic(!g_settings.musicPlaying); break;
+        case ID_MU_PLAY: Music_PlayPause(); break;
+        case ID_MU_SRC_PREV:
+        case ID_MU_SRC_NEXT: {  // My music, then each app playing, round again (from the video's sound: the first or the last)
+            const std::vector<NowPlayingApp> v = Music_Sources();
+            const int n = (int)v.size();
+            int at = -1;
+            for (int i = 0; i < n && g_settings.sound == 2; i++)
+                if (v[i].id == g_settings.musicSource) at = i;
+            at = at < 0 ? (id == ID_MU_SRC_NEXT ? 0 : n - 1) : (at + (id == ID_MU_SRC_NEXT ? 1 : n - 1)) % n;
+            Host_SetMusicSource(v[at].id);
+            P.dirty = true;
+            break;
+        }
         case ID_MU_STYLE_PREV:
         case ID_MU_STYLE_NEXT: {  // off, then each style, round again
             const int n = (int)Player_Styles().size() + 1;
@@ -3191,7 +3239,7 @@ void Command(int id) {
             break;
         }
         case ID_MU_PREV:
-        case ID_MU_NEXT: Host_SkipMusic(id == ID_MU_NEXT); break;
+        case ID_MU_NEXT: Music_Skip(id == ID_MU_NEXT); break;
         case ID_MU_SHUFFLE:
             Host_ShuffleMusic(Host_Songs().size());
             UI_Refresh();
@@ -3341,7 +3389,8 @@ void Command(int id) {
                 P.dirty = true;
                 break;
             }
-            if (id >= ID_SONG0 && id < ID_SONG0 + (int)Host_Songs().size()) {  // a song: it plays
+            if (id >= ID_SONG0 && id < ID_SONG0 + (int)Host_Songs().size()) {  // a song: it plays (not while another app is the source)
+                if (Music_FromApp()) break;
                 Host_MusicCommand(MC_PLAY_INDEX, id - ID_SONG0);
                 Host_PlayMusic(true);
             } else if (id >= ID_V0 && id <= ID_V0 + (int)P.versionList.size() && P.actionsCard >= 0) {
@@ -3544,7 +3593,8 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             if (P.press == ID_MU_PREVIEW) {  // the player: a button, its volume or its place
                 P.pv.press = PreviewPart(x, y);
                 const float px = (x - P.playerBox.left) / P.playerK, py = (y - P.playerBox.top) / P.playerK;
-                if (P.mode == 3 && (P.pv.press == PLAYER_BODY || ((g_settings.sound != 2 || Host_Songs().empty()) && P.pv.press != PLAYER_NONE))) {
+                if (P.mode == 3 && (P.pv.press == PLAYER_BODY ||
+                                    ((g_settings.sound != 2 || (!Music_FromApp() && Host_Songs().empty())) && P.pv.press != PLAYER_NONE))) {
                     P.pvMoving = true;  // (with no music, any part of it moves it)
                     P.pvGrab = D2D1::Point2F(x - (P.playerBox.left + P.playerBox.right) / 2, y - (P.playerBox.top + P.playerBox.bottom) / 2);
                 } else if (P.pv.press == PLAYER_VOLUME) {
@@ -3655,8 +3705,8 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 } else if (P.pvSeeking) {
                     Player_Seek(P.pv.seek);
                 } else if (part != PLAYER_NONE && part == PreviewPart(x, y)) {
-                    if (part == PLAYER_PLAY) Host_PlayMusic(!g_settings.musicPlaying);
-                    else if (part == PLAYER_PREV || part == PLAYER_NEXT) Host_SkipMusic(part == PLAYER_NEXT);
+                    if (part == PLAYER_PLAY) Music_PlayPause();
+                    else if (part == PLAYER_PREV || part == PLAYER_NEXT) Music_Skip(part == PLAYER_NEXT);
                 }
                 P.pv.press = PLAYER_NONE;
                 P.pv.sliding = P.pvSeeking = false;
@@ -3673,7 +3723,8 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                     PlayerLookChanged(true);
                 } else if (P.slide == ID_MU_SEEK) {
                     const MusicState ms = Host_MusicState();
-                    if (ms.durMs) Host_MusicCommand(MC_SEEK, (LPARAM)(P.seekFrac * ms.durMs));
+                    if (Music_FromApp()) NowPlaying_Seek((UINT)(P.seekFrac * NowPlaying_Get().durMs));
+                    else if (ms.durMs) Host_MusicCommand(MC_SEEK, (LPARAM)(P.seekFrac * ms.durMs));
                     P.seekFrac = -1;
                 } else if (P.slide == ID_C_FRAME) {
                     Host_SeekWallpaper(P.frameTime, true);  // to the very frame; it plays on after a second there
@@ -3799,6 +3850,7 @@ void FocusSong(int from, int step) {
 bool FocusUsable(int kf) {
     const int n = g_settings.sound == 2 ? (int)Host_Songs().size() : 0;
     switch (kf) {
+        case FOC_SOURCE:
         case FOC_STYLE: return true;
         case FOC_SONGS:
         case FOC_SEARCH:
@@ -3810,11 +3862,11 @@ bool FocusUsable(int kf) {
     return false;
 }
 
-// The Music screen's keys. Tab (Shift+Tab back) goes round the player's style, the songs, the
+// The Music screen's keys. Tab (Shift+Tab back) goes round where the music comes from, the player's style, the songs, the
 // search, shuffle, repeat and adding or choosing songs (after the focus let go: from where it was);
 // the colours and the rest are for the mouse. Up and down move over the songs (from the one playing)
 // without playing them; Alt with them moves the song. Left / right step the style when it has the
-// focus. Enter uses what has the focus and lets go of it (with nothing focused, Enter is Done); Space
+// focus, and so does the music's source. Enter uses what has the focus and lets go of it (with nothing focused, Enter is Done); Space
 // uses it and keeps it; Esc lets go. Shift+N / P (or Shift+right / left): the next or previous song,
 // whatever has the focus. True if the key was used.
 bool MusicKey(WPARAM vk) {
@@ -3844,8 +3896,8 @@ bool MusicKey(WPARAM vk) {
         LetGo();
         return true;
     }
-    if (shift && n && (vk == 'N' || vk == 'P' || vk == VK_RIGHT || vk == VK_LEFT)) {
-        Host_SkipMusic(vk == 'N' || vk == VK_RIGHT);
+    if (shift && (n || Music_FromApp()) && (vk == 'N' || vk == 'P' || vk == VK_RIGHT || vk == VK_LEFT)) {
+        Music_Skip(vk == 'N' || vk == VK_RIGHT);
         return true;
     }
     if ((vk == VK_UP || vk == VK_DOWN) && n) {
@@ -3867,11 +3919,16 @@ bool MusicKey(WPARAM vk) {
         Command(vk == VK_RIGHT ? ID_MU_STYLE_NEXT : ID_MU_STYLE_PREV);
         return true;
     }
+    if (P.kf == FOC_SOURCE && (vk == VK_LEFT || vk == VK_RIGHT)) {
+        Command(vk == VK_RIGHT ? ID_MU_SRC_NEXT : ID_MU_SRC_PREV);
+        return true;
+    }
     if ((vk == VK_RETURN || vk == VK_SPACE) && P.kf) {
         const int kf = P.kf;
         if (vk == VK_RETURN) LetGo();
         switch (kf) {
-            case FOC_SONGS:  // it plays (the one playing: from the start)
+            case FOC_SONGS:  // it plays (the one playing: from the start; not while another app is the source)
+                if (Music_FromApp()) break;
                 Host_MusicCommand(MC_PLAY_INDEX, P.kfSong);
                 Host_PlayMusic(true);
                 break;

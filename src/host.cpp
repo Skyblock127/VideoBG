@@ -18,7 +18,7 @@ Settings g_settings;
 
 namespace {
 
-constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4, TIMER_UPDATE = 5, TIMER_CHECK = 6;
+constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4, TIMER_UPDATE = 5, TIMER_CHECK = 6, TIMER_NOWPLAYING = 7;
 constexpr int HOTKEY_ID = 1, HOTKEY_MUSIC = 2;
 enum { CMD_TOGGLE = 100, CMD_SETTINGS, CMD_EXIT, CMD_PICKER, CMD_LOOK };
 
@@ -43,6 +43,7 @@ NOTIFYICONDATAW g_nid;
 HICON g_icoOn, g_icoOff;
 ULONGLONG g_crashes[3];
 HPOWERNOTIFY g_power, g_powerDisplay;
+int g_npLooks;      // the timer's looks at other apps' music (each one while an app is the source, else every third)
 bool g_displayOff;  // the screen is off (for the still wallpaper: the renderer reports it while it runs)
 int g_track = -1;       // playlist index the renderer is playing
 MusicState g_music;     // what the renderer last said about the music
@@ -720,14 +721,19 @@ bool RegisterMusicHotkey(UINT mods, UINT vk) {
 }
 
 // The sound shortcut: plays or pauses My music, as the player's button does (also while the video
-// wallpaper is off: it decides whether the music starts when it's back); mutes or unmutes the
-// video's audio (the video plays on, so the sound comes back in sync). With no sound, nothing.
+// wallpaper is off: it decides whether the music starts when it's back), or the app that's the
+// music's source; mutes or unmutes the video's audio (the video plays on, so the sound comes back in
+// sync). With no sound, nothing.
 void ToggleMusic() {
     if (g_settings.sound == 1) {
         g_settings.videoMuted = !g_settings.videoMuted;
         Log(L"tray: video's audio %ls by the shortcut", g_settings.videoMuted ? L"muted" : L"unmuted");
         Host_SettingsChanged();
         UI_Refresh();
+        return;
+    }
+    if (Music_FromApp()) {
+        Music_PlayPause();
         return;
     }
     if (g_settings.sound != 2 || Host_Songs().empty()) {
@@ -773,6 +779,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 MusicShortcut(false);
             }
             return 0;
+        case WM_VBG_NOWPLAYING: NowPlaying_Tick(); return 0;
         case WM_VBG_MEDIA_KEY:  // a media key (or the volume flyout's buttons), for My music
             switch (w) {
                 case 0: Host_PlayMusic(true); break;   // Play
@@ -860,6 +867,10 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (w == TIMER_TRIM) { KillTimer(h, TIMER_TRIM); Host_TrimMemory(); }
             else if (w == TIMER_CLOCK) { KillTimer(h, TIMER_CLOCK); SyncClock(true); }
             else if (w == TIMER_STOP) FinishPendingStop();
+            else if (w == TIMER_NOWPLAYING) {
+                if (Music_FromApp() || ++g_npLooks % 3 == 0) NowPlaying_Tick();
+                if (Music_FromApp() && NowPlaying_Get().playing) Host_NowPlayingChanged();  // (its place moves on)
+            }
             else if (w == TIMER_UPDATE) { KillTimer(h, TIMER_UPDATE); Update_Done(); UI_Refresh(); }
             else if (w == TIMER_CHECK) {  // a look for a new version, then again every 3 hours
                 SetTimer(h, TIMER_CHECK, 3 * 3600 * 1000, nullptr);
@@ -919,6 +930,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_DESTROY:
             g_exiting = true;
             Media_Stop();
+            NowPlaying_Stop();
             SyncClock();  // takes the clock off the desktop
             if (!g_endingSession) {
                 SyncLockScreen();  // exiting: the user's own pictures again (VideoBG no longer shows a video)
@@ -1233,6 +1245,8 @@ bool Host_PickMusic(HWND owner, bool add) {
     SetSongs(files);
     Log(L"tray: %zu song(s) chosen for my music", files.size());
     g_settings.sound = 2;
+    g_settings.musicSource.clear();  // (songs chosen: My music is the source)
+    g_settings.musicResume = false;
     g_settings.musicOrder.clear();  // new songs: in the order chosen, waiting for Play
     g_settings.musicPlaying = false;
     g_settings.musicTrack = -1;
@@ -1263,6 +1277,61 @@ void Host_PlayMusic(bool play) {
 void Host_SkipMusic(bool next) {
     Host_MusicCommand(next ? MC_NEXT : MC_PREV, 0);
     Host_PlayMusic(true);
+}
+
+// The music's source: My music, or an app (YouTube Music, Spotify...) that VideoBG only shows and
+// sends the user's presses to. Another app as the source pauses My music where it is (it plays on
+// when it's the source again); the app itself is never touched by the switch either way.
+std::vector<NowPlayingApp> Music_Sources() {
+    std::vector<NowPlayingApp> v{{L"", L"My music", g_settings.musicPlaying && g_music.playing}};
+    for (const NowPlayingApp& a : NowPlaying_Apps()) v.push_back(a);
+    const std::wstring& id = g_settings.musicSource;
+    if (!id.empty() && std::none_of(v.begin(), v.end(), [&](const NowPlayingApp& a) { return a.id == id; }))
+        v.push_back({id, NowPlaying_Name(id), false});  // (closed now: still there to go back to)
+    return v;
+}
+
+bool Music_FromApp() { return g_settings.sound == 2 && !g_settings.musicSource.empty(); }
+bool Music_Playing() { return Music_FromApp() ? NowPlaying_Get().playing : g_settings.musicPlaying; }
+bool Music_Moving() { return Music_FromApp() ? NowPlaying_Get().playing : g_settings.musicPlaying && g_music.playing; }
+
+void Music_PlayPause() {
+    if (Music_FromApp()) NowPlaying_Command(0);
+    else Host_PlayMusic(!g_settings.musicPlaying);
+}
+
+void Music_Skip(bool next) {
+    if (Music_FromApp()) NowPlaying_Command(next ? 1 : -1);
+    else Host_SkipMusic(next);
+}
+
+void Music_SeekMs(UINT ms) {
+    if (Music_FromApp()) NowPlaying_Seek(ms);
+    else Host_MusicCommand(MC_SEEK, (LPARAM)ms);
+}
+
+void Host_SetMusicSource(const std::wstring& id) {
+    if (id == g_settings.musicSource && g_settings.sound == 2) return;
+    const bool wasMine = g_settings.musicSource.empty();
+    if (wasMine && !id.empty()) {
+        g_settings.musicResume = g_settings.musicPlaying;
+        g_settings.musicPlaying = false;
+    } else if (!wasMine && id.empty()) {
+        g_settings.musicPlaying = g_settings.musicResume;
+        g_settings.musicResume = false;
+    }
+    g_settings.musicSource = id;
+    g_settings.sound = 2;
+    Log(L"tray: the music comes from %ls", id.empty() ? L"my music" : id.c_str());
+    Host_SettingsChanged();
+    NowPlaying_Tick();
+    Host_NowPlayingChanged();
+}
+
+void Host_NowPlayingChanged() {
+    Player_Update();
+    Modern_MusicChanged();
+    UI_Refresh();
 }
 
 // My music's play order, the same in both looks. The order chosen (as Windows listed the files) is
@@ -1392,6 +1461,7 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker, int wallpaperOn
     ChangeWindowMessageFilterEx(g_wnd, g_taskbarCreated, MSGFLT_ALLOW, nullptr);
     AddTray();
     Media_Start(g_wnd);
+    NowPlaying_Start(g_wnd);
 
     if (!RegisterToggleHotkey(g_settings.hkMods, g_settings.hkVk)) {
         Balloon(L"VideoBG's hotkey isn't available",
@@ -1420,6 +1490,7 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker, int wallpaperOn
     }
     SetTimer(g_wnd, TIMER_TRIM, 3000, nullptr);
     SetTimer(g_wnd, TIMER_CHECK, 15000, nullptr);  // a new version? (once VideoBG has settled in)
+    SetTimer(g_wnd, TIMER_NOWPLAYING, 1000, nullptr);  // what other apps play
 
     MSG msg;
     for (;;) {

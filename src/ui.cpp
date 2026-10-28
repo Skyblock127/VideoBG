@@ -48,6 +48,7 @@ enum Id {
     ID_PD_SCRIM, ID_PD_AREA, ID_PD_PREV, ID_PD_NEXT, ID_PD_COLOR, ID_PD_BODY, ID_PD_OPACITY, ID_PD_SIZE, ID_PD_CORNERS, ID_PD_RESET, ID_PD_DONE,
     ID_PD_PICK_COL, ID_PD_PICK_BODY, ID_PD_RST_COL, ID_PD_RST_BODY, ID_PD_RST_OPACITY, ID_PD_RST_SIZE, ID_PD_RST_CORNERS, ID_CLK_PICK, ID_PD_ROTATE, ID_PD_RST_ROTATE,
     ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
+    ID_MUSIC_SOURCE,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
     ID_VER_ROW0 = 400,   // video versions dialog: a version's row, and its delete button
@@ -327,6 +328,8 @@ struct UI {
     int songIns = 0;           // moving: the place it would land
     DWORD songEdgeSince = 0;   // moving: since when the cursor has been near the list's edge
     float seekFrac = -1;       // the music's seek bar while it's dragged
+    float seekHeld = -1;       // ...where it was let go (or stepped to), shown until the music gets there
+    ULONGLONG seekHeldUntil = 0;
     int songShown = -1;        // the song the player shows (clicking "Playlist" finds it in the list)
     bool searchOn = false;     // the playlist's search box is out
     std::wstring search;       // what's typed in it
@@ -1411,10 +1414,54 @@ std::wstring SongName(const std::wstring& path) {
 
 std::wstring Minutes(UINT ms) { return Fmt(L"%u:%02u", ms / 60000, ms / 1000 % 60); }
 
+// The seek bar's place (0..1): where it's dragged, or where it was let go until the music reports
+// it's there (at most two seconds), else where the music is.
+float SeekShown(UINT posMs, UINT durMs) {
+    if (u.drag == ID_MUSIC_SEEK && u.seekFrac >= 0) return u.seekFrac;
+    if (u.seekHeld >= 0) {
+        const bool there = durMs && std::abs((float)posMs - u.seekHeld * durMs) < 1500;
+        if (!there && GetTickCount64() < u.seekHeldUntil) return u.seekHeld;
+        u.seekHeld = -1;
+    }
+    return durMs ? std::min(1.f, (float)posMs / durMs) : 0;
+}
+
+void SeekHold(float frac) {
+    u.seekHeld = std::clamp(frac, 0.f, 1.f);
+    u.seekHeldUntil = GetTickCount64() + 2000;
+}
+
 // The player: the song, a seek bar, and shuffle / previous / play-pause / next / repeat.
 void PaintPlayer(float x, float w, float yy) {
     const Theme& t = u.th;
     const float lx = x + kPad, right = x + w - kPad;
+    if (Music_FromApp()) {  // another app's song: its buttons, as far as it takes them (shuffle and repeat are its own)
+        const NowPlaying np = NowPlaying_Get();
+        const std::wstring title = !np.on ? L"Nothing playing in " + np.app : np.title.empty() ? np.app : np.title;
+        const UINT dur = np.durMs;
+        const float f = SeekShown(np.PosNow(), dur);
+        const std::wstring note = dur ? Minutes((UINT)(f * dur)) + L" / " + Minutes(dur) : L"";
+        Text(L"\uE8D6", R(lx, yy, lx + 18, yy + 22), u.fIconSmall, np.on ? t.accent : t.text3);
+        const float noteW = note.empty() ? 0 : TextWidth(note, u.fSmall) + 16, room = right - noteW - (lx + 24);
+        const float tw = std::min(TextWidth(title, u.fStrong) + 2, room);
+        Text(title, R(lx + 24, yy, lx + 24 + tw, yy + 22), u.fStrong, np.on ? t.text : t.text2);
+        if (np.on && !np.artist.empty() && room - tw > 40)
+            Text(L"\u00B7  " + np.artist, R(lx + 24 + tw + 4, yy + 1, right - noteW, yy + 22), u.fSmall, t.text2);
+        Text(note, R(right - noteW, yy, right, yy + 22), u.fSmall, t.text2, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        yy += 26;
+        Slider(ID_MUSIC_SEEK, R(lx - 10, yy, right + 10, yy + 28), f, np.canSeek);
+        yy += 34;
+        const float cy = yy + 22, mid = (lx + right) / 2;
+        IconButton(ID_MUSIC_SHUFFLE, mid - 118, cy, 18, L"\uE8B1", false, false);
+        IconButton(ID_MUSIC_PREV, mid - 62, cy, 18, L"\uE892", false, np.canPrev);
+        const bool hot = np.canPlay && IsHot(ID_MUSIC_PLAY), pressed = hot && u.press == ID_MUSIC_PLAY;
+        Circle(mid, cy, 22, !np.canPlay ? Mix(t.accent, t.card, 0.6f) : pressed ? Mix(t.accent, t.card, 0.2f) : hot ? t.accentHover : t.accent);
+        Text(np.playing ? L"\uE769" : L"\uE768", R(mid - 22, cy - 22, mid + 22, cy + 22), u.fIcon, t.onAccent, DWRITE_TEXT_ALIGNMENT_CENTER);
+        AddHit(ID_MUSIC_PLAY, K_BUTTON, R(mid - 22, cy - 22, mid + 22, cy + 22), np.canPlay);
+        IconButton(ID_MUSIC_NEXT, mid + 62, cy, 18, L"\uE893", false, np.canNext);
+        IconButton(ID_MUSIC_REPEAT, mid + 118, cy, 18, L"\uE8EE", false, false);
+        return;
+    }
     const MusicState ms = Host_MusicState();
     const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
     const bool have = !Host_Songs().empty(), live = have && Host_IsOn() && ms.track >= 0;
@@ -1431,8 +1478,7 @@ void PaintPlayer(float x, float w, float yy) {
     } else if (live && g_settings.musicPlaying && !ms.playing) {
         note = L"Paused with the wallpaper";
     } else if (live) {
-        const float f = u.drag == ID_MUSIC_SEEK && u.seekFrac >= 0 ? u.seekFrac : 0;
-        note = Minutes(u.drag == ID_MUSIC_SEEK ? (UINT)(f * ms.durMs) : ms.posMs) + L" / " + Minutes(ms.durMs);
+        note = Minutes((UINT)(SeekShown(ms.posMs, ms.durMs) * ms.durMs)) + L" / " + Minutes(ms.durMs);
     }
     Text(L"\uE8D6", R(lx, yy, lx + 18, yy + 22), u.fIconSmall, have ? t.accent : t.text3);
     const float noteW = note.empty() ? 0 : TextWidth(note, u.fSmall) + 16;
@@ -1440,7 +1486,7 @@ void PaintPlayer(float x, float w, float yy) {
     u.songShown = track;
     Text(note, R(right - noteW, yy, right, yy + 22), u.fSmall, noteColor, DWRITE_TEXT_ALIGNMENT_TRAILING);
     yy += 26;
-    float frac = u.drag == ID_MUSIC_SEEK && u.seekFrac >= 0 ? u.seekFrac : ms.durMs ? (float)ms.posMs / ms.durMs : 0;
+    float frac = SeekShown(ms.posMs, ms.durMs);
     if (!live && track == kept && g_settings.musicDurMs) frac = (float)g_settings.musicPosMs / g_settings.musicDurMs;  // where it'll carry on
     Slider(ID_MUSIC_SEEK, R(lx - 10, yy, right + 10, yy + 28), frac, live && ms.durMs > 0);
     yy += 34;
@@ -1589,21 +1635,34 @@ void PaintSoundPage(float x, float w) {
     const float y = kTop, lx = x + kPad, cx = CtrlX(x), cw = CtrlW(w);
     const int mode = g_settings.sound;
     const float playerH = 110, styleH = kRowH + 8;  // (the player's style: a full-size button)
-    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 3 * kRowH + styleH + (mode == 2 ? playerH : kRowH) + 10);
+    const bool app = Music_FromApp();  // the music comes from another app (YouTube Music...): VideoBG's own sound settings don't apply
+    const D2D1_RECT_F card = R(x, y, x + w, y + kCardHead + 3 * kRowH + styleH + (mode == 2 ? playerH + kRowH : kRowH) + 10);
     Card(card, L"\uE767", L"Sound");
     float yy = y + kCardHead;
     Row(lx, yy, kLabelW, L"Play");
-    Seg(ID_SOUND, SegRect(cx, yy, cw), {L"Nothing", L"Video's audio", L"My music"}, mode);
+    Seg(ID_SOUND, SegRect(cx, yy, cw), {L"Nothing", L"Video's audio", L"Music"}, mode);
     yy += kRowH;
+    if (mode == 2) {  // where the music comes from: My music, or an app playing now (shown here, and the buttons go to it)
+        const std::vector<NowPlayingApp> v = Music_Sources();
+        std::vector<std::wstring> names;
+        int sel = 0;
+        for (size_t i = 0; i < v.size(); i++) {
+            names.push_back(v[i].name);
+            if (v[i].id == g_settings.musicSource) sel = (int)i;
+        }
+        Row(lx, yy, kLabelW, L"Music from");
+        Seg(ID_MUSIC_SOURCE, SegRect(cx, yy, cw), names, sel);
+        yy += kRowH;
+    }
     // The sound when the video pauses (covered, locked, screen off, on battery). With the
     // still wallpaper there's no sound at all.
-    Row(lx, yy, kLabelW, L"When video pauses", kRowH, mode != 0);
-    Seg(ID_KEEPSOUND, SegRect(cx, yy, cw), {L"Pause the sound too", L"Keep the sound playing"}, g_settings.keepSound ? 1 : 0, mode != 0);
+    Row(lx, yy, kLabelW, L"When video pauses", kRowH, mode != 0 && !app);
+    Seg(ID_KEEPSOUND, SegRect(cx, yy, cw), {L"Pause the sound too", L"Keep the sound playing"}, g_settings.keepSound ? 1 : 0, mode != 0 && !app);
     yy += kRowH;
-    Row(lx, yy, kLabelW, L"Volume", kRowH, mode != 0);
-    Slider(ID_VOLUME, SliderRect(cx, yy, cw), g_settings.volume / 100.f, mode != 0);
+    Row(lx, yy, kLabelW, L"Volume", kRowH, mode != 0 && !app);
+    Slider(ID_VOLUME, SliderRect(cx, yy, cw), g_settings.volume / 100.f, mode != 0 && !app);
     const bool muted = mode == 1 && g_settings.videoMuted;  // by the sound shortcut
-    SliderValue(g_settings.volume && !muted ? Fmt(L"%d%%", g_settings.volume) : std::wstring(L"Muted"), cx, yy, cw, mode != 0);
+    SliderValue(g_settings.volume && !muted ? Fmt(L"%d%%", g_settings.volume) : std::wstring(L"Muted"), cx, yy, cw, mode != 0 && !app);
     yy += kRowH;
     // The music player on the desktop (with My music): its style, picked from a list that shows each.
     {
@@ -3050,7 +3109,7 @@ void PaintPlayerDialog() {
     PopRounded(clip);
     Stroke(panel, t.dark ? Rgb(0x3C3C3C) : Rgb(0xD5D5D5), 8);
     Text(L"Music player", R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
-    Text(L"On your desktop while My music plays. Drag it there to move it: this shows where it is.", R(L + 24, T + 50, L + W - 24, T + 72),
+    Text(L"On your desktop while music plays. Drag it there to move it: this shows where it is.", R(L + 24, T + 50, L + W - 24, T + 72),
          u.fBody, t.text2);
     // The close-up: the wallpaper where the player is, the player on it.
     pd.closeup = R(L + 24, T + 82, L + W - 24, T + 82 + 220);
@@ -3386,7 +3445,7 @@ void PaintFontDialog() {
     Text(fnt.langs ? L"Clock language" : fnt.dates ? L"Date style" : fnt.players ? L"Music player on the desktop" : fnt.walls ? L"Your wallpapers" : L"Clock style",
          R(L + 24, T + 16, L + W - 24, T + 46), u.fSubtitle, t.text);
     Text(fnt.langs     ? L"The day, month and AM/PM words come from Windows. Type a letter to jump."
-         : fnt.players ? L"It shows while My music plays with the video wallpaper. Click one to use it."
+         : fnt.players ? L"It shows while music plays with the video wallpaper. Click one to use it."
          : fnt.walls   ? L"The videos you switch between (the modern look's too). Click one to make it your wallpaper."
                        : L"Click one to use it; your desktop shows it right away.",
          R(L + 24, T + 50, L + W - 24, T + 72), u.fBody, t.text2);
@@ -4737,7 +4796,8 @@ void OnSlider(int id, float frac, bool final) {
         case ID_MUSIC_SEEK:
             u.seekFrac = frac;
             if (final) {
-                Host_MusicCommand(MC_SEEK, (LPARAM)(frac * Host_MusicState().durMs));
+                Music_SeekMs((UINT)(frac * (Music_FromApp() ? NowPlaying_Get().durMs : Host_MusicState().durMs)));
+                SeekHold(frac);
                 u.seekFrac = -1;
             }
             break;
@@ -4783,9 +4843,20 @@ bool StepSlider(int dir) {
             Host_LiveVolume(g_settings.volume);
             break;
         case ID_MUSIC_SEEK: {  // five seconds a step
+            // (from where the bar shows: a step taken before the music reported the last one counts)
+            if (Music_FromApp()) {
+                const NowPlaying np = NowPlaying_Get();
+                if (!np.canSeek) return false;
+                const int to = std::clamp((int)(SeekShown(np.PosNow(), np.durMs) * np.durMs) + dir * 5000, 0, (int)np.durMs - 1000);
+                NowPlaying_Seek((UINT)to);
+                SeekHold((float)to / np.durMs);
+                break;
+            }
             const MusicState ms = Host_MusicState();
             if (!ms.durMs) return false;
-            Host_MusicCommand(MC_SEEK, (LPARAM)std::clamp((int)ms.posMs + dir * 5000, 0, (int)ms.durMs - 1000));
+            const int to = std::clamp((int)(SeekShown(ms.posMs, ms.durMs) * ms.durMs) + dir * 5000, 0, (int)ms.durMs - 1000);
+            Host_MusicCommand(MC_SEEK, (LPARAM)to);
+            SeekHold((float)to / ms.durMs);
             break;
         }
         case ID_TIMELINE: {
@@ -4867,16 +4938,26 @@ void OnSeg(int id, int i) {
         case ID_COVER: g_settings.pauseCover = i; break;
         case ID_SOUND:
             if (i == g_settings.sound) return;
-            if (i == 2 && Host_Songs().empty()) {  // "my music" needs songs first
-                Host_PickMusic(u.hwnd, false);
-                return;
+            if (i == 2 && Host_Songs().empty() && g_settings.musicSource.empty()) {  // music needs songs first, or an app playing
+                const std::vector<NowPlayingApp> apps = NowPlaying_Apps();
+                if (apps.empty()) {
+                    Host_PickMusic(u.hwnd, false);
+                    return;
+                }
+                g_settings.musicSource = apps[0].id;
             }
             if (i == 2) g_settings.musicPlaying = false;  // ready to play, but silent until Play is pressed
             if (g_settings.sound == 2) Host_KeepMusicPlace();  // leaving My music: it carries on from here next time
             g_settings.sound = i;
             if (i != 0 && g_settings.volume == 0) g_settings.volume = 60;
-            Log(L"ui: sound set to %ls", i == 0 ? L"nothing" : i == 1 ? L"video's audio" : L"my music");
+            Log(L"ui: sound set to %ls", i == 0 ? L"nothing" : i == 1 ? L"video's audio" : L"music");
             break;
+        case ID_MUSIC_SOURCE: {
+            const std::vector<NowPlayingApp> v = Music_Sources();
+            if (i >= 0 && i < (int)v.size()) Host_SetMusicSource(v[i].id);
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return;
+        }
         case ID_BATTERY: g_settings.onBattery = i; break;
         case ID_LAUNCH: g_settings.launch = i; break;
         case ID_LOOK:
@@ -5330,7 +5411,8 @@ void OnClick(int id) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
-    if (id >= ID_SONG_ROW0 && id < ID_SONG_GRIP0) {  // play this song
+    if (id >= ID_SONG_ROW0 && id < ID_SONG_GRIP0) {  // play this song (not while another app is the source)
+        if (Music_FromApp()) return;
         Host_MusicCommand(MC_PLAY_INDEX, id - ID_SONG_ROW0);
         if (!g_settings.musicPlaying) {
             g_settings.musicPlaying = true;
@@ -5441,12 +5523,20 @@ void OnClick(int id) {
             break;
         case ID_MUSIC_SEARCH_X: SearchClose(); break;
         case ID_MUSIC_PLAY:
+            if (Music_FromApp()) {
+                Music_PlayPause();
+                break;
+            }
             g_settings.musicPlaying = !g_settings.musicPlaying;
             Log(L"ui: music %ls", g_settings.musicPlaying ? L"played" : L"paused");
             Host_SettingsChanged();
             break;
         case ID_MUSIC_PREV:
         case ID_MUSIC_NEXT:
+            if (Music_FromApp()) {
+                Music_Skip(id == ID_MUSIC_NEXT);
+                break;
+            }
             Host_MusicCommand(id == ID_MUSIC_NEXT ? MC_NEXT : MC_PREV, 0);
             if (!g_settings.musicPlaying) {  // skipping means listening
                 g_settings.musicPlaying = true;

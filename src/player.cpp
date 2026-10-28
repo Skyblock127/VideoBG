@@ -52,6 +52,7 @@ struct Shown {
     bool playing = false;
     float done = 0;            // how far into the song (0..1)
     int volume = 0;
+    bool noVolume = false;     // another app is the source: its volume isn't VideoBG's, so none shows
     D2D1_COLOR_F accent{};
     float turn = 0, turn2 = 0, slow = 0;  // degrees turned: the record (and a cassette's left reel), a cassette's right reel, a disc
     float arm = 0;             // the record's arm: 0 resting beside it, 1 on it
@@ -415,7 +416,7 @@ void Buttons(const PlayerStyle& st, const Shown& s) {
 // The volume (VideoBG's own, as in its settings): its icon, then the slider.
 void Volume(const PlayerStyle& st, const Shown& s) {
     const D2D1_RECT_F& t = st.volume;
-    if (t.right <= t.left) return;  // (it has none)
+    if (t.right <= t.left || s.noVolume) return;  // (it has none)
     const float cy = (t.top + t.bottom) / 2;
     Text(s.volume == 0 ? L"\uE74F" : s.volume < 34 ? L"\uE993" : s.volume < 67 ? L"\uE994" : L"\uE995", R(t.left - 26, cy - 12, t.left - 4, cy + 12),
          D.fIcon, Col(0xFFFFFF, 0.8f));
@@ -1030,7 +1031,7 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
         visink->EndFigure(D2D1_FIGURE_END_CLOSED);
         visink->Close();
         visink->Release();
-        D.br->SetColor(Col(0xB8C8D2));
+        D.br->SetColor(Col(0xB8C8D2, s.noVolume ? 0.3f : 1));  // (greyed with another app as the source)
         D.rt->DrawGeometry(vig, D.br, 0.8f, D.round);
         vig->Release();
     }
@@ -1045,7 +1046,7 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
         wsink->EndFigure(D2D1_FIGURE_END_OPEN);
         wsink->Close();
         wsink->Release();
-        D.br->SetColor(Col(0xB8C8D2, 0.75f));
+        D.br->SetColor(Col(0xB8C8D2, s.noVolume ? 0.25f : 0.75f));
         D.rt->DrawGeometry(wg, D.br, 0.8f, D.round);
         wg->Release();
     }
@@ -1053,12 +1054,14 @@ void DrawRadio(const PlayerStyle&, const Shown& s) {
     Fill(R(263.0f, 141.5f, 347.0f, 144.5f), Col(0x091017), 1.5f);
     Stroke(R(263.0f, 141.5f, 347.0f, 144.5f), Col(0x455660), 1.5f, 0.4f);
 
-    const float fillW = 84.0f * (s.volume / 100.f);
-    if (fillW > 0.5f) Fill(R(263.4f, 141.9f, 263.4f + fillW, 144.1f), s.accent, 1.1f);
-    const float thx = 263.0f + fillW;
-    Circle(Pt(thx, 143.0f), 3.8f, Col(0xDCE8EE));
-    Ring(Pt(thx, 143.0f), 3.8f, Col(0x7A8A94), 0.6f);
-    Circle(Pt(thx, 142.6f), 1.4f, Col(0xFFFFFF, 0.85f));
+    if (!s.noVolume) {  // (an empty groove with another app as the source)
+        const float fillW = 84.0f * (s.volume / 100.f);
+        if (fillW > 0.5f) Fill(R(263.4f, 141.9f, 263.4f + fillW, 144.1f), s.accent, 1.1f);
+        const float thx = 263.0f + fillW;
+        Circle(Pt(thx, 143.0f), 3.8f, Col(0xDCE8EE));
+        Ring(Pt(thx, 143.0f), 3.8f, Col(0x7A8A94), 0.6f);
+        Circle(Pt(thx, 142.6f), 1.4f, Col(0xFFFFFF, 0.85f));
+    }
 
     // 9. Lower trim line and markings
     Line(Pt(143.0f, 162.0f), Pt(347.0f, 162.0f), Col(0x60727E, 0.45f), 0.4f);
@@ -1136,19 +1139,34 @@ const PlayerStyle& Style() {
     return kStyles[std::clamp(g_settings.musicPlayer - 1, 0, (int)std::size(kStyles) - 1)];
 }
 
+// With another app as the music's source, only the buttons it takes work (and its place, if it can
+// be moved); the volume is VideoBG's own, so it's left alone.
 int HitPart(const PlayerStyle& st, float x, float y) {
     auto over = [&](D2D1_POINT_2F c, float r) { return hypotf(x - c.x, y - c.y) <= r + 3; };
-    if (over(st.play, st.playR)) return PART_PLAY;
-    if (over(st.prev, st.btn)) return PART_PREV;
-    if (over(st.next, st.btn)) return PART_NEXT;
+    const bool app = Music_FromApp();
+    const NowPlaying np = app ? NowPlaying_Get() : NowPlaying{};
+    if (over(st.play, st.playR)) return !app || np.canPlay ? PART_PLAY : PART_BODY;
+    if (over(st.prev, st.btn)) return !app || np.canPrev ? PART_PREV : PART_BODY;
+    if (over(st.next, st.btn)) return !app || np.canNext ? PART_NEXT : PART_BODY;
     const D2D1_RECT_F& v = st.volume;
-    if (v.right > v.left && x >= v.left - 26 && x <= v.right + 10 && y >= v.top - 8 && y <= v.bottom + 6) return PART_VOLUME;
+    if (!app && v.right > v.left && x >= v.left - 26 && x <= v.right + 10 && y >= v.top - 8 && y <= v.bottom + 6) return PART_VOLUME;
     const MusicState ms = Host_MusicState();
-    if (ms.track >= 0 && ms.durMs && st.seek(st, x, y, false) >= 0) return PART_SEEK;  // (only while a song is there to move in)
+    const bool movable = app ? np.canSeek : ms.track >= 0 && ms.durMs;  // (only while a song is there to move in)
+    if (movable && st.seek(st, x, y, false) >= 0) return PART_SEEK;
     return x >= 0 && y >= 0 && x < st.w && y < st.h ? PART_BODY : PART_NONE;
 }
 
 // ---- The song and what turns -----------------------------------------------------------------
+
+// The cover of another app's song (it gives the picture itself).
+void LoadAppCover(const NowPlaying& np) {
+    const std::wstring key = np.cover ? L"app\n" + np.coverKey : L"app";
+    if (key == W.artFor) return;
+    W.artFor = key;
+    Rel(D.art);
+    W.artPx = np.cover ? *np.cover : std::vector<uint32_t>{};
+    W.artW = W.artH = np.cover ? 160 : 0;
+}
 
 // The song's cover (the picture in the file, as Explorer shows it), when the song changes.
 void LoadCover(const std::wstring& path) {
@@ -1288,6 +1306,23 @@ void UseLook(const Settings::PlayerLook& look) {
 
 // What shows now; seek (0..1): the place being dragged to, in a preview.
 Shown Current(float seek = -1, int style = 0) {
+    if (Music_FromApp()) {  // another app's song
+        const NowPlaying np = NowPlaying_Get();
+        const UINT dur = np.durMs;
+        UINT pos = np.PosNow();
+        if (seek < 0 && W.seekFrac >= 0 && (W.seeking || Now() < W.seekHold)) seek = W.seekFrac;
+        if (seek >= 0) pos = (UINT)(seek * dur);
+        Shown s;
+        s.song = !np.on ? L"Nothing playing in " + np.app : np.title.empty() ? np.app : np.title;
+        s.where = np.on && dur ? Minutes(pos) + L" / " + Minutes(dur) : np.on ? np.artist : L"";
+        s.playing = np.playing;
+        s.done = dur ? std::min(1.f, (float)pos / dur) : 0;
+        s.volume = g_settings.volume;
+        s.noVolume = true;
+        s.accent = AccentOf(style ? style : g_settings.musicPlayer);
+        LoadAppCover(np);
+        return s;
+    }
     const MusicState ms = Host_MusicState();
     const int n = (int)W.songs.size();
     const int kept = g_settings.musicTrack >= 0 && g_settings.musicTrack < n ? g_settings.musicTrack : 0;
@@ -1506,7 +1541,7 @@ void Draw(bool force = false) {
     const float deg = TurnOf(look);
     wchar_t key[300];
     swprintf(key, 300, L"%d|%ls|%ls|%d|%d|%d|%d|%d|%d|%.2f|%ls|%ls|%ls|%.1f|%.2f|%.1f", g_settings.musicPlayer, s.song.c_str(), s.where.c_str(),
-             s.playing, (int)(s.done * 400), W.hot, W.press, W.sliding, g_settings.volume, W.scale, W.artFor.c_str(), look.color.c_str(),
+             s.playing, (int)(s.done * 400), W.hot, W.press, W.sliding, s.noVolume ? -1 : g_settings.volume, W.scale, W.artFor.c_str(), look.color.c_str(),
              look.body.c_str(), look.corners, look.opacity, deg);
     if (!force && W.drawn == key) {
         KeepTurning();
@@ -1571,7 +1606,7 @@ void Draw(bool force = false) {
 
 // About 30 times a second while something on it turns and can be seen; otherwise nothing runs.
 void KeepTurning() {
-    const bool playing = g_settings.musicPlaying && Host_MusicState().playing;
+    const bool playing = Music_Moving();
     const bool want = W.hwnd && Style().turns && DesktopSeen() && !W.dragging && (playing || !Settled());
     if (want == W.turning) return;
     W.turning = want;
@@ -1617,7 +1652,10 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 const float dt = (float)std::clamp(now - W.last, 0.0, 0.1);
                 W.last = now;
                 const MusicState ms = Host_MusicState();
-                Turn(dt, g_settings.musicPlaying && ms.playing, ms.durMs ? std::min(1.f, (float)ms.posMs / ms.durMs) : 0, Style().sound);
+                const NowPlaying np = Music_FromApp() ? NowPlaying_Get() : NowPlaying{};
+                const float done = Music_FromApp() ? (np.durMs ? std::min(1.f, (float)np.PosNow() / np.durMs) : 0)
+                                                   : ms.durMs ? std::min(1.f, (float)ms.posMs / ms.durMs) : 0;
+                Turn(dt, Music_Moving(), done, Style().sound);
                 Draw(true);
             }
             return 0;
@@ -1687,8 +1725,8 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 SaveSettings(g_settings);
                 Log(L"player: moved to %.1f%%, %.1f%%", g_settings.playerX * 100, g_settings.playerY * 100);
             } else if (part == HitPart(Style(), x, y)) {
-                if (part == PART_PLAY) Host_PlayMusic(!g_settings.musicPlaying);
-                else if (part == PART_PREV || part == PART_NEXT) Host_SkipMusic(part == PART_NEXT);
+                if (part == PART_PLAY) Music_PlayPause();
+                else if (part == PART_PREV || part == PART_NEXT) Music_Skip(part == PART_NEXT);
             }
             Draw();
             return 0;
@@ -1734,7 +1772,7 @@ void Player_Show(const std::vector<std::wstring>& songs, bool force) {
     const bool fresh = !W.hwnd;
     if (fresh && !CreatePlayerWindow()) return;
     W.songs = songs;
-    if (fresh) W.arm = g_settings.musicPlaying ? 1.f : 0.f;
+    if (fresh) W.arm = Music_Playing() ? 1.f : 0.f;
     Draw(force || fresh);
     const POINT p = Origin();
     SetWindowPos(W.hwnd, HWND_BOTTOM, p.x, p.y, W.ow, W.oh, SWP_NOACTIVATE | SWP_SHOWWINDOW);  // bottom = just above the desktop
@@ -1878,11 +1916,12 @@ void Player_Seek(float frac) {
     const MusicState ms = Host_MusicState();
     W.seekFrac = std::clamp(frac, 0.f, 1.f);
     W.seekHold = Now() + 1.2;  // shown there until the song has got there
-    if (ms.track >= 0 && ms.durMs) Host_MusicCommand(MC_SEEK, (LPARAM)(W.seekFrac * ms.durMs));
+    if (Music_FromApp()) NowPlaying_Seek((UINT)(W.seekFrac * NowPlaying_Get().durMs));
+    else if (ms.track >= 0 && ms.durMs) Host_MusicCommand(MC_SEEK, (LPARAM)(W.seekFrac * ms.durMs));
     Player_Update();
 }
 
-bool Player_Turns() { return g_settings.musicPlaying && Host_MusicState().playing; }
+bool Player_Turns() { return Music_Moving(); }
 
 void Player_FreePreview() {
     if (!W.hwnd) StopDrawing();

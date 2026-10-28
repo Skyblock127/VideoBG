@@ -12,6 +12,7 @@
 #include <windows.h>
 #undef GetCurrentTime  // clashes with IMFMediaEngine::GetCurrentTime
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,7 @@ enum : UINT {
     WM_VBG_HOLD,                         // host -> renderer   wParam 1 = hold the video still (the picker's frame slider), 0 = let it play
     WM_VBG_MEDIA_KEY,                    // media controls -> host: wParam = the button (a keyboard's play/pause, next, previous)
     WM_VBG_UPDATE,                       // update thread -> host: wParam = the UP_* stage it's at
+    WM_VBG_NOWPLAYING,                   // media sessions -> host: another app's music changed (have a look)
 };
 // A box on the showcase (target pixels), 16 bits a side.
 inline LPARAM PackBox(const RECT& r) {
@@ -143,7 +145,9 @@ struct Settings {
     int gpu = 0;          // graphics chip: 0 the one driving the main display, 1 power saving, 2 high performance
     int speed = 100;      // playback speed in percent
     int volume = 60;      // 0..100, for whichever sound source is chosen
-    int sound = 0;        // 0 off (audio never decoded), 1 the video's own audio, 2 my music
+    int sound = 0;        // 0 off (audio never decoded), 1 the video's own audio, 2 music
+    std::wstring musicSource; // the music (sound 2): "" my music, else the app it comes from (its app id, as Windows' media controls name it)
+    bool musicResume = false; // my music was playing when another app became the source: it plays again when it's back
     std::vector<int> musicOrder;  // my music: the play order (playlist indices); empty = as chosen
     int musicRepeat = 1;      // my music: 1 repeats the playlist, 2 repeats the song
     bool musicPlaying = true; // my music: playing (else paused by the user)
@@ -547,6 +551,42 @@ void Player_FreePreview();
 void Media_Start(HWND host);
 void Media_Update();  // My music changed (song, playing, its songs or the sound source)
 void Media_Stop();  // done with previews (what drew them goes, unless the player shows)
+// Now playing from any app (nowplaying.cpp): another app's media session, from Windows' media controls.
+// Music from another app (nowplaying.cpp): the app chosen as the source, from Windows' media controls.
+struct NowPlaying {
+    std::wstring id, app;  // the source app (its id and name; "" = my music)
+    bool on = false;       // it has a media session now
+    bool playing = false;
+    std::wstring title, artist;
+    UINT posMs = 0, durMs = 0;  // its place, as the app last said (durMs 0: it doesn't say)
+    INT64 posAt = 0, startTicks = 0;  // when it said that (a FILETIME); where its timeline starts (100 ns)
+    bool canPrev = false, canPlay = false, canNext = false, canSeek = false;  // the buttons it takes
+    std::shared_ptr<std::vector<uint32_t>> cover;  // its song's cover (160 x 160), if it has one
+    std::wstring coverKey;  // changes with each new picture
+    UINT PosNow() const;  // its place now (moving on while it plays)
+};
+struct NowPlayingApp {
+    std::wstring id, name;
+    bool playing = false;
+};
+void NowPlaying_Start(HWND host);
+void NowPlaying_Tick();  // have a look (the timer, and Windows saying something changed)
+NowPlaying NowPlaying_Get();
+std::vector<NowPlayingApp> NowPlaying_Apps();  // the other apps with a media session now
+std::wstring NowPlaying_Name(const std::wstring& id);  // an app's name ("YouTube Music")
+void NowPlaying_Command(int what);  // -1 previous, 0 play / pause, 1 next
+void NowPlaying_Seek(UINT ms);
+void NowPlaying_Stop();
+// The music, wherever it comes from (host.cpp): My music, or the app chosen as its source.
+std::vector<NowPlayingApp> Music_Sources();  // what the music can come from: My music (id ""), then the apps with a session (and the chosen one)
+bool Music_FromApp();             // an app is the source (the sound is music)
+bool Music_Playing();             // what the play button shows
+bool Music_Moving();              // the music is heard now (a player's record turns)
+void Music_PlayPause();
+void Music_Skip(bool next);
+void Music_SeekMs(UINT ms);
+void Host_SetMusicSource(const std::wstring& id);  // "" my music (it plays on where it was); picking one makes the sound music
+void Host_NowPlayingChanged();    // the source app's song, place or state changed
 // The clock's fonts. Fonts VideoBG can't include (free for personal use only) are used once they're
 // on the PC: installed, or added through VideoBG (kept in %LOCALAPPDATA%\VideoBG\Fonts).
 struct ClockFontInfo {
