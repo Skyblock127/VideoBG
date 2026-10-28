@@ -186,6 +186,8 @@ ULONGLONG g_songAt;           // when the song came
 std::atomic<bool> g_propsChanged{false};  // the app said its song's details changed (its cover may be new)
 bool g_opChanged;             // ...before the read on its way was asked for
 NowPlaying g_now;
+ULONGLONG g_lostAt;           // when the source app's session went (0: it's there)
+int g_pending = 2;            // a button pressed meanwhile (-1 previous, 0 play / pause, 1 next; 2 none): sent once it's back
 std::wstring g_logged;
 
 struct Handler : IHandler {
@@ -447,7 +449,7 @@ void NowPlaying_Tick() {
                 a.name = known != g_apps.end() ? known->name : LookUpName(id);
                 a.playing = st == SESSION_PLAYING;
                 apps.push_back(a);
-                if (id == want && !source) {
+                if (id == want && !source && st != SESSION_CLOSED) {
                     source = s;
                     continue;
                 }
@@ -466,10 +468,25 @@ void NowPlaying_Tick() {
         Log(L"nowplaying: sessions (status 4 plays, 5 paused): %ls", all.empty() ? L"none" : all.c_str());
     }
     if (source) {
+        g_lostAt = 0;
         Watch(source);
         source->Release();
+        if (g_pending != 2) {
+            const int what = g_pending;
+            g_pending = 2;
+            NowPlaying_Command(what);
+        }
     } else {
+        // Chrome closes a song's session and opens a new one when it skips (1-4 s with none): the
+        // song stays shown meanwhile, rather than "Nothing playing" for a moment.
+        const ULONGLONG at = GetTickCount64();
+        if (!g_lostAt) g_lostAt = at;
         Unwatch();
+        if (g_now.on && g_now.id == want && at - g_lostAt < 8000) {
+            if (appsChanged) UI_Refresh();
+            return;
+        }
+        g_pending = 2;
     }
 
     NowPlaying now;
@@ -581,7 +598,10 @@ std::wstring NowPlaying_Name(const std::wstring& id) {
 }
 
 void NowPlaying_Command(int what) {
-    if (!g_watched) return;
+    if (!g_watched) {
+        if (g_lostAt && g_now.on) g_pending = what;  // (between two of its sessions)
+        return;
+    }
     IInspectable* op = nullptr;  // (it carries on once let go)
     const HRESULT hr = what < 0 ? g_watched->TrySkipPreviousAsync(&op) : what > 0 ? g_watched->TrySkipNextAsync(&op)
                                                                                     : g_watched->TryTogglePlayPauseAsync(&op);
