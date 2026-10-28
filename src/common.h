@@ -561,6 +561,7 @@ struct NowPlaying {
     UINT posMs = 0, durMs = 0;  // its place, as the app last said (durMs 0: it doesn't say)
     INT64 posAt = 0, startTicks = 0;  // when it said that (a FILETIME); where its timeline starts (100 ns)
     bool canPrev = false, canPlay = false, canNext = false, canSeek = false;  // the buttons it takes
+    bool waiting = false;  // skipped: the next song is on its way (no place shown; the app hasn't said which yet)
     std::shared_ptr<std::vector<uint32_t>> cover;  // its song's cover (160 x 160), if it has one
     std::wstring coverKey;  // changes with each new picture
     UINT PosNow() const;  // its place now (moving on while it plays)

@@ -187,6 +187,10 @@ std::atomic<bool> g_propsChanged{false};  // the app said its song's details cha
 bool g_opChanged;             // ...before the read on its way was asked for
 NowPlaying g_now;
 ULONGLONG g_lostAt;           // when the source app's session went (0: it's there)
+ULONGLONG g_skipAt;            // a skip on its way since then (0: none): until the app shows the next song
+std::wstring g_skipKey;       // ...the song it skipped from
+INT64 g_skipFt;               // ...when (a FILETIME, as the app's place is stamped)
+ULONGLONG g_watchAt, g_propsAt;  // when its session was last new; when its song was last read
 int g_pending = 2;            // a button pressed meanwhile (-1 previous, 0 play / pause, 1 next; 2 none): sent once it's back
 std::wstring g_logged;
 
@@ -329,6 +333,7 @@ void Watch(ISession* s) {
     s->add_MediaPropertiesChanged(&g_propsHandler, &g_tProps);
     s->add_PlaybackInfoChanged(&g_handler, &g_tInfo);
     s->add_TimelinePropertiesChanged(&g_handler, &g_tTime);
+    g_watchAt = GetTickCount64();
     Log(L"nowplaying: watching %ls's session", AppId(s).c_str());
 }
 
@@ -483,7 +488,18 @@ void NowPlaying_Tick() {
         if (!g_lostAt) g_lostAt = at;
         Unwatch();
         if (g_now.on && g_now.id == want && at - g_lostAt < 8000) {
-            if (appsChanged) UI_Refresh();
+            if (!g_skipAt) {  // (skipped in the app itself)
+                g_skipAt = at;
+                g_skipKey = g_now.title + L"\n" + g_now.artist;
+            }
+            if (!g_now.waiting) {
+                g_now.waiting = true;
+                g_now.posMs = g_now.durMs = 0;
+                g_now.canSeek = false;
+                Host_NowPlayingChanged();
+            } else if (appsChanged) {
+                UI_Refresh();
+            }
             return;
         }
         g_pending = 2;
@@ -504,6 +520,7 @@ void NowPlaying_Tick() {
         if (g_propsOp && Finished(g_propsOp)) {
             IProps* props = nullptr;
             if (Finished(g_propsOp) > 0 && SUCCEEDED(g_propsOp->GetResults(&props)) && props) {
+                g_propsAt = GetTickCount64();
                 HSTRING h = nullptr;
                 now.title = SUCCEEDED(props->get_Title(&h)) ? Take(h) : L"";
                 h = nullptr;
@@ -552,7 +569,20 @@ void NowPlaying_Tick() {
             g_watched->TryGetMediaPropertiesAsync(&g_propsOp);
         }
     }
+    // A skip on its way: the place isn't shown (nor moves on) until the app shows the next song: its
+    // song changes, or a new session (Chrome's) has said which song it is, or the song starts again.
+    if (g_skipAt) {
+        const bool arrived = now.title + L"\n" + now.artist != g_skipKey || (g_watchAt > g_skipAt && g_propsAt > g_watchAt) ||
+                             (now.posAt > g_skipFt && now.posMs < 3000);
+        if (arrived || !now.on || GetTickCount64() - g_skipAt > 8000) g_skipAt = 0;
+    }
+    if (g_skipAt) {
+        now.waiting = true;
+        now.posMs = now.durMs = 0;
+        now.canSeek = false;
+    }
     const bool changed = now.on != g_now.on || now.id != g_now.id || now.playing != g_now.playing || now.title != g_now.title ||
+                         now.waiting != g_now.waiting ||
                          now.artist != g_now.artist || now.durMs != g_now.durMs || now.canPrev != g_now.canPrev || now.canNext != g_now.canNext ||
                          now.canPlay != g_now.canPlay || now.canSeek != g_now.canSeek || now.cover != g_now.cover;
     const bool moved = now.posMs != g_now.posMs || now.posAt != g_now.posAt;
@@ -577,7 +607,7 @@ void NowPlaying_Tick() {
 NowPlaying NowPlaying_Get() { return g_now; }
 
 UINT NowPlaying::PosNow() const {
-    if (!playing || !posAt) return std::min(posMs, durMs);
+    if (!playing || waiting || !posAt) return std::min(posMs, durMs);
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
     const INT64 nowT = (INT64)((UINT64)ft.dwHighDateTime << 32 | ft.dwLowDateTime);
@@ -598,6 +628,17 @@ std::wstring NowPlaying_Name(const std::wstring& id) {
 }
 
 void NowPlaying_Command(int what) {
+    if (what && g_now.on) {  // the skip shows at once: no place until the app shows the next song
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        if (!g_skipAt) g_skipKey = g_now.title + L"\n" + g_now.artist;
+        g_skipAt = GetTickCount64();
+        g_skipFt = (INT64)((UINT64)ft.dwHighDateTime << 32 | ft.dwLowDateTime);
+        g_now.waiting = true;
+        g_now.posMs = g_now.durMs = 0;
+        g_now.canSeek = false;
+        Host_NowPlayingChanged();
+    }
     if (!g_watched) {
         if (g_lostAt && g_now.on) g_pending = what;  // (between two of its sessions)
         return;

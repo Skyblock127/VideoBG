@@ -1293,7 +1293,11 @@ std::vector<NowPlayingApp> Music_Sources() {
 
 bool Music_FromApp() { return g_settings.sound == 2 && !g_settings.musicSource.empty(); }
 bool Music_Playing() { return Music_FromApp() ? NowPlaying_Get().playing : g_settings.musicPlaying; }
-bool Music_Moving() { return Music_FromApp() ? NowPlaying_Get().playing : g_settings.musicPlaying && g_music.playing; }
+bool Music_Moving() {
+    if (!Music_FromApp()) return g_settings.musicPlaying && g_music.playing;
+    const NowPlaying np = NowPlaying_Get();
+    return np.playing && !np.waiting;
+}
 
 void Music_PlayPause() {
     if (Music_FromApp()) NowPlaying_Command(0);
