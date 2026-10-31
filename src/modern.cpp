@@ -176,6 +176,7 @@ struct Picker {
     int moveCard = -1;                // the card being moved among the others (it follows the pointer)
     float moveX = 0, moveY = 0;       // the pointer, while it moves
     bool moveHeld = false;            // ...still held (let go: it falls back into the deck)
+    bool moveKeys = false;            // ...held by Alt (the middle card; Alt+left / right move it, letting go of Alt drops it)
     float moveRise = 0;               // 0 in the deck .. 1 on the arc above it (animated)
     float moveAng = 0;                // where it is on that arc (radians from the middle; follows the pointer)
     std::vector<float> shiftBy;       // each card's way still to go after the moving card passed it (in places; it fades out)
@@ -3953,7 +3954,7 @@ void MoveCardAt(float) {
 // Let go: it stays in its new place and falls back into the deck there.
 void DropCard() {
     if (P.moveCard < 0 || !P.moveHeld) return;
-    P.moveHeld = false;
+    P.moveHeld = P.moveKeys = false;
     const int at = P.moveCard;
     SaveCards();
     Log(L"picker: %ls moved to place %d", P.cards[at].path.c_str(), at + 1);
@@ -4194,8 +4195,26 @@ bool ClockKey(WPARAM vk) {
     return true;
 }
 
+// Alt down on the deck: the middle card rises, to move with the arrows; Alt up: it drops there.
+void AltKey(bool down) {
+    if (down) {
+        if (P.mode != 0 || P.phase != BROWSING || P.moveCard >= 0 || P.down || P.menu || P.actions || P.cards.size() < 2 || P.focus < 0)
+            return;
+        P.pressCard = P.focus;
+        StartMove(P.W / 2, 0);
+        P.moveKeys = P.moveCard >= 0;
+        P.pressCard = -1;
+    } else if (P.moveKeys) {
+        DropCard();
+    }
+}
+
 void OnKey(WPARAM vk) {
     if (P.phase != BROWSING && P.phase != OPENING) return;  // choosing or closing: nearly done
+    if (vk == VK_MENU) {  // (held, it repeats: only the first counts)
+        AltKey(true);
+        return;
+    }
     if (P.mode == 3 && P.searchOn && !P.picking) {  // the letters come as WM_CHAR
         if (vk == VK_ESCAPE || vk == VK_RETURN) {
             P.searchOn = false;
@@ -4272,6 +4291,15 @@ void OnKey(WPARAM vk) {
         P.dirty = true;
         return;
     }
+    if (P.moveKeys && (vk == VK_LEFT || vk == VK_RIGHT)) {  // Alt+arrows: the raised card moves (the deck rolls under it)
+        const int to = P.moveCard + (vk == VK_RIGHT ? 1 : -1);
+        if (to >= 0 && to < (int)P.cards.size()) {
+            MoveCard(P.moveCard, to);
+            P.scrollTo = (float)to;
+            P.dirty = true;
+        }
+        return;
+    }
     if (GetKeyState(VK_CONTROL) < 0 && (vk == VK_LEFT || vk == VK_RIGHT) && P.focus >= 0) {  // Ctrl+arrows move the middle card
         const int to = P.focus + (vk == VK_RIGHT ? 1 : -1);
         if (to >= 0 && to < (int)P.cards.size()) {
@@ -4331,9 +4359,9 @@ bool Step(double now) {
         moving = true;
         const float step = kCardW * P.k * 0.93f / DeckRadius();
         P.moveRise = std::clamp(P.moveRise + (P.moveHeld ? dt : -dt) / 0.3f, 0.f, 1.f);
-        const float want = P.moveHeld ? MoveAngleAt(P.moveX) : (P.moveCard - P.scroll) * step;
+        const float want = P.moveHeld && !P.moveKeys ? MoveAngleAt(P.moveX) : (P.moveCard - P.scroll) * step;
         P.moveAng += (want - P.moveAng) * (1 - expf(-dt * 16));
-        if (P.moveHeld) {
+        if (P.moveHeld && !P.moveKeys) {
             const float spacing = Spacing(), dx = P.moveX - P.W / 2, free = spacing * 1.5f;
             if (fabsf(dx) > free) {
                 const float pull = (fabsf(dx) - free) / spacing;  // cards past the middle three
@@ -4584,6 +4612,13 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (w == VK_F4 && (GetKeyState(VK_MENU) < 0)) { BeginClose(L"Alt+F4"); return 0; }
             OnKey(w);
             return 0;
+        case WM_KEYUP:
+        case WM_SYSKEYUP:
+            if (w == VK_MENU) {  // (no window menu: Alt alone does nothing else here)
+                AltKey(false);
+                return 0;
+            }
+            break;
         case WM_SETCURSOR:
             if (LOWORD(l) == HTCLIENT) {
                 const bool hand = (P.hot != ID_NONE && P.hot != ID_P_BG && P.hot != ID_P_LIST && P.hot != ID_A_ZONE && P.hot != ID_MU_LIST &&
