@@ -17,7 +17,7 @@
 #include <vector>
 
 #define APP_NAME     L"VideoBG"
-#define APP_VERSION  L"2.2.1"
+#define APP_VERSION  L"2.3.0"
 #define FEEDBACK_URL L"https://videobg-feedback.vercel.app/api/feedback"
 #define APP_REPO     L"https://github.com/Skyblock127/VideoBG"
 #define HOST_CLASS   L"VideoBG.Host"
@@ -363,7 +363,8 @@ void Host_KeepMusicPlace();                  // remember the song and spot (leav
 void Host_PlayMusic(bool play);              // My music: play or pause (kept, as the play button does)
 void Host_SkipMusic(bool next);              // the next or previous song (skipping means listening)
 void Host_ShuffleMusic(size_t songs);        // shuffle on (a new order, the song playing first) or off (the order chosen)
-void Host_PlaceSong(size_t songs, int song, int to);  // puts a song at place `to` in the play order
+void Host_PlaceSong(size_t songs, int song, int to, bool keep = true);  // puts a song at place `to` in the play order (keep false: in memory only, until Host_KeepSongOrder)
+void Host_KeepSongOrder();  // the play order changed in memory: saved, and the music follows it
 void Host_RemoveSong(int song);  // takes a song off the playlist (the file stays); the next one plays if it was playing
 struct MusicState {
     int track = -1;       // playlist index playing (-1 none)

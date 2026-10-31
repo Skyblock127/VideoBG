@@ -32,7 +32,8 @@ namespace {
 constexpr wchar_t kClass[] = L"VideoBG.Picker";
 constexpr UINT WM_PK_INFO = WM_APP + 120;  // lParam = WallpaperInfo* from the library worker
 constexpr UINT_PTR TIMER_DWELL = 1, TIMER_MINUTE = 2, TIMER_TOAST = 3, TIMER_HOLD = 4, TIMER_RAM = 5;
-constexpr UINT_PTR TIMER_LIFT = 6;  // a card held still a moment: it's taken out of the deck, to move
+constexpr UINT_PTR TIMER_LIFT = 6;
+constexpr UINT_PTR TIMER_ORDER = 7;  // songs moved by the keys: the order is saved once the keys stop  // a card held still a moment: it's taken out of the deck, to move
 constexpr UINT kDwellMs = 1200;  // on a card this long, its video plays
 const GUID kShadowEffect = {0xC67EA361, 0x1863, 0x4E69, {0x89, 0xDB, 0x69, 0x5D, 0x3E, 0x9A, 0x5B, 0x6B}};  // CLSID_D2D1Shadow
 
@@ -4073,10 +4074,11 @@ bool MusicKey(WPARAM vk) {
         if (P.kf == FOC_SONGS && alt) {  // the song moves up or down the list
             const std::vector<int> order = MusicOrderFor(g_settings, n);
             const int p = (int)(std::find(order.begin(), order.end(), P.kfSong) - order.begin());
-            if (p < n && p + step >= 0 && p + step < n) {
-                Host_PlaceSong(n, P.kfSong, p + step);
+            if (p < n && p + step >= 0 && p + step < n) {  // (held, it repeats fast: the list follows at once, the
+                Host_PlaceSong(n, P.kfSong, p + step, false);  //  order is saved and the music told once the key stops)
                 ShowSongAt(p + step);
-                UI_Refresh();
+                P.dirty = true;
+                SetTimer(P.hwnd, TIMER_ORDER, 400, nullptr);
             }
         } else if (!alt) {
             FocusSong(P.kf == FOC_SONGS ? P.kfSong : MusicCurrent(), step);
@@ -4524,6 +4526,7 @@ bool Step(double now) {
 
 void Destroy() {
     if (!P.hwnd) return;
+    if (KillTimer(P.hwnd, TIMER_ORDER)) Host_KeepSongOrder();  // (songs moved just before it closed)
     Log(L"picker: closed (%d frames drawn, %.1f ms each on average, %.1f ms at most)", P.frames,
         P.frames ? P.drawTime * 1000 / P.frames : 0.0, P.drawMax * 1000);
     if (P.mode == 2) {  // (closed at once, while cropping)
@@ -4605,7 +4608,10 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (w == TIMER_TOAST) { KillTimer(h, TIMER_TOAST); P.toastOn = false; P.dirty = true; }
             else if (w == TIMER_HOLD) ReleaseHold();
             else if (w == TIMER_RAM) UpdateRam();
-            else if (w == TIMER_LIFT) {  // held still: the card moves with the pointer from here
+            else if (w == TIMER_ORDER) {
+                KillTimer(h, TIMER_ORDER);
+                Host_KeepSongOrder();
+            } else if (w == TIMER_LIFT) {  // held still: the card moves with the pointer from here
                 KillTimer(h, TIMER_LIFT);
                 if (P.down && !P.dragging) {
                     POINT pt;

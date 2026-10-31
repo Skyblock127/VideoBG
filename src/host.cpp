@@ -1365,7 +1365,7 @@ void Host_ShuffleMusic(size_t n) {
     Host_SettingsChanged();
 }
 
-void Host_PlaceSong(size_t n, int song, int to) {
+void Host_PlaceSong(size_t n, int song, int to, bool keep) {
     std::vector<int> order = MusicOrderFor(g_settings, n);
     auto it = std::find(order.begin(), order.end(), song);
     if (it == order.end()) return;
@@ -1376,8 +1376,15 @@ void Host_PlaceSong(size_t n, int song, int to) {
     order.insert(order.begin() + to, song);
     if (MusicShuffled(order)) g_settings.musicOrder = order;
     else g_settings.musicOrder.clear();
+    if (!keep) return;  // (a run of moves, as a held key makes: kept once it stops)
     Log(L"music: song moved from %d to %d", from + 1, to + 1);
     Host_SettingsChanged();
+}
+
+void Host_KeepSongOrder() {
+    Log(L"music: songs moved");
+    Host_SettingsChanged();
+    UI_Refresh();
 }
 
 void Host_RemoveSong(int song) {
