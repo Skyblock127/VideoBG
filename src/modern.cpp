@@ -3795,7 +3795,7 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                     P.moveRise = 0;
                 }
                 const int hit = P.mode == 0 && P.cards.size() > 1 ? HitCard(x, y) : -1;
-                P.pressCard = hit == P.focus ? hit : -1;  // only the middle card moves
+                P.pressCard = hit;  // (any card: held a moment or pulled up, it moves)
                 if (P.pressCard >= 0) SetTimer(P.hwnd, TIMER_LIFT, 400, nullptr);  // held still a moment: it moves
                 P.downAt = POINT{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                 P.downScroll = P.scroll;
@@ -3923,7 +3923,7 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
 
 // The card pressed is taken out of the deck to move (held still a moment, or pulled up).
 void StartMove(float x, float y) {
-    if (P.pressCard < 0 || P.pressCard != P.focus || P.pressCard >= (int)P.cards.size() || P.moveCard >= 0) return;
+    if (P.pressCard < 0 || P.pressCard >= (int)P.cards.size() || P.moveCard >= 0) return;
     KillTimer(P.hwnd, TIMER_LIFT);
     const float step = kCardW * P.k * 0.93f / DeckRadius();
     P.moveCard = P.pressCard;
