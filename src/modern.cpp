@@ -174,6 +174,10 @@ struct Picker {
     int pressCard = -1;               // the card pressed (held a moment, or pulled up: it moves)
     int moveCard = -1;                // the card being moved among the others (it follows the pointer)
     float moveX = 0, moveY = 0;       // the pointer, while it moves
+    bool moveHeld = false;            // ...still held (let go: it falls back into the deck)
+    float moveRise = 0;               // 0 in the deck .. 1 on the arc above it (animated)
+    float moveAng = 0;                // where it is on that arc (radians from the middle; follows the pointer)
+    std::vector<float> shiftBy;       // each card's way still to go after the moving card passed it (in places; it fades out)
     float downScroll = 0;
     double dragT = 0;
     float dragX = 0, flingV = 0;
@@ -852,6 +856,14 @@ void MoveCard(int from, int to) {
     Card c = std::move(P.cards[from]);
     P.cards.erase(P.cards.begin() + from);
     P.cards.insert(P.cards.begin() + to, std::move(c));
+    if ((int)P.shiftBy.size() != n) P.shiftBy.assign(n, 0.f);
+    {
+        const float own = P.shiftBy[from] + (from - to);  // (the card moved: from where it was shown)
+        P.shiftBy.erase(P.shiftBy.begin() + from);
+        P.shiftBy.insert(P.shiftBy.begin() + to, own);
+        for (int i = std::min(from, to); i <= std::max(from, to); i++)  // the others shifted by one: from where they were
+            if (i != to) P.shiftBy[i] += from < to ? 1.f : -1.f;
+    }
     if ((int)P.lift.size() == n) {
         const float l = P.lift[from];
         P.lift.erase(P.lift.begin() + from);
@@ -863,6 +875,7 @@ void MoveCard(int from, int to) {
 
 void StartMove(float x, float y);
 void MoveCardAt(float x);
+void DropCard();
 
 void SaveCards() {
     std::vector<std::wstring> list;
@@ -1046,9 +1059,11 @@ struct Pose {
 };
 
 // Where card i sits: on an arc under the screen's bottom edge, the focused one raised and bigger.
+float DeckRadius() { return std::max(P.W * 2.1f, 1600.f); }
+
 Pose CardPose(int i) {
-    const float d = i - P.scroll;
-    const float R = std::max(P.W * 2.1f, 1600.f);
+    const float d = i - P.scroll + (i < (int)P.shiftBy.size() ? P.shiftBy[i] : 0.f);
+    const float R = DeckRadius();
     const float step = kCardW * P.k * 0.93f / R;  // radians between neighbours
     const float ang = d * step;
     const float f = std::max(0.f, 1 - fabsf(d));
@@ -1073,6 +1088,38 @@ Pose CardPose(int i) {
     p.y += (1 - e) * kCardH * P.k * 1.8f;
     p.a = Clamp01(e * 1.6f);
     return p;
+}
+
+// The card being moved: on an arc round the deck's centre, wider than the deck's (so above it, at a
+// height of its own, whatever the pointer does), turned as the deck's cards are at that angle; while
+// it rises or falls, between there and its place in the deck.
+constexpr float kMoveUp = 70;  // how far the arc is above the middle card
+
+Pose MovingPose() {
+    const Pose deck = CardPose(P.moveCard);
+    const float R = DeckRadius(), up = (kLift + kMoveUp) * P.k, R2 = R + up;
+    const float cy = P.H - 34 - kCardH * P.k / 2 + R;  // the deck's centre
+    const float a = P.moveAng;
+    Pose top = deck;
+    top.x = P.W / 2 + R2 * sinf(a);
+    top.y = cy - R2 * cosf(a);
+    top.rot = a * 57.2958f * 1.7f;
+    top.s = P.k * (1 + kGrow) * 1.03f;
+    top.dim = 0;
+    const float e = EaseInOut(P.moveRise);
+    Pose p = deck;
+    p.x = deck.x + (top.x - deck.x) * e;
+    p.y = deck.y + (top.y - deck.y) * e;
+    p.rot = deck.rot + (top.rot - deck.rot) * e;
+    p.s = deck.s + (top.s - deck.s) * e;
+    p.dim = deck.dim * (1 - e);
+    return p;
+}
+
+// The arc's angle for a pointer at x (it follows the pointer sideways only).
+float MoveAngleAt(float x) {
+    const float R2 = DeckRadius() + (kLift + kMoveUp) * P.k;
+    return asinf(std::clamp((x - P.W / 2) / R2, -0.9f, 0.9f));
 }
 
 D2D1_MATRIX_3X2_F CardMatrix(const Pose& p) {
@@ -2227,9 +2274,9 @@ void DrawMenu() {
     const struct { int id; const wchar_t* icon; const wchar_t* label; } items[] = {
         {ID_M_SETTINGS, L"\uE713", L"All settings"},
         {ID_M_ADD, L"\uE710", L"Add videos\u2026"},
-        {ID_M_FIRST, L"\uE76B", L"Add new videos on the left"},
+        {ID_M_FIRST, L"\uE8AB", L"New videos add on"},
         {ID_M_LOCK, L"\uE72E", L"Show on lock screen"},
-        {ID_M_OFF, L"\uE7E8", L"Turn the video wallpaper off"},
+        {ID_M_OFF, L"\uE7E8", L"Turn off video wallpaper"},
         {ID_M_NATIVE, L"\uE7F4", L"Switch to the classic look"},
     };
     const float h = 12 + 40 * (float)std::size(items) + 12 + 8;
@@ -2247,9 +2294,14 @@ void DrawMenu() {
         const D2D1_COLOR_F fg = Col(0xFFFFFF, 0.92f * a);
         Text(items[n].icon, R(r.left + 10, r.top, r.left + 34, r.bottom), G.fIcon, fg, DWRITE_TEXT_ALIGNMENT_CENTER);
         Text(items[n].label, R(r.left + 44, r.top, r.right - 10, r.bottom), G.fBody, fg);
-        if (items[n].id == ID_M_LOCK || items[n].id == ID_M_FIRST) {  // a switch
+        if (items[n].id == ID_M_FIRST) {  // a button saying the side (a click turns it to the other)
+            const D2D1_RECT_F b = R(r.right - 74, r.top + 7, r.right - 10, r.bottom - 7);
+            Fill(b, Col(0xFFFFFF, (P.hot == ID_M_FIRST ? 0.18f : 0.12f) * a), 13);
+            Text(g_settings.wallsFirst ? L"Left" : L"Right", b, G.fSmall, Col(0xFFFFFF, 0.92f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
+        }
+        if (items[n].id == ID_M_LOCK) {  // a switch
             const D2D1_RECT_F sw = R(r.right - 52, r.top + 11, r.right - 14, r.bottom - 11);
-            const bool on = items[n].id == ID_M_LOCK ? g_settings.lockFollow : g_settings.wallsFirst;
+            const bool on = g_settings.lockFollow;
             if (on) Fill(sw, g_accent * a, 9);
             else Stroke(sw, Col(0xFFFFFF, 0.6f * a), 9, 1.2f);
             Circle(on ? sw.right - 9 : sw.left + 9, (sw.top + sw.bottom) / 2, 5, on ? Col(0x000000, 0.85f * a) : Col(0xFFFFFF, 0.8f * a));
@@ -2587,13 +2639,8 @@ void Paint() {
             if (!CardVisible(p)) continue;
             DrawCard(i, p, CardMatrix(p));
         }
-        if (P.moveCard >= 0 && P.moveCard < (int)P.cards.size()) {  // the card being moved: over the others, at the pointer
-            Pose p = CardPose(P.focus >= 0 ? P.focus : P.moveCard);
-            p.x = P.moveX;
-            p.y = std::min(p.y, P.moveY + kCardH * p.s * 0.2f) - 24 * P.k;
-            p.rot = 0;
-            p.dim = 0;
-            p.a = 1;
+        if (P.moveCard >= 0 && P.moveCard < (int)P.cards.size()) {  // the card being moved: over the others
+            const Pose p = MovingPose();
             DrawCard(P.moveCard, p, CardMatrix(p));
         }
         if (P.phase == SELECTING && P.chosen >= 0) DrawChosen(selT);
@@ -3173,7 +3220,6 @@ void StartPick(int row) {
     P.pickAt = D2D1::Point2F((pt.x - P.mon.left) / P.scale, (pt.y - P.mon.top) / P.scale);
     P.langsOpen = false;
     P.gridFor = 0;
-    ShowToast(L"Point at a colour on your wallpaper and click (Esc cancels)");
 }
 
 void EndPick(bool keep) {
@@ -3581,10 +3627,9 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                     P.cropX = x;
                     P.cropY = y;
                 }
-            } else if (P.down && P.moveCard >= 0) {  // a card being moved
+            } else if (P.down && P.moveCard >= 0 && P.moveHeld) {  // a card being moved (it follows sideways only)
                 P.moveX = x;
                 P.moveY = y;
-                MoveCardAt(x);
                 P.dirty = true;
             } else if (P.down) {
                 const float dx = x - P.downAt.x / P.scale, dy = y - P.downAt.y / P.scale;
@@ -3745,8 +3790,13 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             if (P.press == ID_NONE) {
                 P.down = true;
                 P.dragging = false;
-                P.pressCard = P.mode == 0 && P.cards.size() > 1 ? HitCard(x, y) : -1;
-                if (P.pressCard >= 0) SetTimer(P.hwnd, TIMER_LIFT, 450, nullptr);  // held still a moment: it moves
+                if (P.moveCard >= 0 && !P.moveHeld) {  // still falling back: it's there now
+                    P.moveCard = -1;
+                    P.moveRise = 0;
+                }
+                const int hit = P.mode == 0 && P.cards.size() > 1 ? HitCard(x, y) : -1;
+                P.pressCard = hit == P.focus ? hit : -1;  // only the middle card moves
+                if (P.pressCard >= 0) SetTimer(P.hwnd, TIMER_LIFT, 400, nullptr);  // held still a moment: it moves
                 P.downAt = POINT{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                 P.downScroll = P.scroll;
                 P.dragT = Now();
@@ -3844,14 +3894,9 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             }
             KillTimer(P.hwnd, TIMER_LIFT);
             P.pressCard = -1;
-            if (P.down && P.moveCard >= 0) {  // a card moved: it stays there (and becomes the middle one)
+            if (P.down && P.moveCard >= 0 && P.moveHeld) {  // a card moved: it stays there (and becomes the middle one)
                 P.down = false;
-                const int at = P.moveCard;
-                P.moveCard = -1;
-                SaveCards();
-                Log(L"picker: %ls moved to place %d", P.cards[at].path.c_str(), at + 1);
-                SetFocus(at);
-                P.dirty = true;
+                DropCard();
                 break;
             }
             if (P.down) {
@@ -3878,9 +3923,13 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
 
 // The card pressed is taken out of the deck to move (held still a moment, or pulled up).
 void StartMove(float x, float y) {
-    if (P.pressCard < 0 || P.pressCard >= (int)P.cards.size() || P.moveCard >= 0) return;
+    if (P.pressCard < 0 || P.pressCard != P.focus || P.pressCard >= (int)P.cards.size() || P.moveCard >= 0) return;
     KillTimer(P.hwnd, TIMER_LIFT);
+    const float step = kCardW * P.k * 0.93f / DeckRadius();
     P.moveCard = P.pressCard;
+    P.moveHeld = true;
+    P.moveRise = 0;
+    P.moveAng = (P.moveCard - P.scroll) * step;  // (where it is now: it rises from there)
     P.moveX = x;
     P.moveY = y;
     P.actions = P.versions = P.binArmed = false;
@@ -3888,19 +3937,27 @@ void StartMove(float x, float y) {
     P.dirty = true;
 }
 
-// The moving card's place: among the others, where the pointer is (the deck scrolls near the screen's edges).
-void MoveCardAt(float x) {
+// While held: its place among the others is where its angle is over the deck.
+void MoveCardAt(float) {
     const int n = (int)P.cards.size();
-    int best = P.moveCard;
-    float d = 1e9f;
-    for (int i = 0; i < n; i++) {
-        const float di = fabsf(CardPose(i).x - x);
-        if (di < d) d = di, best = i;
-    }
-    if (best != P.moveCard) {
-        MoveCard(P.moveCard, best);
+    if (P.moveCard < 0 || !P.moveHeld || n < 2) return;
+    const float step = kCardW * P.k * 0.93f / DeckRadius();
+    const int at = std::clamp((int)lroundf(P.scroll + P.moveAng / step), 0, n - 1);
+    if (at != P.moveCard) {
+        MoveCard(P.moveCard, at);
         P.dirty = true;
     }
+}
+
+// Let go: it stays in its new place and falls back into the deck there.
+void DropCard() {
+    if (P.moveCard < 0 || !P.moveHeld) return;
+    P.moveHeld = false;
+    const int at = P.moveCard;
+    SaveCards();
+    Log(L"picker: %ls moved to place %d", P.cards[at].path.c_str(), at + 1);
+    SetFocus(at);
+    P.dirty = true;
 }
 
 void OnWheel(int delta, LPARAM l) {
@@ -4266,14 +4323,23 @@ bool Step(double now) {
     bool moving = false;
     const float t = (float)(now - P.phaseAt);
 
-    // The deck (a card being moved near the screen's edge scrolls it, faster nearer).
+    // A card being moved: it rises onto its arc (or falls back), follows the pointer along it, and
+    // pulls the deck along like a rubber band past the three middle cards (faster the further).
     if (P.moveCard >= 0) {
-        const float zone = P.W * 0.12f;
-        const float depth = P.moveX < zone ? (P.moveX - zone) / zone : P.moveX > P.W - zone ? (P.moveX - (P.W - zone)) / zone : 0;
-        if (depth != 0) {
-            P.scrollTo = std::clamp(P.scrollTo + depth * 6 * dt, 0.f, (float)P.cards.size() - 1);
+        moving = true;
+        const float step = kCardW * P.k * 0.93f / DeckRadius();
+        P.moveRise = std::clamp(P.moveRise + (P.moveHeld ? dt : -dt) / 0.3f, 0.f, 1.f);
+        const float want = P.moveHeld ? MoveAngleAt(P.moveX) : (P.moveCard - P.scroll) * step;
+        P.moveAng += (want - P.moveAng) * (1 - expf(-dt * 16));
+        if (P.moveHeld) {
+            const float spacing = Spacing(), dx = P.moveX - P.W / 2, free = spacing * 1.5f;
+            if (fabsf(dx) > free) {
+                const float pull = (fabsf(dx) - free) / spacing;  // cards past the middle three
+                P.scrollTo = std::clamp(P.scrollTo + (dx > 0 ? 1 : -1) * pull * 3.5f * dt, 0.f, (float)P.cards.size() - 1);
+            }
             MoveCardAt(P.moveX);
-            moving = true;
+        } else if (P.moveRise <= 0) {
+            P.moveCard = -1;  // back in the deck
         }
     }
     if (!P.dragging) {
@@ -4435,6 +4501,13 @@ bool Step(double now) {
         moving |= before != P.panelPos;
     }
     P.lift.resize(P.cards.size(), 0.f);
+    P.shiftBy.resize(P.cards.size(), 0.f);
+    for (float& sl : P.shiftBy)  // cards the moving one passed glide to their new places
+        if (sl != 0) {
+            sl *= expf(-dt * 12);
+            if (fabsf(sl) < 0.002f) sl = 0;
+            moving = true;
+        }
     for (int i = 0; i < (int)P.lift.size(); i++) moving |= Approach(P.lift[i], i == P.hotCard ? 1.f : 0.f, 6, dt);
     moving |= Approach(P.toastA, P.toastOn ? 1.f : 0.f, 6, dt);
     if (P.flipAt > 0) {  // the clock's flaps falling over
