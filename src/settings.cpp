@@ -470,11 +470,49 @@ void LinkLightCopy(const std::wstring& copy, const std::wstring& original) {
     if (VideoId(original) == oid) VWrite(oid, L"Path", original.c_str());
 }
 
+// A video with this content (its id), when it isn't where it was last seen (renamed or moved outside
+// VideoBG): among the files of its size in its old folder and in the wallpapers list.
+static std::wstring FindVideo(const std::wstring& id, const std::wstring& was) {
+    const size_t dash = id.rfind(L'-');
+    if (dash == std::wstring::npos) return L"";
+    const ULONGLONG size = _wcstoui64(id.c_str() + dash + 1, nullptr, 10);
+    auto sized = [&](const std::wstring& f) {
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        return GetFileAttributesExW(f.c_str(), GetFileExInfoStandard, &fa) && !(fa.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+               (((ULONGLONG)fa.nFileSizeHigh << 32) | fa.nFileSizeLow) == size;
+    };
+    std::vector<std::wstring> look;
+    ReadFileList(AppDataDir() + L"\\wallpapers.m3u8", &look);
+    const size_t slash = was.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) {
+        const std::wstring dir = was.substr(0, slash + 1);
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((dir + L"*").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && (((ULONGLONG)fd.nFileSizeHigh << 32) | fd.nFileSizeLow) == size)
+                    look.push_back(dir + fd.cFileName);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    for (const std::wstring& f : look)
+        if (sized(f) && VideoId(f) == id) return f;
+    return L"";
+}
+
 std::wstring LightCopyOriginalPath(const std::wstring& copy) {
     std::wstring oid = VideoProfileId(copy);
     if (oid.empty() || oid == VideoId(copy)) return L"";
     std::wstring p = VRead(oid, L"Path");
-    return !p.empty() && VideoId(p) == oid ? p : L"";
+    if (!p.empty() && VideoId(p) == oid) return p;
+    // Its original was renamed or moved: found again by its content (and remembered where it is now).
+    const std::wstring now = FindVideo(oid, p);
+    if (!now.empty()) {
+        VWrite(oid, L"Path", now.c_str());
+        Log(L"light copy %ls: its original is now %ls", copy.c_str(), now.c_str());
+    }
+    return now;
 }
 
 std::vector<std::wstring> KnownVideos() {
@@ -710,6 +748,7 @@ void LoadSettings(Settings& s) {
     }
     s.playerY = ReadFloat(ini, L"General", L"PlayerY", 0.9f, 0, 1);
     s.lockFollow = ReadInt(ini, L"LockScreenFollows", 1, 0, 1) != 0;
+    s.wallsFirst = ReadInt(ini, L"NewWallpapersFirst", 0, 0, 1) != 0;
     s.clockStill.size = s.clockLive.size = ReadFloat(ini, L"Clock", L"Size", 1.06f, 0.5f, 2.5f);  // older: one size for all
     // Older versions had one 12/24-hour setting for every look: it's where each look starts from.
     s.clockStill.h24 = s.clockLive.h24 = GetPrivateProfileIntW(L"Clock", L"Hours", 12, ini) == 24;
@@ -773,6 +812,7 @@ void SaveSettings(const Settings& s) {
     WriteInt(ini, L"LaunchState", s.launch);
     WriteInt(ini, L"LastOn", s.lastOn ? 1 : 0);
     WriteInt(ini, L"LockScreenFollows", s.lockFollow ? 1 : 0);
+    WriteInt(ini, L"NewWallpapersFirst", s.wallsFirst ? 1 : 0);
     WriteInt(ini, L"Look", s.look);
     WriteInt(ini, L"MusicPlayer", s.musicPlayer);
     ini.Set(L"General", L"PreviewTime", nullptr);  // per video now

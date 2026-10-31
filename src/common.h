@@ -161,6 +161,7 @@ struct Settings {
     int launch = 1;       // state at launch: 0 on, 1 as it was left (lastOn), 2 off
     bool lastOn = true;
     double previewTime = -1;  // seconds; the video's frame for previews and the lock screen (-1 = auto; stored per video)
+    bool wallsFirst = false;  // wallpapers added go first in the list (the modern deck's left), else last
     bool lockFollow = true;   // the lock screen shows the video's frame while the wallpaper shows, the user's own picture otherwise
     int pipeline = 0;         // 0 auto, 1 always media engine, 2 always silent reader (INI only)
     int look = 0;             // 0 native (the classic settings window), 1 modern (the wallpaper picker)
@@ -577,6 +578,7 @@ std::vector<NowPlayingApp> NowPlaying_Apps();  // the other apps with a media se
 std::wstring NowPlaying_Name(const std::wstring& id);  // an app's name ("YouTube Music")
 void NowPlaying_Command(int what);  // -1 previous, 0 play / pause, 1 next
 void NowPlaying_Seek(UINT ms);
+void NowPlaying_ShowApp();  // the source app's window to the front (the song's picture on the player clicked)
 void NowPlaying_Stop();
 // The music, wherever it comes from (host.cpp): My music, or the app chosen as its source.
 std::vector<NowPlayingApp> Music_Sources();  // what the music can come from: My music (id ""), then the apps with a session (and the chosen one)

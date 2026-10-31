@@ -318,8 +318,8 @@ std::vector<std::wstring> LoadWallpapers(const std::wstring& current) {
     const std::wstring currentOrig = current.empty() ? L"" : LightCopyOriginalPath(current);
     bool has = current.empty();
     for (auto& p : list) has = has || SamePath(p, current) || (!currentOrig.empty() && SamePath(p, currentOrig));
-    if (!has) {  // chosen some other way (the classic settings, the tray): it belongs here too
-        list.insert(list.begin(), current);
+    if (!has) {  // chosen some other way (the classic settings, the tray): it belongs here too (first or last, as new ones go)
+        list.insert(g_settings.wallsFirst ? list.begin() : list.end(), current);
         changed = true;
     }
     if (changed) SaveWallpapers(list);

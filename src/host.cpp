@@ -236,6 +236,9 @@ void StopRenderer() {
     CloseHandle(g_proc);
     g_proc = nullptr;
     g_ctl = nullptr;
+    MSG stale;  // what it posted before it went would undo what follows
+    for (UINT m : {WM_VBG_STATE, WM_VBG_TRACK, WM_VBG_MUSIC_POS, WM_VBG_MUSIC_END, WM_VBG_FAULT, WM_VBG_MEMORY})
+        while (PeekMessageW(&stale, g_wnd, m, m, PM_REMOVE)) {}
     g_rstate = RS_LOADING;
     g_rmask = 0;
     g_track = -1;
@@ -924,7 +927,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             g_lsf = (int)(l & (LSF_LOCKSCREEN | LSF_BACKGROUND));
             g_lockBusy = LockScreen_Busy();
             FinishPendingStop();
-            if (!g_lockBusy && !UI_IsOpen()) Host_TrimMemory();  // the frame decoder and WinRT are done
+            if (!g_lockBusy && !UI_IsOpen() && !Modern_IsOpen()) Host_TrimMemory();  // the frame decoder and WinRT are done
             UI_Refresh();
             return 0;
         case WM_DESTROY:
@@ -1318,6 +1321,7 @@ void Host_SetMusicSource(const std::wstring& id) {
     if (id == g_settings.musicSource && g_settings.sound == 2) return;
     const bool wasMine = g_settings.musicSource.empty();
     if (wasMine && !id.empty()) {
+        KeepMusicPlace();  // (My music's engine stops: it carries on from here)
         g_settings.musicResume = g_settings.musicPlaying;
         g_settings.musicPlaying = false;
     } else if (!wasMine && id.empty()) {

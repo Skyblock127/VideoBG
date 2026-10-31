@@ -17,8 +17,8 @@ struct Api {
     decltype(&::MFCreateSinkWriterFromURL) CreateSinkWriterFromURL = nullptr;
 };
 
-HRESULT MakeDevice(ID3D11Device** dev, IMFDXGIDeviceManager** mgr) {
-    if (!D3D.Load()) return E_NOINTERFACE;
+HRESULT MakeDevice(ID3D11Device** dev, IMFDXGIDeviceManager** mgr) {  // (D3D loaded by the caller)
+    if (!D3D.CreateFactory1) return E_NOINTERFACE;
     IDXGIFactory1* f = nullptr;
     HRESULT hr = D3D.CreateFactory1(__uuidof(IDXGIFactory1), (void**)&f);
     if (FAILED(hr)) return hr;
@@ -58,7 +58,11 @@ HRESULT MakeLightCopy(const std::wstring& src, const std::wstring& dst, UINT ow,
     Api api;
     api.rw = LoadLibraryExW(L"mfreadwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     api.CreateSinkWriterFromURL = api.rw ? (decltype(api.CreateSinkWriterFromURL))(void*)GetProcAddress(api.rw, "MFCreateSinkWriterFromURL") : nullptr;
-    if (!api.CreateSinkWriterFromURL) return E_NOINTERFACE;
+    if (!api.CreateSinkWriterFromURL) {
+        if (api.rw) FreeLibrary(api.rw);
+        return E_NOINTERFACE;
+    }
+    const bool d3d = D3D.Load();  // (let go at the end, whatever happens between)
 
     ID3D11Device* dev = nullptr;
     IMFDXGIDeviceManager* mgr = nullptr;
@@ -149,6 +153,8 @@ HRESULT MakeLightCopy(const std::wstring& src, const std::wstring& dst, UINT ow,
 
     bool videoDone = false, audioDone = !hasAudio;
     int lastPct = -1;
+    int kindOf[16];  // each reader stream: 1 video, 0 audio, -1 not asked yet
+    std::fill(std::begin(kindOf), std::end(kindOf), -1);
     while (SUCCEEDED(hr) && !(videoDone && audioDone)) {
         if (cancel && *cancel) { hr = E_ABORT; break; }
         DWORD idx = 0, flags = 0;
@@ -157,13 +163,18 @@ HRESULT MakeLightCopy(const std::wstring& src, const std::wstring& dst, UINT ow,
         hr = rd->ReadSample((DWORD)MF_SOURCE_READER_ANY_STREAM, 0, &idx, &flags, &ts, &s);
         if (FAILED(hr)) break;
         // Map the reader's stream index to ours.
-        IMFMediaType* cur = nullptr;
         bool isVideo = true;
-        if (SUCCEEDED(rd->GetCurrentMediaType(idx, &cur))) {
-            GUID major{};
-            cur->GetGUID(MF_MT_MAJOR_TYPE, &major);
-            isVideo = major == MFMediaType_Video;
-            cur->Release();
+        if (idx < 16 && kindOf[idx] >= 0) {
+            isVideo = kindOf[idx] == 1;
+        } else {
+            IMFMediaType* cur = nullptr;
+            if (SUCCEEDED(rd->GetCurrentMediaType(idx, &cur))) {
+                GUID major{};
+                cur->GetGUID(MF_MT_MAJOR_TYPE, &major);
+                isVideo = major == MFMediaType_Video;
+                cur->Release();
+                if (idx < 16) kindOf[idx] = isVideo ? 1 : 0;
+            }
         }
         DWORD out = isVideo ? vStream : aStream;
         if (flags & MF_SOURCE_READERF_STREAMTICK) wr->SendStreamTick(out, ts);
@@ -188,7 +199,7 @@ HRESULT MakeLightCopy(const std::wstring& src, const std::wstring& dst, UINT ow,
     SafeRelease(ain);
     SafeRelease(mgr);
     SafeRelease(dev);
-    D3D.Unload();
+    if (d3d) D3D.Unload();
     FreeLibrary(api.rw);
     if (SUCCEEDED(hr) && !MoveFileExW(part.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING)) hr = HRESULT_FROM_WIN32(GetLastError());
     if (FAILED(hr)) DeleteFileW(part.c_str());

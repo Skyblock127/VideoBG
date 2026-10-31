@@ -29,8 +29,9 @@ private:
 };
 extern MFApi MF;
 
-struct D3DApi {
+struct D3DApi {  // Load and Unload in pairs, from any thread (counted: the DLLs go with the last Unload)
     HMODULE d3d = nullptr, dxgi = nullptr;
+    int uses = 0;
     decltype(&::D3D11CreateDevice) CreateDevice = nullptr;
     decltype(&::CreateDXGIFactory1) CreateFactory1 = nullptr;
     bool Load();

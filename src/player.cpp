@@ -74,6 +74,8 @@ struct Drawing {
     IDWriteTextFormat *fTitle = nullptr, *fSmall = nullptr, *fBold = nullptr, *fIcon = nullptr, *fIconBig = nullptr, *fMark = nullptr;
     IDWriteTextFormat *fMicroLeft = nullptr, *fMicroRight = nullptr, *fDial = nullptr, *fStereo = nullptr, *fUnit = nullptr, *fTime = nullptr;
     ID2D1Bitmap* art = nullptr;  // the song's cover, for this render target
+    D2D1_RECT_F coverAt{};       // where the drawing put the song's picture (or what stands in for it)
+    bool coverSeen = false;
     ID2D1Bitmap* still = nullptr;  // the window's style without what turns (drawn when what it shows changes)
     int layer = 0;               // what a style draws: 0 all of it, 1 what stays still, 2 what turns
     float corners = -1;          // the card's corner radius the user chose (-1: the style's own)
@@ -97,6 +99,11 @@ struct PlayerWindow {
     int hot = PART_NONE, press = PART_NONE;
     bool dragging = false, sliding = false;
     POINT grab{};      // where the pointer took hold of it, in the window
+    POINT pressAt{};   // ...on the screen
+    bool moved = false;      // dragged since (else it's a click)
+    bool onCover = false;    // taken by the song's picture, with another app as the source: a click shows that app
+    bool overCover = false;  // the pointer is on it
+    D2D1_RECT_F coverAt{};   // where the song's picture is (style DIPs; empty: none)
     std::wstring drawn;  // what it shows now, to skip identical redraws
     std::wstring stillKey;  // what D.still shows
     HDC dc = nullptr;     // the picture it's drawn into (kept while it shows)
@@ -328,6 +335,8 @@ bool Art() {
 
 // The song's cover in a circle of radius r at c, turned `deg` degrees; false if the song has none.
 bool Cover(D2D1_POINT_2F c, float r, float deg) {
+    D.coverAt = R(c.x - r, c.y - r, c.x + r, c.y + r);
+    D.coverSeen = true;
     if (!Art()) return false;
     const D2D1_SIZE_F sz = D.art->GetSize();
     const float side = std::min(sz.width, sz.height), s = 2 * r / side;
@@ -345,6 +354,8 @@ bool Cover(D2D1_POINT_2F c, float r, float deg) {
 
 // The song's cover in a rounded rectangle; false if the song has none (and draws a note on accent).
 bool CoverBox(const D2D1_RECT_F& pic, float radius, const Shown& s) {
+    D.coverAt = pic;
+    D.coverSeen = true;
     ID2D1RoundedRectangleGeometry* shape = nullptr;
     bool drawn = false;
     if (Art() && SUCCEEDED(D.d2d->CreateRoundedRectangleGeometry(D2D1::RoundedRect(pic, radius, radius), &shape))) {
@@ -1397,7 +1408,8 @@ bool TurnInto(const uint32_t* px, int w, int h, float deg, HDC dc, int dw, int d
 }
 
 // Draws style st with what s shows into a w x h picture (pixels; scale: pixels per DIP).
-template <class Use> bool Render(const PlayerStyle& st, const Shown& s, float scale, int w, int h, Use use) {
+// scene false: just the empty surface (a turned picture is drawn into it by use).
+template <class Use> bool Render(const PlayerStyle& st, const Shown& s, float scale, int w, int h, Use use, bool scene = true) {
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof bi.bmiHeader;
     bi.bmiHeader.biWidth = w;
@@ -1417,7 +1429,7 @@ template <class Use> bool Render(const PlayerStyle& st, const Shown& s, float sc
     D.rt->BindDC(dc, &all);
     D.rt->BeginDraw();
     D.rt->Clear(D2D1::ColorF(0, 0, 0, 0));
-    st.draw(st, s);
+    if (scene) st.draw(st, s);
     const HRESULT hr = D.rt->EndDraw();
     if (SUCCEEDED(hr)) {
         GdiFlush();
@@ -1517,7 +1529,9 @@ bool DrawLayer(const PlayerStyle& st, const Shown& s, int layer, bool withStill,
     if (part) D.rt->SetTransform(D2D1::Matrix3x2F::Translation(-part->left / W.scale, -part->top / W.scale));
     D.rt->Clear(D2D1::ColorF(0, 0, 0, 0));
     if (withStill && D.still) D.rt->DrawBitmap(D.still, R(0, 0, st.w, st.h), 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+    D.coverSeen = false;
     st.draw(st, s);
+    if (D.coverSeen) W.coverAt = D.coverAt;  // (for clicks on it)
     D.rt->SetTransform(D2D1::Matrix3x2F::Identity());
     const HRESULT hr = D.rt->EndDraw();
     D.layer = 0;
@@ -1669,15 +1683,18 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 Draw();
                 return 0;
             }
-            if (W.dragging) {  // follows the pointer; the place is kept when let go
+            if (W.dragging) {  // follows the pointer (once it has moved a little: a click doesn't move it); the place is kept when let go
                 POINT p;
                 GetCursorPos(&p);
+                if (!W.moved && abs(p.x - W.pressAt.x) <= 3 && abs(p.y - W.pressAt.y) <= 3) return 0;
+                W.moved = true;
                 SetWindowPos(h, nullptr, p.x - W.grab.x, p.y - W.grab.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                 KeepPlace(h);
                 UI_Refresh();  // (the settings window's close-up of it follows)
                 return 0;
             }
             const int hot = HitPart(Style(), x, y);
+            W.overCover = hot == PART_BODY && Music_FromApp() && Inside(x, y, W.coverAt);
             if (hot != W.hot) {
                 W.hot = hot;
                 Draw();
@@ -1704,7 +1721,10 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 W.seekFrac = Style().seek(Style(), x, y, true);
             } else if (W.press == PART_BODY) {
                 W.dragging = true;
+                W.moved = false;
+                W.onCover = Music_FromApp() && Inside(x, y, W.coverAt);
                 W.grab = POINT{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+                GetCursorPos(&W.pressAt);
             }
             Draw();
             return 0;
@@ -1721,9 +1741,13 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 Player_Seek(W.seekFrac);
             } else if (W.dragging) {
                 W.dragging = false;
-                KeepPlace(h);
-                SaveSettings(g_settings);
-                Log(L"player: moved to %.1f%%, %.1f%%", g_settings.playerX * 100, g_settings.playerY * 100);
+                if (!W.moved) {  // a click (on the song's picture: the app it comes from, to the front)
+                    if (W.onCover) NowPlaying_ShowApp();
+                } else {
+                    KeepPlace(h);
+                    SaveSettings(g_settings);
+                    Log(L"player: moved to %.1f%%, %.1f%%", g_settings.playerX * 100, g_settings.playerY * 100);
+                }
             } else if (part == HitPart(Style(), x, y)) {
                 if (part == PART_PLAY) Music_PlayPause();
                 else if (part == PART_PREV || part == PART_NEXT) Music_Skip(part == PART_NEXT);
@@ -1733,7 +1757,7 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         case WM_SETCURSOR:
             if (LOWORD(l) == HTCLIENT) {
-                SetCursor(LoadCursorW(nullptr, W.hot == PART_BODY || W.dragging ? IDC_SIZEALL : IDC_HAND));
+                SetCursor(LoadCursorW(nullptr, W.overCover && !W.moved ? IDC_HAND : W.hot == PART_BODY || W.dragging ? IDC_SIZEALL : IDC_HAND));
                 return TRUE;
             }
             break;
@@ -1812,7 +1836,7 @@ void Player_Hide() {
 bool Player_Paint(int style, float scale, bool live, ClockImage* out, const PlayerInput* in, bool turned) {
     if (style < 1 || style > (int)std::size(kStyles) || !StartDrawing()) return false;
     const PlayerStyle& st = kStyles[style - 1];
-    if (!W.hwnd) W.songs = LoadPlaylist();  // (the window keeps its own up to date)
+    if (!W.hwnd) W.songs = Host_Songs();  // (the window keeps its own up to date)
     Shown s = Current(in ? in->seek : -1, style);
     const Settings::PlayerLook& look = LookOf(style);
     UseLook(look);
@@ -1858,7 +1882,7 @@ bool Player_Paint(int style, float scale, bool live, ClockImage* out, const Play
             out->px.assign(px, px + (size_t)tw * th);
             out->w = tw;
             out->h = th;
-        });
+        }, false);
         ok = ok && out->w == tw;
     }
     return ok;

@@ -9,6 +9,8 @@
 #include <inspectable.h>
 #include <eventtoken.h>
 #include <shlobj.h>
+#include <propkey.h>
+extern "C" HRESULT WINAPI SHGetPropertyStoreForWindow(HWND, REFIID, void**);  // (shell32; MinGW's shellapi.h hides it here)
 #include <knownfolders.h>
 #include <wincodec.h>
 #include <algorithm>
@@ -564,7 +566,12 @@ void NowPlaying_Tick() {
             Rel(g_coverOp);
         }
         if (g_coverSong != now.title + L"\n" + now.artist && g_coverTries >= 4) now.cover.reset();  // a song without a cover
-        if (!g_propsOp) {  // read on the next look
+        // Its song read again (on the next look) only when there's a reason: the app said it changed, its
+        // session is new, a skip waits for the next song, a cover read is due; else every 10 s, just in case.
+        const ULONGLONG at = GetTickCount64();
+        const bool due = g_propsChanged || g_propsAt <= g_watchAt || g_skipAt || at - g_propsAt > 10000 ||
+                         (g_coverSong != now.title + L"\n" + now.artist && g_coverTries < 4) || (g_coverLooks < 2 && g_coverFor == now.title + L"\n" + now.artist);
+        if (!g_propsOp && due) {
             g_opChanged = g_propsChanged.exchange(false);
             g_watched->TryGetMediaPropertiesAsync(&g_propsOp);
         }
@@ -649,6 +656,68 @@ void NowPlaying_Command(int what) {
     Log(L"nowplaying: %ls sent to %ls (0x%08lx)", what < 0 ? L"previous" : what > 0 ? L"next" : L"play/pause", g_now.app.c_str(),
         (unsigned long)hr);
     Rel(op);
+}
+
+// The source app's window, to the front. Found by its app id on the window (a Chrome-installed app
+// such as YouTube Music carries it), else by its program's name ("Brave" is brave.exe), the window
+// whose title has the song first (the browser window with that tab).
+void NowPlaying_ShowApp() {
+    if (!g_now.on || g_now.id.empty()) return;
+    struct Find {
+        std::wstring id, title;
+        HWND best = nullptr;
+        int score = 0;
+    } f{g_now.id, g_now.title};
+    EnumWindows(
+        [](HWND h, LPARAM l) -> BOOL {
+            Find& f = *(Find*)l;
+            if (!IsWindowVisible(h) || GetWindow(h, GW_OWNER) || (GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)) return TRUE;
+            wchar_t text[512];
+            const int n = GetWindowTextW(h, text, 512);
+            if (n <= 0) return TRUE;
+            int score = 0;
+            IPropertyStore* ps = nullptr;
+            if (SUCCEEDED(SHGetPropertyStoreForWindow(h, IID_PPV_ARGS(&ps)))) {
+                PROPVARIANT v;
+                PropVariantInit(&v);
+                if (SUCCEEDED(ps->GetValue(PKEY_AppUserModel_ID, &v)) && v.vt == VT_LPWSTR && v.pwszVal && _wcsicmp(v.pwszVal, f.id.c_str()) == 0)
+                    score = 4;
+                PropVariantClear(&v);
+                ps->Release();
+            }
+            if (!score) {
+                DWORD pid = 0;
+                GetWindowThreadProcessId(h, &pid);
+                if (HANDLE pr = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+                    wchar_t path[MAX_PATH];
+                    DWORD len = MAX_PATH;
+                    if (QueryFullProcessImageNameW(pr, 0, path, &len)) {
+                        std::wstring exe = path;
+                        exe = exe.substr(exe.find_last_of(L'\\') + 1);
+                        if (exe.size() > 4) exe.resize(exe.size() - 4);  // (".exe")
+                        std::wstring id = f.id, lexe = exe;
+                        for (auto& c : id) c = towlower(c);
+                        for (auto& c : lexe) c = towlower(c);
+                        if (!lexe.empty() && id.find(lexe) != std::wstring::npos) score = 1;
+                    }
+                    CloseHandle(pr);
+                }
+                if (score && !f.title.empty() && std::wstring(text, n).find(f.title) != std::wstring::npos) score = 2;
+            }
+            if (score > f.score) {
+                f.score = score;
+                f.best = h;
+            }
+            return TRUE;
+        },
+        (LPARAM)&f);
+    if (!f.best) {
+        Log(L"nowplaying: no window of %ls to bring up", g_now.app.c_str());
+        return;
+    }
+    if (IsIconic(f.best)) ShowWindow(f.best, SW_RESTORE);
+    const BOOL up = SetForegroundWindow(f.best);
+    Log(L"nowplaying: %ls brought up (%ls)", g_now.app.c_str(), up ? L"in front" : L"Windows kept it behind");
 }
 
 void NowPlaying_Seek(UINT ms) {

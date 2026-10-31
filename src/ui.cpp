@@ -47,7 +47,7 @@ enum Id {
     ID_FB_SEND, ID_MEMINFO, ID_FB_PICS, ID_FB_PICS_CLEAR,
     ID_PD_SCRIM, ID_PD_AREA, ID_PD_PREV, ID_PD_NEXT, ID_PD_COLOR, ID_PD_BODY, ID_PD_OPACITY, ID_PD_SIZE, ID_PD_CORNERS, ID_PD_RESET, ID_PD_DONE,
     ID_PD_PICK_COL, ID_PD_PICK_BODY, ID_PD_RST_COL, ID_PD_RST_BODY, ID_PD_RST_OPACITY, ID_PD_RST_SIZE, ID_PD_RST_CORNERS, ID_CLK_PICK, ID_PD_ROTATE, ID_PD_RST_ROTATE,
-    ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
+    ID_WALL_FIRST, ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
     ID_MUSIC_SOURCE,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
@@ -66,6 +66,7 @@ enum Id {
     ID_PRS_EDIT0 = 2110,
     ID_PRS_REN0 = 2120,
     ID_PRS_DEL0 = 2130,
+    ID_WALL_GRIP0 = 2200,  // Your wallpapers: a row's grip, to move it (up to 7800 rows)
 };
 enum NavPage { NAV_VIDEO, NAV_PLAYBACK, NAV_CLOCK, NAV_SOUND, NAV_GENERAL, NAV_COUNT };  // sidebar order (the wallpaper, then the clock, the music, the rest)
 enum Kind { K_BUTTON, K_TOGGLE, K_SEG, K_SLIDER, K_AREA };
@@ -323,6 +324,7 @@ struct UI {
     D2D1_RECT_F songView{};    // where the playlist's rows show
     // A press on a song: a click plays it, a drag scrolls the list, a drag by its grip moves the song.
     int songPress = -1;        // the song (playlist index)
+    int wallMove = -1;         // Your wallpapers: the row being moved by its grip
     bool songMoving = false, songMoved = false;
     float songPressY = 0, songPressScroll = 0, songY = 0, songGrab = 0;
     int songIns = 0;           // moving: the place it would land
@@ -2985,7 +2987,7 @@ void WallsAdd() {
         if (have) continue;
         WallRow w;
         w.path = w.play = p;
-        g_walls.push_back(w);
+        g_walls.insert(g_settings.wallsFirst ? g_walls.begin() + added : g_walls.end(), w);  // first or last, as set
         Library_Request(p, false, true);
         added++;
     }
@@ -2996,7 +2998,44 @@ void WallsAdd() {
     ReleaseFontSamples();
     fnt.note = added == 1 ? L"1 video added" : Fmt(L"%d videos added", added);
     Log(L"ui: %d video(s) added to the wallpapers", added);
-    FontScrollTo(1e6f, true);  // to the new ones, at the end
+    FontScrollTo(g_settings.wallsFirst ? 0 : 1e6f, true);  // to the new ones
+}
+
+// A wallpaper's row to another place in the list (its picture going with it); kept at once.
+void WallsMove(int from, int to) {
+    const int n = (int)g_walls.size();
+    if (from < 0 || from >= n || to < 0 || to >= n || from == to) return;
+    WallRow w = std::move(g_walls[from]);
+    g_walls.erase(g_walls.begin() + from);
+    g_walls.insert(g_walls.begin() + to, std::move(w));
+    if ((int)fnt.samples.size() == n) {
+        ID2D1Bitmap* b = fnt.samples[from];
+        fnt.samples.erase(fnt.samples.begin() + from);
+        fnt.samples.insert(fnt.samples.begin() + to, b);
+        const bool tried = fnt.tried[from];
+        fnt.tried.erase(fnt.tried.begin() + from);
+        fnt.tried.insert(fnt.tried.begin() + to, tried);
+    }
+}
+
+void WallsSave() {
+    std::vector<std::wstring> list;
+    for (const WallRow& w : g_walls) list.push_back(w.path);
+    SaveWallpapers(list);
+}
+
+// The grip dragged: the row follows the pointer's place in the list (near its edges the list scrolls).
+void WallsDrag(float y) {
+    const int n = (int)g_walls.size();
+    if (u.wallMove < 0 || u.wallMove >= n) return;
+    const float rowH = PickerRowH();
+    const int at = std::clamp((int)floorf((y - fnt.view.top + fnt.scroll) / rowH), 0, n - 1);
+    if (at != u.wallMove) {
+        WallsMove(u.wallMove, at);
+        u.wallMove = at;
+    }
+    if (y < fnt.view.top + 24) FontScrollTo(fnt.target - 18, true);
+    else if (y > fnt.view.bottom - 24) FontScrollTo(fnt.target + 18, true);
 }
 
 // Takes a wallpaper off the list (the file stays where it is).
@@ -3535,15 +3574,21 @@ void PaintFontDialog() {
                 PopRounded(pclip);
             }
             const float tx = pic.right + 14, cy = (r.top + r.bottom) / 2;
-            Text(SongName(wr.path), R(tx, cy - 22, r.right - 120, cy), u.fStrong, t.text);
+            Text(SongName(wr.path), R(tx, cy - 22, r.right - 160, cy), u.fStrong, t.text);
             std::wstring about;
             if (!wr.ready) about = L"Reading the video\u2026";
             else if (!wr.info.ok) about = wr.info.fault == VF_GIF ? L"A GIF: turn it into a video first" : wr.info.fault == VF_MISSING ? L"The file isn't there" : L"Can't be used as a wallpaper";
             else about = Fmt(L"%u\u00D7%u  \u00B7  %ls  \u00B7  %.0f MB", wr.info.vw, wr.info.vh, Clock(wr.info.duration).c_str(), wr.info.bytes / 1048576.0);
             if (!SamePath(wr.play, wr.path)) about += L"  \u00B7  a lighter version";
-            Text(about, R(tx, cy, r.right - 120, cy + 20), u.fSmall, t.text2);
-            if (cur) Text(L"Current", R(r.right - 110, r.top, r.right - 14, r.bottom), u.fSmall, t.good, DWRITE_TEXT_ALIGNMENT_TRAILING);
-            else Button(ID_FNT_DEL0 + i, R(r.right - 44, cy - 15, r.right - 12, cy + 15), L"", L"\uE74D");
+            Text(about, R(tx, cy, r.right - 160, cy + 20), u.fSmall, t.text2);
+            if (cur) Text(L"Current", R(r.right - 150, r.top, r.right - 54, r.bottom), u.fSmall, t.good, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            else Button(ID_FNT_DEL0 + i, R(r.right - 84, cy - 15, r.right - 52, cy + 15), L"", L"\uE74D");
+            // Its grip: dragged, the row moves up or down the list (the others make room).
+            const D2D1_RECT_F grip = R(r.right - 44, r.top, r.right - 4, r.bottom);
+            const bool gripHot = IsHot(ID_WALL_GRIP0 + i) || u.wallMove == i;
+            Text(L"\uE76F", grip, u.fIconSmall, gripHot ? t.text : t.text3, DWRITE_TEXT_ALIGNMENT_CENTER);
+            AddHit(ID_WALL_GRIP0 + i, K_AREA, grip);
+            if (u.wallMove == i) Stroke(r, t.accent, 6, 2);
             continue;
         }
         if (fnt.players) {  // a style: its name and what it is, then how it looks
@@ -3662,9 +3707,11 @@ void PaintFontDialog() {
         return;
     }
     float noteL = L + 24;
-    if (fnt.walls) {  // more videos for the list
+    if (fnt.walls) {  // more videos for the list, and where they go
         Button(ID_FNT_OWN, R(L + 24, by, L + 24 + 150, by + 32), L"Add videos\u2026", L"\uE710");
-        noteL += 166;
+        Text(L"New ones go", R(L + 190, by, L + 290, by + 32), u.fSmall, t.text2);
+        Seg(ID_WALL_FIRST, R(L + 270, by, L + 410, by + 32), {L"First", L"Last"}, g_settings.wallsFirst ? 0 : 1);
+        noteL += 400;
     } else if (!fnt.dates && !fnt.langs && !fnt.players) {  // any font of the user's own, always at hand
         Button(ID_FNT_OWN, R(L + 24, by, L + 24 + 196, by + 32), L"Add your own font\u2026", L"\uE710");
         noteL += 212;
@@ -4972,6 +5019,11 @@ void OnSeg(int id, int i) {
             if (i + (dlg.target >= 2 ? 2 : 0) != dlg.target) DlgSetTarget(i + (dlg.target >= 2 ? 2 : 0));
             return;
         case ID_KEEPSOUND: g_settings.keepSound = i == 1; break;
+        case ID_WALL_FIRST:
+            g_settings.wallsFirst = i == 0;
+            SaveSettings(g_settings);
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return;
         case ID_CLK_SCOPE:
             if ((i == 0) == g_settings.clockVideoOwn) return;
             g_settings.clockVideoOwn = i == 0;
@@ -5924,6 +5976,17 @@ bool OnKeyInner(UINT vk) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
     }
+    if (fnt.open && fnt.walls && u.focus >= ID_FNT_ROW0 && u.focus < ID_FNT_ROW0 + (int)g_walls.size() && GetKeyState(VK_MENU) < 0 &&
+        (vk == VK_UP || vk == VK_DOWN)) {  // Alt+arrows move the focused wallpaper
+        const int i = u.focus - ID_FNT_ROW0, to = i + (vk == VK_UP ? -1 : 1);
+        if (to >= 0 && to < (int)g_walls.size()) {
+            WallsMove(i, to);
+            WallsSave();
+            u.focus = u.hot = ID_FNT_ROW0 + to;
+        }
+        InvalidateRect(u.hwnd, nullptr, FALSE);
+        return true;
+    }
     if (u.focus >= ID_SONG_ROW0 && u.focus < ID_SONG_GRIP0 && GetKeyState(VK_MENU) < 0 && (vk == VK_UP || vk == VK_DOWN)) {
         MusicMove(u.focus - ID_SONG_ROW0, vk == VK_UP ? -1 : 1);  // Alt+arrows move the focused song
         InvalidateRect(u.hwnd, nullptr, FALSE);
@@ -6066,6 +6129,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
             }
+            if (u.drag == ID_WALL_GRIP0) {
+                WallsDrag(y);
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             if (u.drag) {
                 for (auto& ht : u.hits)
                     if (ht.id == u.drag) {
@@ -6181,6 +6249,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 return 0;
             }
             if (!ht || !ht->enabled) return 0;
+            if (fnt.open && fnt.walls && ht->id >= ID_WALL_GRIP0 && ht->id < ID_WALL_GRIP0 + (int)g_walls.size()) {  // a wallpaper's grip: it moves
+                SetCapture(h);
+                u.drag = ID_WALL_GRIP0;
+                u.wallMove = ht->id - ID_WALL_GRIP0;
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             if (ht->id >= ID_SONG_ROW0 && ht->id < ID_SONG_GRIP0 + 10000) {  // a song: click, scroll or move
                 SetCapture(h);
                 SongPress(ht->id, y);
@@ -6239,6 +6314,16 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             int dragId = u.drag, pressId = u.press;
             if (dragId == ID_MUSIC_LIST) {
                 SongRelease();
+                u.drag = u.press = 0;
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
+            if (dragId == ID_WALL_GRIP0) {  // the wallpaper's new place is kept
+                if (u.wallMove >= 0 && u.wallMove < (int)g_walls.size()) {
+                    WallsSave();
+                    Log(L"ui: %ls moved to place %d", g_walls[u.wallMove].path.c_str(), u.wallMove + 1);
+                }
+                u.wallMove = -1;
                 u.drag = u.press = 0;
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
@@ -6557,7 +6642,6 @@ void QueryScreen() {
 }
 
 void QueryGpu() {
-    const bool loaded = D3D.CreateFactory1 != nullptr;  // in use elsewhere (a version being made): leave it loaded
     if (!D3D.Load()) return;
     IDXGIFactory1* f = nullptr;
     if (SUCCEEDED(D3D.CreateFactory1(__uuidof(IDXGIFactory1), (void**)&f))) {
@@ -6569,7 +6653,7 @@ void QueryGpu() {
         u.gpuAutoHigh = autoName == u.gpuHigh;
         f->Release();
     }
-    if (!loaded) D3D.Unload();
+    D3D.Unload();
     // "Intel(R) Iris(R) Xe Graphics" -> "Intel Iris Xe Graphics"
     for (std::wstring* s : {&u.gpu, &u.gpuLow, &u.gpuHigh})
         for (const wchar_t* mark : {L"(R)", L"(TM)", L"(tm)"})

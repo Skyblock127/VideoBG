@@ -104,7 +104,9 @@ struct State {
     std::wstring preview;                // the video being previewed, "" = the wallpaper's own
     Crop previewVideoCrop;               // its crop
     double returnPos = 0;                // where the wallpaper's own video was when previewing began
-    bool announce = false;               // tell the host when the next first frame is up
+    std::atomic<bool> announce{false};   // tell the host when the next first frame is up
+    UINT pipeGen = 0;                    // which pipeline (each first frame says; an old one's is ignored)
+    UINT targetsGen = 0;                 // the targets changed (the showcase came or went): views on them are made again
     UINT previewSeq = 0;                 // the host's number for the last preview request
     std::atomic<LONGLONG> seekTo{-1};    // silent pipeline: jump here (100 ns units), -1 = no jump asked for
     std::atomic<bool> seekExact{true};   // ... to that exact frame, or just the key frame before it (quicker)
@@ -267,6 +269,10 @@ bool StepLook() {
     RECT box = p.box;
     const float grow = p.growAt > 0 ? EaseInOut((float)((now - p.growAt) / std::max(0.01, p.growFor))) : 0;
     AcquireSRWLockExclusive(&g.lock);
+    if (!g.plan.on) {  // dropped meanwhile (the showcase went): its look isn't put back
+        ReleaseSRWLockExclusive(&g.lock);
+        return false;
+    }
     for (auto& t : g.targets) {
         if (!t.showcase) continue;
         if (box.right > box.left && grow > 0) {  // towards the whole screen
@@ -318,6 +324,7 @@ struct Sim {
     ID3D11VideoProcessor* vp = nullptr;             // pass 2: from it to the screens
     ID3D11VideoProcessorInputView* in = nullptr;
     std::vector<ID3D11VideoProcessorOutputView*> outs;  // one per target
+    UINT gen = 0;                                       // ...as they were (g.targetsGen)
 } sim;
 
 void FreeSim() {
@@ -511,12 +518,13 @@ bool BlitAll(ID3D11VideoProcessorInputView* view, bool showcaseOnly = false) {
     st.pInputSurface = view;
     UINT want = g.simWanted;
     AcquireSRWLockShared(&g.lock);
-    if (want != ((sim.h << 16) | sim.w) || (sim.vp && sim.outs.size() != g.targets.size())) {
+    if (want != ((sim.h << 16) | sim.w) || (sim.vp && (sim.outs.size() != g.targets.size() || sim.gen != g.targetsGen))) {
         FreeSim();
         if (want && !BuildSim(want & 0xFFFF, want >> 16)) {
             Log(L"preview of a %ux%u version isn't supported here", want & 0xFFFF, want >> 16);
             g.simWanted = 0;
         }
+        sim.gen = g.targetsGen;
     }
     for (auto& t : g.targets) {
         if (t.out) continue;
@@ -634,7 +642,10 @@ DWORD WINAPI SilentThread(void*) {
             if (FAILED(hr)) { Log(L"ReadSample failed 0x%08lx", (unsigned long)hr); result = 2; break; }
             if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
                 curView = nullptr;  // views die with the old processor
-                if (!ReadReaderFormat()) { SafeRelease(s); result = 2; break; }
+                AcquireSRWLockExclusive(&g.lock);  // (the showcase's target may come or go meanwhile)
+                const bool formatOk = ReadReaderFormat();
+                ReleaseSRWLockExclusive(&g.lock);
+                if (!formatOk) { SafeRelease(s); result = 2; break; }
                 PostMessageW(g.ctl, WM_ENGINE_EVENT, MF_MEDIA_ENGINE_EVENT_FORMATCHANGE, 0);
             }
             if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
@@ -694,7 +705,7 @@ DWORD WINAPI SilentThread(void*) {
         if (first) {
             first = false;
             if (g.announce) WaitShown();  // a preview: the picker shows it once it's on the screen
-            PostMessageW(g.ctl, WM_FIRST_FRAME, 0, 0);
+            PostMessageW(g.ctl, WM_FIRST_FRAME, g.pipeGen, 0);
         }
     }
     SafeRelease(next);
@@ -782,7 +793,7 @@ DWORD WINAPI EngineThread(void*) {
                 if (!firstFrame) {
                     firstFrame = true;
                     if (g.announce) WaitShown();
-                    PostMessageW(g.ctl, WM_FIRST_FRAME, 0, 0);
+                    PostMessageW(g.ctl, WM_FIRST_FRAME, g.pipeGen, 0);
                 }
             }
         }
@@ -868,7 +879,15 @@ void OnEngineEvent(DWORD ev, UINT gen, LPARAM info) {
 void StopPipeline() {
     g.quit = true;
     if (g.wake) SetEvent(g.wake);
-    if (g.thread) { WaitForSingleObject(g.thread, 3000); CloseHandle(g.thread); g.thread = nullptr; }
+    if (g.thread) {
+        if (WaitForSingleObject(g.thread, 3000) == WAIT_TIMEOUT) {  // stuck (a driver, a decoder): it can't be freed under it
+            Log(L"render thread didn't stop: starting over");
+            TerminateProcess(GetCurrentProcess(), EXIT_RENDER_RESTART);
+        }
+        CloseHandle(g.thread);
+        g.thread = nullptr;
+    }
+    g.pipeGen++;  // (a first frame it announced and that's still queued is the old video's)
     g.quit = false;
     if (g.eng) { g.eng->Shutdown(); SafeRelease(g.eng); }
     CloseReader();
@@ -1045,9 +1064,11 @@ bool KeepSong() {
     return false;
 }
 
+bool MyMusic(const Settings& s) { return s.sound == 2 && s.musicSource.empty(); }  // (an app as the source plays itself)
+
 void StartMusic() {
     StopMusic();
-    if (g.s.sound != 2) return;
+    if (!MyMusic(g.s)) return;
     mu.list = LoadPlaylist();
     if (mu.list.empty()) { Log(L"music: no songs chosen"); ReportTrack(-1); return; }
     IMFMediaEngineClassFactory* cf = nullptr;
@@ -1540,6 +1561,7 @@ void ShowcaseOn(HWND under) {
     g.showcaseUp = false;
     AcquireSRWLockExclusive(&g.lock);
     g.targets.push_back(t);
+    g.targetsGen++;
     ReleaseSRWLockExclusive(&g.lock);
     UpdateRects();
     PlaceShowcase();
@@ -1568,6 +1590,7 @@ void ShowcaseOff() {
         if (g.targets[i].showcase) {
             t = g.targets[i];
             g.targets.erase(g.targets.begin() + (ptrdiff_t)i);
+            g.targetsGen++;
             break;
         }
     ReleaseSRWLockExclusive(&g.lock);
@@ -1644,9 +1667,9 @@ void Reload() {
         g.eng->SetPlaybackRate(r);
         g.eng->SetVolume(g.s.videoMuted ? 0 : g.s.volume / 100.0);
     }
-    if (ns.sound != 2) {
+    if (!MyMusic(ns)) {
         StopMusic();
-    } else if (!mu.eng || old.sound != 2 || !KeepSong()) {
+    } else if (!mu.eng || !MyMusic(old) || !KeepSong()) {
         StartMusic();
     } else {  // the song playing is still there: it carries on in the new order, repeat or play state
         mu.eng->SetVolume(ns.volume / 100.0);
@@ -1679,6 +1702,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (mu.eng) mu.eng->SetVolume(w / 100.0);
             return 0;
         case WM_FIRST_FRAME:
+            if ((UINT)w != g.pipeGen) return 0;  // the video before (a preview came meanwhile)
             Log(L"first frame presented on %zu display(s)", g.targets.size());
             ShowTargets();
             ReportState();
@@ -1864,7 +1888,6 @@ int RendererMain(HINSTANCE inst, HWND host) {
     // A hidden top-level window (not message-only) so it also receives broadcasts.
     g.ctl = CreateWindowExW(WS_EX_TOOLWINDOW, RCTL_CLASS, L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, inst, nullptr);
     g.taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
-    PostMessageW(host, WM_VBG_RENDERER_READY, 0, (LPARAM)g.ctl);
 
     if (g.s.video.empty()) {
         Fail(HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), VF_MISSING);
@@ -1900,6 +1923,9 @@ int RendererMain(HINSTANCE inst, HWND host) {
         }
     }
 
+    // Ready once its window takes messages: the host's requests sent before then (a preview) would
+    // wait while the desktop and the graphics start, and fail.
+    PostMessageW(host, WM_VBG_RENDERER_READY, 0, (LPARAM)g.ctl);
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);

@@ -209,6 +209,7 @@ struct Painter {
     IDWriteInMemoryFontFileLoader* loader = nullptr;
     ID2D1Factory* d2f = nullptr;
     IDWriteFontCollection1* fonts = nullptr;  // just the font being drawn (and Quicksand for digits it lacks)
+    IDWriteFontCollection1* designFonts = nullptr;  // the designs' five (UseDesignFonts), kept with it
     std::wstring fontKey;                     // which font that is
     std::wstring family, smallFamily;         // its family, and the one for the date and time
     float dayCap = 0.7f, smallCap = 0.7f;     // their capital letters' height, per em
@@ -457,7 +458,7 @@ void FlipStep() {
         KillTimer(W.hwnd, TIMER_FLIP);
         if (W.flipAt && Clock_Paint(W.look, Clock_PixelScale(), W.flipTo, &img)) ShowPicture(img);
         W.flipAt = 0;
-        if (!UI_IsOpen()) Clock_ReleasePainter();
+        if (!UI_IsOpen() && !Modern_IsOpen()) Clock_ReleasePainter();
     }
 }
 
@@ -489,7 +490,7 @@ void DrawClock() {
         } else {
             KillTimer(W.hwnd, TIMER_FLIP);
             W.flipAt = 0;
-            if (!UI_IsOpen()) Clock_ReleasePainter();  // nothing stays loaded between minutes
+            if (!UI_IsOpen() && !Modern_IsOpen()) Clock_ReleasePainter();  // nothing stays loaded between minutes
         }
     }
     PlaceClock();
@@ -533,11 +534,25 @@ void BoxBlur(std::vector<float>& a, int w, int h, int r) {
         for (int i = 0; i < n; i++) p[(size_t)i * stride] = tmp[i];
     };
     for (int y = 0; y < h; y++) pass(&a[(size_t)y * w], w, 1);
-    for (int x = 0; x < w; x++) pass(&a[x], h, w);
+    // Down the columns: a running sum for each, a row at a time (column by column jumps through memory).
+    std::vector<float> col(w, 0.f), out((size_t)w * h);
+    auto add = [&](int y, float sign) {
+        const float* row = &a[(size_t)y * w];
+        for (int x = 0; x < w; x++) col[x] += sign * row[x];
+    };
+    for (int y = 0; y < r && y < h; y++) add(y, 1);
+    for (int y = 0; y < h; y++) {
+        if (y + r < h) add(y + r, 1);
+        float* o = &out[(size_t)y * w];
+        for (int x = 0; x < w; x++) o[x] = col[x] * inv;
+        if (y - r >= 0) add(y - r, -1);
+    }
+    a.swap(out);
 }
 
 // Puts a soft glow of `color` behind the text (premultiplied BGRA) and applies the opacity.
 void AddGlow(uint32_t* px, int w, int h, float radius, float strength, D2D1_COLOR_F color, float opacity) {
+    if ((strength <= 0 || radius < 1) && opacity >= 0.999f) return;  // (nothing to add or fade)
     std::vector<float> a;
     if (strength > 0 && radius >= 1) {
         a.resize((size_t)w * h);
@@ -571,16 +586,14 @@ enum DesignFace { F_MICHROMA, F_SYNCOPATE, F_QUICKSAND, F_ORBITRON, F_AUDIOWIDE 
 
 // The designs' fonts (all in the exe, read where they are), loaded together.
 bool UseDesignFonts() {
-    if (P.fonts && P.fontKey == L"|designs") return true;
-    Rel(P.fonts);
-    P.fontKey.clear();
+    if (P.designFonts) return true;
     IDWriteFontSetBuilder1* b = nullptr;
     IDWriteFontSet* set = nullptr;
     HRESULT hr = P.f->CreateFontSetBuilder(&b);
     for (int id : {IDR_FONT_MICHROMA, IDR_FONT_SYNCOPATE, IDR_FONT_QUICKSAND, IDR_FONT_ORBITRON, IDR_FONT_AUDIOWIDE})
         if (SUCCEEDED(hr) && !AddResFont(b, id)) hr = E_FAIL;
     if (SUCCEEDED(hr)) hr = b->CreateFontSet(&set);
-    if (SUCCEEDED(hr)) hr = P.f->CreateFontCollectionFromFontSet(set, &P.fonts);
+    if (SUCCEEDED(hr)) hr = P.f->CreateFontCollectionFromFontSet(set, &P.designFonts);
     Rel(set);
     Rel(b);
     if (FAILED(hr)) return false;
@@ -589,13 +602,12 @@ bool UseDesignFonts() {
         UINT32 at = i;
         BOOL found = FALSE;
         bool digits = false;
-        if (FAILED(P.fonts->FindFamilyName(names[i], &at, &found)) || !found) at = i;
-        if (!FamilyInfo(P.fonts, at, &P.faces[i].family, &P.faces[i].cap, &digits)) {
-            Rel(P.fonts);
+        if (FAILED(P.designFonts->FindFamilyName(names[i], &at, &found)) || !found) at = i;
+        if (!FamilyInfo(P.designFonts, at, &P.faces[i].family, &P.faces[i].cap, &digits)) {
+            Rel(P.designFonts);
             return false;
         }
     }
-    P.fontKey = L"|designs";
     return true;
 }
 
@@ -696,7 +708,7 @@ struct Run {
 bool Lay(const std::wstring& s, int face, float px, float gap, bool rtl, Run* r, int weight = kRegular) {
     if (s.empty() || px <= 0) return false;
     IDWriteTextFormat* fmt = nullptr;
-    if (FAILED(P.f->CreateTextFormat(P.faces[face].family.c_str(), P.fonts, (DWRITE_FONT_WEIGHT)(weight == kThick ? kRegular : weight), DWRITE_FONT_STYLE_NORMAL,
+    if (FAILED(P.f->CreateTextFormat(P.faces[face].family.c_str(), P.designFonts, (DWRITE_FONT_WEIGHT)(weight == kThick ? kRegular : weight), DWRITE_FONT_STYLE_NORMAL,
                                      DWRITE_FONT_STRETCH_NORMAL, px, L"en-us", &fmt)))
         return false;
     fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -1412,6 +1424,7 @@ float Clock_PixelScale() {
 
 void Clock_ReleasePainter() {
     Rel(P.fonts);
+    Rel(P.designFonts);
     if (P.f && P.loader) P.f->UnregisterFontFileLoader(P.loader);
     Rel(P.loader);
     Rel(P.f);

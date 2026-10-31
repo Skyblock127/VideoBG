@@ -32,6 +32,7 @@ namespace {
 constexpr wchar_t kClass[] = L"VideoBG.Picker";
 constexpr UINT WM_PK_INFO = WM_APP + 120;  // lParam = WallpaperInfo* from the library worker
 constexpr UINT_PTR TIMER_DWELL = 1, TIMER_MINUTE = 2, TIMER_TOAST = 3, TIMER_HOLD = 4, TIMER_RAM = 5;
+constexpr UINT_PTR TIMER_LIFT = 6;  // a card held still a moment: it's taken out of the deck, to move
 constexpr UINT kDwellMs = 1200;  // on a card this long, its video plays
 const GUID kShadowEffect = {0xC67EA361, 0x1863, 0x4E69, {0x89, 0xDB, 0x69, 0x5D, 0x3E, 0x9A, 0x5B, 0x6B}};  // CLSID_D2D1Shadow
 
@@ -43,7 +44,7 @@ constexpr float kLift = 34, kGrow = 0.2f;  // the middle card: raised and bigger
 enum Phase { OPENING, BROWSING, SELECTING, CLOSING };
 enum Id {
     ID_NONE, ID_MUSIC, ID_CLOCK, ID_MENU, ID_CLOSE, ID_EMPTY_ADD,
-    ID_M_SETTINGS, ID_M_ADD, ID_M_LOCK, ID_M_OFF, ID_M_NATIVE,
+    ID_M_SETTINGS, ID_M_ADD, ID_M_FIRST, ID_M_LOCK, ID_M_OFF, ID_M_NATIVE,
     ID_A_BIN, ID_A_VERSIONS, ID_A_CROP, ID_A_ZONE, ID_V_MORE, ID_C_RESET, ID_C_FRAME, ID_E_SAVE, ID_E_CANCEL, ID_E_EYE,
     // the clock's settings
     ID_P_BG, ID_P_LIST, ID_P_SIDE, ID_P_SHOW, ID_P_HIDE, ID_P_STYLE_PREV, ID_P_STYLE_NEXT, ID_P_LANG, ID_P_DIG_LATIN, ID_P_DIG_OWN,
@@ -170,6 +171,9 @@ struct Picker {
     std::vector<float> lift;          // each card's hover lift, 0..1 (animated)
     bool down = false, dragging = false;
     POINT downAt{};
+    int pressCard = -1;               // the card pressed (held a moment, or pulled up: it moves)
+    int moveCard = -1;                // the card being moved among the others (it follows the pointer)
+    float moveX = 0, moveY = 0;       // the pointer, while it moves
     float downScroll = 0;
     double dragT = 0;
     float dragX = 0, flingV = 0;
@@ -274,6 +278,8 @@ struct Picker {
     int shotW = 0, shotH = 0;
     bool pvRotating = false;          // its handle is held: the player turns
     float pvRotFrom = 0, pvRotPointer = 0;  // its angle when taken, and the pointer's
+    D2D1_POINT_2F pvRotC{};                 // ...and its centre then (it turns round that)
+    bool pvSnapX = false, pvSnapY = false;  // moved onto the screen's middle (a guide line shows)
     // How long drawing takes (logged when it closes)
     int frames = 0;
     double drawTime = 0, drawMax = 0;
@@ -833,6 +839,30 @@ void LoadCards() {
         if (!v.empty()) SetPlay(P.cards[i], v);
     }
 }
+
+// Card `from` to place `to`, the others making room (and whatever names a card by its place following).
+void MoveCard(int from, int to) {
+    const int n = (int)P.cards.size();
+    if (from < 0 || from >= n || to < 0 || to >= n || from == to) return;
+    auto follow = [&](int& i) {
+        if (i == from) i = to;
+        else if (from < to && i > from && i <= to) i--;
+        else if (from > to && i >= to && i < from) i++;
+    };
+    Card c = std::move(P.cards[from]);
+    P.cards.erase(P.cards.begin() + from);
+    P.cards.insert(P.cards.begin() + to, std::move(c));
+    if ((int)P.lift.size() == n) {
+        const float l = P.lift[from];
+        P.lift.erase(P.lift.begin() + from);
+        P.lift.insert(P.lift.begin() + to, l);
+    }
+    for (int* i : {&P.applied, &P.focus, &P.actionsCard, &P.chosen, &P.hotCard, &P.pressCard, &P.moveCard}) follow(*i);
+    for (Still& st : P.stills) follow(st.card);
+}
+
+void StartMove(float x, float y);
+void MoveCardAt(float x);
 
 void SaveCards() {
     std::vector<std::wstring> list;
@@ -1806,8 +1836,13 @@ void DrawMusicStage(float a) {
         const float cx = std::clamp(g_settings.playerX * P.W, shownW / 2, P.W - shownW / 2);
         const float cy = std::clamp(g_settings.playerY * P.H, ph / 2, P.H - ph / 2);
         P.playerBox = R(cx - shownW / 2, cy - ph / 2, cx + shownW / 2, cy + ph / 2);
-        if (P.pvMoving) Stroke(R(P.playerBox.left - 6, P.playerBox.top - 6, P.playerBox.right + 6, P.playerBox.bottom + 6),
-                               Col(0xFFFFFF, 0.6f * a), 14, 1.5f, G.dash);
+        if (P.pvMoving) {
+            Stroke(R(P.playerBox.left - 6, P.playerBox.top - 6, P.playerBox.right + 6, P.playerBox.bottom + 6), Col(0xFFFFFF, 0.6f * a), 14, 1.5f,
+                   G.dash);
+            G.br->SetColor(g_accent * a);  // guide lines when it snaps to the middle, as the clock's
+            if (P.pvSnapX) G.ctx->DrawLine(D2D1::Point2F(P.W / 2, 0), D2D1::Point2F(P.W / 2, P.H), G.br, 1);
+            if (P.pvSnapY) G.ctx->DrawLine(D2D1::Point2F(0, P.H / 2), D2D1::Point2F(P.W, P.H / 2), G.br, 1);
+        }
         G.ctx->DrawBitmap(P.player, P.playerBox, a, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         P.hits.push_back({ID_MU_PREVIEW, P.playerBox});
         // The handle that turns it, above it (below it near the top), as the clock's: a double click
@@ -2192,6 +2227,7 @@ void DrawMenu() {
     const struct { int id; const wchar_t* icon; const wchar_t* label; } items[] = {
         {ID_M_SETTINGS, L"\uE713", L"All settings"},
         {ID_M_ADD, L"\uE710", L"Add videos\u2026"},
+        {ID_M_FIRST, L"\uE76B", L"Add new videos on the left"},
         {ID_M_LOCK, L"\uE72E", L"Show on lock screen"},
         {ID_M_OFF, L"\uE7E8", L"Turn the video wallpaper off"},
         {ID_M_NATIVE, L"\uE7F4", L"Switch to the classic look"},
@@ -2211,9 +2247,9 @@ void DrawMenu() {
         const D2D1_COLOR_F fg = Col(0xFFFFFF, 0.92f * a);
         Text(items[n].icon, R(r.left + 10, r.top, r.left + 34, r.bottom), G.fIcon, fg, DWRITE_TEXT_ALIGNMENT_CENTER);
         Text(items[n].label, R(r.left + 44, r.top, r.right - 10, r.bottom), G.fBody, fg);
-        if (items[n].id == ID_M_LOCK) {  // a switch
+        if (items[n].id == ID_M_LOCK || items[n].id == ID_M_FIRST) {  // a switch
             const D2D1_RECT_F sw = R(r.right - 52, r.top + 11, r.right - 14, r.bottom - 11);
-            const bool on = g_settings.lockFollow;
+            const bool on = items[n].id == ID_M_LOCK ? g_settings.lockFollow : g_settings.wallsFirst;
             if (on) Fill(sw, g_accent * a, 9);
             else Stroke(sw, Col(0xFFFFFF, 0.6f * a), 9, 1.2f);
             Circle(on ? sw.right - 9 : sw.left + 9, (sw.top + sw.bottom) / 2, 5, on ? Col(0x000000, 0.85f * a) : Col(0xFFFFFF, 0.8f * a));
@@ -2538,7 +2574,7 @@ void Paint() {
         // The deck, back to front.
         std::vector<std::pair<float, int>> order;
         for (int i = 0; i < (int)P.cards.size(); i++)
-            if (i != P.chosen) order.push_back({fabsf(i - P.scroll), i});
+            if (i != P.chosen && i != P.moveCard) order.push_back({fabsf(i - P.scroll), i});  // (the moving one goes over them)
         std::sort(order.begin(), order.end(), [](auto& a, auto& b) { return a.first > b.first; });
         const float selT = P.phase == SELECTING ? (float)(Now() - P.chosenAt) : 0;
         for (auto& [dist, i] : order) {
@@ -2550,6 +2586,15 @@ void Paint() {
             }
             if (!CardVisible(p)) continue;
             DrawCard(i, p, CardMatrix(p));
+        }
+        if (P.moveCard >= 0 && P.moveCard < (int)P.cards.size()) {  // the card being moved: over the others, at the pointer
+            Pose p = CardPose(P.focus >= 0 ? P.focus : P.moveCard);
+            p.x = P.moveX;
+            p.y = std::min(p.y, P.moveY + kCardH * p.s * 0.2f) - 24 * P.k;
+            p.rot = 0;
+            p.dim = 0;
+            p.a = 1;
+            DrawCard(P.moveCard, p, CardMatrix(p));
         }
         if (P.phase == SELECTING && P.chosen >= 0) DrawChosen(selT);
         DrawCardActions();
@@ -2690,7 +2735,8 @@ void AddVideos() {
             continue;
         }
         P.cards.push_back(NewCard(p));
-        if (first < 0) first = (int)P.cards.size() - 1;
+        if (g_settings.wallsFirst) MoveCard((int)P.cards.size() - 1, added);  // on the left, in the order picked
+        if (first < 0 || g_settings.wallsFirst) first = g_settings.wallsFirst ? 0 : (int)P.cards.size() - 1;
         added++;
     }
     if (added) {
@@ -3316,6 +3362,12 @@ void Command(int id) {
             if (P.actionsCard == P.applied) StartCropEdit();
             else ShowToast(L"Set it as your wallpaper first, then crop it");
             break;
+        case ID_M_FIRST:
+            g_settings.wallsFirst = !g_settings.wallsFirst;
+            Log(L"picker: new videos go on the %ls", g_settings.wallsFirst ? L"left" : L"right");
+            SaveSettings(g_settings);
+            P.dirty = true;
+            break;
         case ID_M_LOCK:
             Host_SetLockFollow(!g_settings.lockFollow);
             UI_Refresh();
@@ -3465,14 +3517,13 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
     switch (m) {
         case WM_MOUSEMOVE: {
             int hot = HitControl(x, y);
-            const int card = P.mode == 0 && hot == ID_NONE && !P.down && !P.menu ? HitCard(x, y) : -1;
+            const int card = P.mode == 0 && hot == ID_NONE && !P.down && !P.menu && P.moveCard < 0 ? HitCard(x, y) : -1;
             if (card != P.hotCard) {
                 P.hotCard = card;
                 P.dirty = true;
             }
             if (P.pvRotating) {  // the player turns round its centre, on the desktop too
-                const float cx = (P.playerBox.left + P.playerBox.right) / 2, cy = (P.playerBox.top + P.playerBox.bottom) / 2;
-                const float r = Clock_RotateTo(P.pvRotFrom, P.pvRotPointer, Clock_PointerAngle(cx, cy, x, y), (w & MK_SHIFT) != 0);
+                const float r = Clock_RotateTo(P.pvRotFrom, P.pvRotPointer, Clock_PointerAngle(P.pvRotC.x, P.pvRotC.y, x, y), (w & MK_SHIFT) != 0);
                 Settings::PlayerLook& pl = g_settings.playerLooks[std::clamp(g_settings.musicPlayer, 0, (int)std::size(g_settings.playerLooks) - 1)];
                 if (r != pl.rotate) {
                     pl.rotate = r;
@@ -3481,9 +3532,14 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             } else if (P.pv.sliding) {  // the player's volume
                 SetSlider(ID_MU_VOLUME, Player_VolumeAt(g_settings.musicPlayer, (x - P.playerBox.left) / P.playerK, (y - P.playerBox.top) / P.playerK));
                 PreviewChanged();
-            } else if (P.pvMoving) {  // the player follows the pointer, on the desktop too
-                g_settings.playerX = Clamp01((x - P.pvGrab.x) / P.W);
-                g_settings.playerY = Clamp01((y - P.pvGrab.y) / P.H);
+            } else if (P.pvMoving) {  // the player follows the pointer, on the desktop too; it snaps to the middle (Shift: no snapping)
+                float cx = x - P.pvGrab.x, cy = y - P.pvGrab.y;
+                P.pvSnapX = fabsf(cx - P.W / 2) < 10 && !(w & MK_SHIFT);
+                P.pvSnapY = fabsf(cy - P.H / 2) < 10 && !(w & MK_SHIFT);
+                if (P.pvSnapX) cx = P.W / 2;
+                if (P.pvSnapY) cy = P.H / 2;
+                g_settings.playerX = Clamp01(cx / P.W);
+                g_settings.playerY = Clamp01(cy / P.H);
                 Player_Place();
                 P.dirty = true;
             } else if (P.pvSeeking) {  // its place: shown where it's dragged, the song goes there when let go
@@ -3525,9 +3581,21 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                     P.cropX = x;
                     P.cropY = y;
                 }
+            } else if (P.down && P.moveCard >= 0) {  // a card being moved
+                P.moveX = x;
+                P.moveY = y;
+                MoveCardAt(x);
+                P.dirty = true;
             } else if (P.down) {
-                const float dx = x - P.downAt.x / P.scale;
-                if (!P.dragging && fabsf(dx) > 6) P.dragging = true;
+                const float dx = x - P.downAt.x / P.scale, dy = y - P.downAt.y / P.scale;
+                if (!P.dragging && P.pressCard >= 0 && dy < -14 && fabsf(dy) > fabsf(dx) * 1.2f) {  // pulled up: it moves
+                    StartMove(x, y);
+                    break;
+                }
+                if (!P.dragging && fabsf(dx) > 6) {
+                    P.dragging = true;
+                    KillTimer(P.hwnd, TIMER_LIFT);
+                }
                 if (P.dragging) {
                     const double t = Now();
                     const float sc = P.downScroll - dx / Spacing();
@@ -3586,7 +3654,8 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 } else {
                     P.pvRotating = true;
                     P.pvRotFrom = pl.rotate;
-                    P.pvRotPointer = Clock_PointerAngle((P.playerBox.left + P.playerBox.right) / 2, (P.playerBox.top + P.playerBox.bottom) / 2, x, y);
+                    P.pvRotC = D2D1::Point2F((P.playerBox.left + P.playerBox.right) / 2, (P.playerBox.top + P.playerBox.bottom) / 2);
+                    P.pvRotPointer = Clock_PointerAngle(P.pvRotC.x, P.pvRotC.y, x, y);
                 }
                 break;
             }
@@ -3676,6 +3745,8 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             if (P.press == ID_NONE) {
                 P.down = true;
                 P.dragging = false;
+                P.pressCard = P.mode == 0 && P.cards.size() > 1 ? HitCard(x, y) : -1;
+                if (P.pressCard >= 0) SetTimer(P.hwnd, TIMER_LIFT, 450, nullptr);  // held still a moment: it moves
                 P.downAt = POINT{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                 P.downScroll = P.scroll;
                 P.dragT = Now();
@@ -3698,6 +3769,7 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 const int part = P.pv.press;
                 if (P.pvMoving) {
                     P.pvMoving = false;
+                    P.pvSnapX = P.pvSnapY = false;
                     Log(L"picker: the music player moved to %.1f%%, %.1f%%", g_settings.playerX * 100, g_settings.playerY * 100);
                 } else if (P.pv.sliding) {
                     Host_SettingsChanged();
@@ -3770,6 +3842,18 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
                 Command(id);
                 break;
             }
+            KillTimer(P.hwnd, TIMER_LIFT);
+            P.pressCard = -1;
+            if (P.down && P.moveCard >= 0) {  // a card moved: it stays there (and becomes the middle one)
+                P.down = false;
+                const int at = P.moveCard;
+                P.moveCard = -1;
+                SaveCards();
+                Log(L"picker: %ls moved to place %d", P.cards[at].path.c_str(), at + 1);
+                SetFocus(at);
+                P.dirty = true;
+                break;
+            }
             if (P.down) {
                 P.down = false;
                 if (P.dragging) {  // let go: carries on a little in the same direction, then settles on a card
@@ -3789,6 +3873,33 @@ void OnMouse(UINT m, WPARAM w, LPARAM l) {
             P.dirty = true;
             break;
         }
+    }
+}
+
+// The card pressed is taken out of the deck to move (held still a moment, or pulled up).
+void StartMove(float x, float y) {
+    if (P.pressCard < 0 || P.pressCard >= (int)P.cards.size() || P.moveCard >= 0) return;
+    KillTimer(P.hwnd, TIMER_LIFT);
+    P.moveCard = P.pressCard;
+    P.moveX = x;
+    P.moveY = y;
+    P.actions = P.versions = P.binArmed = false;
+    P.hotCard = -1;
+    P.dirty = true;
+}
+
+// The moving card's place: among the others, where the pointer is (the deck scrolls near the screen's edges).
+void MoveCardAt(float x) {
+    const int n = (int)P.cards.size();
+    int best = P.moveCard;
+    float d = 1e9f;
+    for (int i = 0; i < n; i++) {
+        const float di = fabsf(CardPose(i).x - x);
+        if (di < d) d = di, best = i;
+    }
+    if (best != P.moveCard) {
+        MoveCard(P.moveCard, best);
+        P.dirty = true;
     }
 }
 
@@ -4030,6 +4141,11 @@ void OnKey(WPARAM vk) {
         if (vk == VK_ESCAPE || vk == VK_RETURN) {
             P.searchOn = false;
             P.dirty = true;
+        } else if (vk == VK_TAB || vk == VK_UP || vk == VK_DOWN) {  // to the songs: the one found (or the one playing), or one beside it
+            const int from = P.searchHit >= 0 ? P.searchHit : MusicCurrent();
+            P.searchOn = false;
+            FocusSong(from, vk == VK_TAB ? 0 : vk == VK_DOWN ? 1 : -1);
+            P.dirty = true;
         }
         return;
     }
@@ -4097,6 +4213,16 @@ void OnKey(WPARAM vk) {
         P.dirty = true;
         return;
     }
+    if (GetKeyState(VK_CONTROL) < 0 && (vk == VK_LEFT || vk == VK_RIGHT) && P.focus >= 0) {  // Ctrl+arrows move the middle card
+        const int to = P.focus + (vk == VK_RIGHT ? 1 : -1);
+        if (to >= 0 && to < (int)P.cards.size()) {
+            MoveCard(P.focus, to);
+            SaveCards();
+            P.scrollTo = (float)P.focus;
+            P.dirty = true;
+        }
+        return;
+    }
     switch (vk) {
         case VK_LEFT:
         case VK_UP: SetFocus(P.focus - 1); break;
@@ -4140,7 +4266,16 @@ bool Step(double now) {
     bool moving = false;
     const float t = (float)(now - P.phaseAt);
 
-    // The deck.
+    // The deck (a card being moved near the screen's edge scrolls it, faster nearer).
+    if (P.moveCard >= 0) {
+        const float zone = P.W * 0.12f;
+        const float depth = P.moveX < zone ? (P.moveX - zone) / zone : P.moveX > P.W - zone ? (P.moveX - (P.W - zone)) / zone : 0;
+        if (depth != 0) {
+            P.scrollTo = std::clamp(P.scrollTo + depth * 6 * dt, 0.f, (float)P.cards.size() - 1);
+            MoveCardAt(P.moveX);
+            moving = true;
+        }
+    }
     if (!P.dragging) {
         const float before = P.scroll;
         Spring(P.scroll, P.scrollV, P.scrollTo, dt, 15);
@@ -4397,6 +4532,14 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (w == TIMER_TOAST) { KillTimer(h, TIMER_TOAST); P.toastOn = false; P.dirty = true; }
             else if (w == TIMER_HOLD) ReleaseHold();
             else if (w == TIMER_RAM) UpdateRam();
+            else if (w == TIMER_LIFT) {  // held still: the card moves with the pointer from here
+                KillTimer(h, TIMER_LIFT);
+                if (P.down && !P.dragging) {
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    StartMove((pt.x - P.mon.left) / P.scale, (pt.y - P.mon.top) / P.scale);
+                }
+            }
             return 0;
         case WM_PK_INFO:
             if (P.hwnd) OnInfo((WallpaperInfo*)l);
@@ -4420,6 +4563,7 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 bool Modern_IsOpen() { return P.hwnd != nullptr; }
 
 bool Modern_Open(int mode) {
+    if (P.hwnd && P.phase == CLOSING) Destroy();  // (asked for again while it fades out: it opens afresh)
     if (P.hwnd) {  // open already: switch to what was asked
         if (mode == 1 && P.mode == 0) StartClockEdit();
         SetForegroundWindow(P.hwnd);

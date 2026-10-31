@@ -57,22 +57,43 @@ void MFApi::Stop() {
     ReleaseSRWLockExclusive(&g_mfLock);
 }
 
+static SRWLOCK g_d3dLock = SRWLOCK_INIT;
+
 bool D3DApi::Load() {
-    if (d3d) return true;
+    AcquireSRWLockExclusive(&g_d3dLock);
+    if (uses > 0) {
+        uses++;
+        ReleaseSRWLockExclusive(&g_d3dLock);
+        return true;
+    }
     d3d = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     dxgi = LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     Bind(CreateDevice, d3d, "D3D11CreateDevice");
     Bind(CreateFactory1, dxgi, "CreateDXGIFactory1");
-    if (!CreateDevice || !CreateFactory1) { Unload(); return false; }
-    return true;
+    const bool ok = CreateDevice && CreateFactory1;
+    if (ok) {
+        uses = 1;
+    } else {
+        if (d3d) FreeLibrary(d3d);
+        if (dxgi) FreeLibrary(dxgi);
+        d3d = dxgi = nullptr;
+        CreateDevice = nullptr;
+        CreateFactory1 = nullptr;
+    }
+    ReleaseSRWLockExclusive(&g_d3dLock);
+    return ok;
 }
 
 void D3DApi::Unload() {
-    if (d3d) FreeLibrary(d3d);
-    if (dxgi) FreeLibrary(dxgi);
-    d3d = dxgi = nullptr;
-    CreateDevice = nullptr;
-    CreateFactory1 = nullptr;
+    AcquireSRWLockExclusive(&g_d3dLock);
+    if (uses > 0 && --uses == 0) {
+        if (d3d) FreeLibrary(d3d);
+        if (dxgi) FreeLibrary(dxgi);
+        d3d = dxgi = nullptr;
+        CreateDevice = nullptr;
+        CreateFactory1 = nullptr;
+    }
+    ReleaseSRWLockExclusive(&g_d3dLock);
 }
 
 static void ReadVideoType(IMFMediaType* mt, VideoInfo& vi) {
@@ -390,6 +411,11 @@ bool FrameGrabber::ToPixels(IMFSample* best, std::vector<uint32_t>& px, int& w, 
             pitch = stride_;
             scan0 = pitch < 0 ? raw + (size_t)(-pitch) * (fh_ - 1) : raw;
         }
+        const bool locked2d = scan0 && !raw;  // (unlocked the way it was locked, whatever's read)
+        const LONG rowBytes = pitch < 0 ? -pitch : pitch;
+        if (scan0 && (ap_.right > (LONG)fw_ || ap_.bottom > (LONG)fh_ || ap_.left < 0 || ap_.top < 0 || rowBytes < (LONG)fw_ * 4 ||
+                      (raw && (size_t)rowBytes * fh_ > len)))
+            scan0 = nullptr, ok = false;  // (not all there: nothing read)
         if (scan0) {
             w = ap_.right - ap_.left;
             h = ap_.bottom - ap_.top;
@@ -401,7 +427,7 @@ bool FrameGrabber::ToPixels(IMFSample* best, std::vector<uint32_t>& px, int& w, 
             }
             ok = true;
         }
-        if (b2) { if (scan0 && !raw) b2->Unlock2D(); b2->Release(); }
+        if (b2) { if (locked2d) b2->Unlock2D(); b2->Release(); }
         if (raw) buf->Unlock();
         buf->Release();
     }
