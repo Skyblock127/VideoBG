@@ -10,6 +10,7 @@
 #include <eventtoken.h>
 #include <shlobj.h>
 #include <propkey.h>
+#include <dwmapi.h>
 extern "C" HRESULT WINAPI SHGetPropertyStoreForWindow(HWND, REFIID, void**);  // (shell32; MinGW's shellapi.h hides it here)
 #include <knownfolders.h>
 #include <wincodec.h>
@@ -541,9 +542,11 @@ void NowPlaying_Tick() {
                 const bool late = g_coverLooks < 2 && at - g_songAt > (g_coverLooks ? 12000u : 3000u);
                 const bool read = g_coverSong != key ? g_coverTries < 4 : g_opChanged || late;
                 IStreamRef* ref = nullptr;
-                if (read && !g_coverOp && SUCCEEDED(props->get_Thumbnail(&ref)) && ref) {
+                if (read && !g_coverOp) {  // (counted whether it has a picture or not: a song without one stops asking)
                     if (g_coverSong != key) g_coverTries++;
                     else if (late) g_coverLooks++;
+                }
+                if (read && !g_coverOp && SUCCEEDED(props->get_Thumbnail(&ref)) && ref) {
                     ref->OpenReadAsync(&g_coverOp);
                 }
                 Rel(ref);
@@ -570,7 +573,8 @@ void NowPlaying_Tick() {
         // session is new, a skip waits for the next song, a cover read is due; else every 10 s, just in case.
         const ULONGLONG at = GetTickCount64();
         const bool due = g_propsChanged || g_propsAt <= g_watchAt || g_skipAt || at - g_propsAt > 10000 ||
-                         (g_coverSong != now.title + L"\n" + now.artist && g_coverTries < 4) || (g_coverLooks < 2 && g_coverFor == now.title + L"\n" + now.artist);
+                         (g_coverSong != now.title + L"\n" + now.artist && g_coverTries < 4) ||
+                         (g_coverLooks < 2 && g_coverFor == now.title + L"\n" + now.artist && at - g_songAt > (g_coverLooks ? 12000u : 3000u));
         if (!g_propsOp && due) {
             g_opChanged = g_propsChanged.exchange(false);
             g_watched->TryGetMediaPropertiesAsync(&g_propsOp);
@@ -672,6 +676,8 @@ void NowPlaying_ShowApp() {
         [](HWND h, LPARAM l) -> BOOL {
             Find& f = *(Find*)l;
             if (!IsWindowVisible(h) || GetWindow(h, GW_OWNER) || (GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)) return TRUE;
+            BOOL cloaked = FALSE;
+            if (SUCCEEDED(DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked) return TRUE;
             wchar_t text[512];
             const int n = GetWindowTextW(h, text, 512);
             if (n <= 0) return TRUE;
@@ -702,7 +708,10 @@ void NowPlaying_ShowApp() {
                     }
                     CloseHandle(pr);
                 }
-                if (score && !f.title.empty() && std::wstring(text, n).find(f.title) != std::wstring::npos) score = 2;
+                std::wstring lt(text, n), ls = f.title;
+                for (auto& c : lt) c = towlower(c);
+                for (auto& c : ls) c = towlower(c);
+                if (score && !ls.empty() && lt.find(ls) != std::wstring::npos) score = 2;
             }
             if (score > f.score) {
                 f.score = score;

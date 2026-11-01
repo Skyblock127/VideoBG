@@ -1706,6 +1706,7 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_MOUSELEAVE:
             if (!W.dragging && !W.sliding) {
                 W.hot = PART_NONE;
+                W.overCover = false;
                 Draw();
             }
             return 0;
@@ -1741,8 +1742,10 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 Player_Seek(W.seekFrac);
             } else if (W.dragging) {
                 W.dragging = false;
-                if (!W.moved) {  // a click (on the song's picture: the app it comes from, to the front)
-                    if (W.onCover) NowPlaying_ShowApp();
+                const bool click = !W.moved, cover = W.onCover;
+                W.moved = W.onCover = false;
+                if (click) {  // a click (on the song's picture: the app it comes from, to the front)
+                    if (cover) NowPlaying_ShowApp();
                 } else {
                     KeepPlace(h);
                     SaveSettings(g_settings);

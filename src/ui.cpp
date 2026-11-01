@@ -194,6 +194,8 @@ class Worker {
 public:
     void Start(HWND notify) {
         notify_ = notify;
+        quit_ = hasJob_ = hasOpt_ = hasStill_ = false;  // (started again after a Stop: nothing left over)
+        cancel_ = 0;
         InitializeCriticalSection(&cs_);
         ev_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         thread_ = CreateThread(nullptr, 0, Proc, this, 0, nullptr);

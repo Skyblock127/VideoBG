@@ -847,7 +847,7 @@ void LoadCards() {
 }
 
 // Card `from` to place `to`, the others making room (and whatever names a card by its place following).
-void MoveCard(int from, int to) {
+void MoveCard(int from, int to, bool glide = true) {
     const int n = (int)P.cards.size();
     if (from < 0 || from >= n || to < 0 || to >= n || from == to) return;
     auto follow = [&](int& i) {
@@ -858,15 +858,16 @@ void MoveCard(int from, int to) {
     Card c = std::move(P.cards[from]);
     P.cards.erase(P.cards.begin() + from);
     P.cards.insert(P.cards.begin() + to, std::move(c));
-    if ((int)P.shiftBy.size() != n) P.shiftBy.assign(n, 0.f);
+    P.shiftBy.resize(n, 0.f);  // (a card just added has none yet)
+    P.lift.resize(n, 0.f);
     {
-        const float own = P.shiftBy[from] + (from - to);  // (the card moved: from where it was shown)
+        const float own = glide ? P.shiftBy[from] + (from - to) : 0.f;  // (the card moved: from where it was shown)
         P.shiftBy.erase(P.shiftBy.begin() + from);
         P.shiftBy.insert(P.shiftBy.begin() + to, own);
-        for (int i = std::min(from, to); i <= std::max(from, to); i++)  // the others shifted by one: from where they were
+        for (int i = std::min(from, to); i <= std::max(from, to) && glide; i++)  // the others shifted by one: from where they were
             if (i != to) P.shiftBy[i] += from < to ? 1.f : -1.f;
     }
-    if ((int)P.lift.size() == n) {
+    {
         const float l = P.lift[from];
         P.lift.erase(P.lift.begin() + from);
         P.lift.insert(P.lift.begin() + to, l);
@@ -878,6 +879,7 @@ void MoveCard(int from, int to) {
 void StartMove(float x, float y);
 void MoveCardAt(float x);
 void DropCard();
+void EndMove();
 
 void SaveCards() {
     std::vector<std::wstring> list;
@@ -2693,6 +2695,7 @@ void ReleaseHold();
 
 void BeginClose(const wchar_t* why) {
     if (P.phase == CLOSING) return;
+    EndMove();
     if (P.mode == 3) EndMusicEdit(false);  // (the player's look is kept only by Done)
     if (P.mode == 2) {                     // and the crop only by Save: the wallpaper as it was
         if (Card* c = WallpaperCard()) c->crop = P.cropWas;
@@ -2711,6 +2714,7 @@ void BeginClose(const wchar_t* why) {
 // The chosen card becomes the wallpaper: it rises, glows and opens out to fill the screen.
 void Choose(int i) {
     if ((P.phase != BROWSING && P.phase != OPENING) || i < 0 || i >= (int)P.cards.size()) return;
+    EndMove();
     Card& c = P.cards[i];
     if (c.failed || (c.ready && !c.info.ok)) {
         ShowToast(c.info.fault == VF_GIF ? L"Turn the GIF into a video in Settings first" : L"This one can't be used as a wallpaper");
@@ -2784,7 +2788,7 @@ void AddVideos() {
             continue;
         }
         P.cards.push_back(NewCard(p));
-        if (g_settings.wallsFirst) MoveCard((int)P.cards.size() - 1, added);  // on the left, in the order picked
+        if (g_settings.wallsFirst) MoveCard((int)P.cards.size() - 1, added, false);  // on the left, in the order picked
         if (first < 0 || g_settings.wallsFirst) first = g_settings.wallsFirst ? 0 : (int)P.cards.size() - 1;
         added++;
     }
@@ -2811,6 +2815,11 @@ void RemoveFocused() {
     ShowToast(L"\u201C" + P.cards[i].title + L"\u201D is off the list (the file is still there)");
     ReleaseCardBitmaps(P.cards[i]);
     P.cards.erase(P.cards.begin() + i);
+    if (i < (int)P.shiftBy.size()) P.shiftBy.erase(P.shiftBy.begin() + i);
+    if (i < (int)P.lift.size()) P.lift.erase(P.lift.begin() + i);
+    P.moveCard = -1;
+    P.moveRise = 0;
+    P.moveHeld = P.moveKeys = false;
     for (auto& s : P.stills) {
         if (s.card == i) s = Still{};
         else if (s.card > i) s.card--;
@@ -2923,6 +2932,7 @@ void ZoomCropAt(float factor, float x, float y) {  // the point under the pointe
 }
 
 void StartCropEdit() {
+    EndMove();
     Card* c = WallpaperCard();
     if (!c || !c->info.ok) return;
     CloseActions();
@@ -2969,6 +2979,7 @@ void EndCropEdit(bool save) {
 
 // The clock of the video in the middle (the wallpaper's when there are no cards), over that video.
 void StartClockEdit() {
+    EndMove();
     const int card = P.focus >= 0 && P.focus < (int)P.cards.size() ? P.focus : -1;
     if (card < 0 && g_settings.video.empty()) {
         ShowToast(L"Choose a wallpaper first: each video has its own clock");
@@ -3027,6 +3038,7 @@ void EndPick(bool keep);
 
 // The music screen: the middle card's video, the player on it, its panel (the deck steps aside).
 void StartMusicEdit() {
+    EndMove();
     const int card = P.focus >= 0 && P.focus < (int)P.cards.size() ? P.focus : -1;
     P.mode = 3;
     P.menu = P.music = false;
@@ -3949,6 +3961,16 @@ void MoveCardAt(float) {
         MoveCard(P.moveCard, at);
         P.dirty = true;
     }
+}
+
+// A card's move ended at once (something else takes over): its new place is kept, it's back in the deck.
+void EndMove() {
+    KillTimer(P.hwnd, TIMER_LIFT);
+    P.pressCard = -1;
+    if (P.moveCard >= 0 && P.moveHeld) DropCard();
+    P.moveCard = -1;
+    P.moveRise = 0;
+    P.moveHeld = P.moveKeys = false;
 }
 
 // Let go: it stays in its new place and falls back into the deck there.

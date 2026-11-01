@@ -226,6 +226,13 @@ void KeepMusicPlace() {
     SaveSettings(g_settings);
 }
 
+// What a renderer that's gone posted and hasn't been read: it would undo the reset that follows.
+void DropRendererMessages() {
+    MSG stale;
+    for (UINT m : {WM_VBG_STATE, WM_VBG_TRACK, WM_VBG_MUSIC_POS, WM_VBG_MUSIC_END, WM_VBG_FAULT, WM_VBG_MEMORY})
+        while (PeekMessageW(&stale, g_wnd, m, m, PM_REMOVE)) {}
+}
+
 void StopRenderer() {
     KillTimer(g_wnd, TIMER_RESTART);
     if (!Running()) return;
@@ -236,9 +243,7 @@ void StopRenderer() {
     CloseHandle(g_proc);
     g_proc = nullptr;
     g_ctl = nullptr;
-    MSG stale;  // what it posted before it went would undo what follows
-    for (UINT m : {WM_VBG_STATE, WM_VBG_TRACK, WM_VBG_MUSIC_POS, WM_VBG_MUSIC_END, WM_VBG_FAULT, WM_VBG_MEMORY})
-        while (PeekMessageW(&stale, g_wnd, m, m, PM_REMOVE)) {}
+    DropRendererMessages();
     g_rstate = RS_LOADING;
     g_rmask = 0;
     g_track = -1;
@@ -298,6 +303,10 @@ void ApplyBatteryPolicy() {
 }
 
 void OnRendererExit() {
+    MSG said;  // why it failed (posted just before it exited, maybe not read yet): heard first
+    for (UINT m : {WM_VBG_FAULT, WM_VBG_STATE})
+        while (PeekMessageW(&said, g_wnd, m, m, PM_REMOVE)) DispatchMessageW(&said);
+    DropRendererMessages();
     DWORD code = 0;
     GetExitCodeProcess(g_proc, &code);
     CloseHandle(g_proc);

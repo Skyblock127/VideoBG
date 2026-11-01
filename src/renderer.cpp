@@ -711,7 +711,7 @@ DWORD WINAPI SilentThread(void*) {
     SafeRelease(next);
     SafeRelease(cur);
     if (result == 1) PostMessageW(g.ctl, WM_DEVICE_LOST, 0, 0);
-    else if (result == 2) PostMessageW(g.ctl, WM_READER_FAILED, 0, 0);
+    else if (result == 2) PostMessageW(g.ctl, WM_READER_FAILED, g.pipeGen, 0);
     CoUninitialize();
     return 0;
 }
@@ -1773,6 +1773,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_WALL_LOST: Exit(EXIT_RENDER_RESTART); return 0;
         case WM_DEVICE_LOST: Log(L"graphics device lost"); Exit(EXIT_RENDER_RESTART); return 0;
         case WM_READER_FAILED:
+            if ((UINT)w != g.pipeGen) return 0;  // the pipeline before (a new video came meanwhile)
             // Something in the silent pipeline isn't supported here: fall back to the media engine.
             if (g.thread) { WaitForSingleObject(g.thread, 2000); CloseHandle(g.thread); g.thread = nullptr; }
             Log(L"silent pipeline unsupported here, using the media engine");
