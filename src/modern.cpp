@@ -3966,6 +3966,7 @@ void MoveCardAt(float) {
 // A card's move ended at once (something else takes over): its new place is kept, it's back in the deck.
 void EndMove() {
     KillTimer(P.hwnd, TIMER_LIFT);
+    if (P.pressCard >= 0 || P.moveCard >= 0) P.down = P.dragging = false;  // (the press was the move's: it's over too)
     P.pressCard = -1;
     if (P.moveCard >= 0 && P.moveHeld) DropCard();
     P.moveCard = -1;
@@ -4220,7 +4221,7 @@ bool ClockKey(WPARAM vk) {
 // Alt down on the deck: the middle card rises, to move with the arrows; Alt up: it drops there.
 void AltKey(bool down) {
     if (down) {
-        if (P.mode != 0 || P.phase != BROWSING || P.moveCard >= 0 || P.down || P.menu || P.actions || P.cards.size() < 2 || P.focus < 0)
+        if (P.mode != 0 || (P.phase != BROWSING && P.phase != OPENING) || P.moveCard >= 0 || P.down || P.menu || P.actions || P.cards.size() < 2 || P.focus < 0)
             return;
         P.pressCard = P.focus;
         StartMove(P.W / 2, 0);
@@ -4341,8 +4342,12 @@ void OnKey(WPARAM vk) {
         case VK_NEXT: SetFocus(P.focus + 5); break;
         case VK_HOME: SetFocus(0); break;
         case VK_END: SetFocus((int)P.cards.size() - 1); break;
-        case VK_RETURN: Choose(P.focus); break;
+        case VK_RETURN:
+            EndMove();  // (a card being moved is put down first: it's the middle one then)
+            Choose(P.focus);
+            break;
         case VK_DELETE:  // the bin, ready: Delete again (or a click on it) takes the card off
+            EndMove();
             if (P.actions) Command(ID_A_BIN);
             else OpenActions(true);
             break;
@@ -4614,7 +4619,7 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 EndPick(false);
                 return 0;
             }
-            if (P.mode == 0 && P.phase == BROWSING) {
+            if (P.mode == 0 && (P.phase == BROWSING || P.phase == OPENING)) {
                 const float x = GET_X_LPARAM(l) / P.scale, y = GET_Y_LPARAM(l) / P.scale;
                 const int card = HitControl(x, y) == ID_NONE ? HitCard(x, y) : -1;
                 if (card >= 0 && card == P.focus && Settled() && !P.actions) OpenActions(false);
@@ -4657,7 +4662,8 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             break;
         case WM_ACTIVATE:  // clicking another window (or another screen) puts the picker away
-            if (LOWORD(w) == WA_INACTIVE && !P.dialog && P.phase == BROWSING && !IsChild(h, (HWND)l)) BeginClose(L"another window came up");
+            if (LOWORD(w) == WA_INACTIVE && !P.dialog && (P.phase == BROWSING || P.phase == OPENING) && !IsChild(h, (HWND)l))
+                BeginClose(L"another window came up");
             return 0;
         case WM_TIMER:
             if (w == TIMER_DWELL) Dwelled();

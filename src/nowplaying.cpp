@@ -521,6 +521,7 @@ void NowPlaying_Tick() {
         }
         ReadWatched(now);
         if (g_propsOp && Finished(g_propsOp)) {
+            g_propsAt = GetTickCount64();  // (answered, even with an error: not asked again at once)
             IProps* props = nullptr;
             if (Finished(g_propsOp) > 0 && SUCCEEDED(g_propsOp->GetResults(&props)) && props) {
                 g_propsAt = GetTickCount64();

@@ -1926,7 +1926,7 @@ int RendererMain(HINSTANCE inst, HWND host) {
 
     // Ready once its window takes messages: the host's requests sent before then (a preview) would
     // wait while the desktop and the graphics start, and fail.
-    PostMessageW(host, WM_VBG_RENDERER_READY, 0, (LPARAM)g.ctl);
+    if (!g.exiting) PostMessageW(host, WM_VBG_RENDERER_READY, 0, (LPARAM)g.ctl);  // (not when it couldn't start)
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);

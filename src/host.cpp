@@ -303,9 +303,10 @@ void ApplyBatteryPolicy() {
 }
 
 void OnRendererExit() {
-    MSG said;  // why it failed (posted just before it exited, maybe not read yet): heard first
-    for (UINT m : {WM_VBG_FAULT, WM_VBG_STATE})
-        while (PeekMessageW(&said, g_wnd, m, m, PM_REMOVE)) DispatchMessageW(&said);
+    MSG said;  // why it failed (posted just before it exited, maybe not read yet): heard first; any other state it reported is dropped
+    while (PeekMessageW(&said, g_wnd, WM_VBG_FAULT, WM_VBG_FAULT, PM_REMOVE)) DispatchMessageW(&said);
+    while (PeekMessageW(&said, g_wnd, WM_VBG_STATE, WM_VBG_STATE, PM_REMOVE))
+        if (said.wParam == RS_ERROR) g_lastError = (HRESULT)said.lParam;
     DropRendererMessages();
     DWORD code = 0;
     GetExitCodeProcess(g_proc, &code);
