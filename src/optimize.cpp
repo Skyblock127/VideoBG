@@ -143,7 +143,9 @@ HRESULT MakeLightCopy(const std::wstring& src, const std::wstring& dst, UINT ow,
         hr = wr->AddStream(vout, &vStream);
     }
     if (SUCCEEDED(hr)) hr = wr->SetInputMediaType(vStream, vin, nullptr);
-    if (SUCCEEDED(hr) && hasAudio && FAILED(wr->AddStream(ain, &aStream))) {
+    if (SUCCEEDED(hr) && hasAudio && SUCCEEDED(wr->AddStream(ain, &aStream))) {
+        wr->SetInputMediaType(aStream, ain, nullptr);  // (if it's refused, the stream passes through as added)
+    } else if (SUCCEEDED(hr) && hasAudio) {
         hasAudio = false;  // container can't take this audio as-is: drop it rather than fail
         rd->SetStreamSelection((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, FALSE);
     }

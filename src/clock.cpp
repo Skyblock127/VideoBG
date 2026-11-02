@@ -218,7 +218,7 @@ struct Painter {
         std::wstring family;
         float cap = 0.7f;  // capitals' height per em
     } faces[5];            // the designs' fonts (UseDesignFonts)
-    bool failed = false;
+    ULONGLONG failedAt = 0;  // text drawing couldn't be set up then (tried again a minute later)
 } P;
 
 bool AddResFont(IDWriteFontSetBuilder1* b, int id) {
@@ -244,7 +244,7 @@ bool AddFileFont(IDWriteFontSetBuilder1* b, const std::wstring& path) {
 // Factories only: fonts are loaded by UseFont, one at a time.
 bool OpenPainter() {
     if (P.f) return true;
-    if (P.failed) return false;
+    if (P.failedAt && GetTickCount64() - P.failedAt < 60000) return false;
     P.dw = LoadLibraryExW(L"dwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     P.d2 = LoadLibraryExW(L"d2d1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     using DWCreate = HRESULT(WINAPI*)(DWRITE_FACTORY_TYPE, REFIID, IUnknown**);
@@ -261,7 +261,7 @@ bool OpenPainter() {
     if (FAILED(hr)) {
         Log(L"clock: can't set up text drawing (0x%08lx)", (unsigned long)hr);
         Clock_ReleasePainter();
-        P.failed = true;
+        P.failedAt = GetTickCount64();
         return false;
     }
     return true;
@@ -1308,10 +1308,11 @@ bool DateHasWords(int date) { return date <= 4 || (date >= 10 && date <= 12); } 
 // ---------------------------------------------------------------------------------------
 
 std::wstring Clock_StyleKey(const ClockLook& l) {
-    wchar_t b[200];
-    swprintf(b, 200, L"%ls|%.3f|%.3f|%.3f|%.2f|%ls|%d|%ls|%ls|%d|%ls|%d|%.1f", l.color.c_str(), l.size, l.opacity, l.glow, l.glowSize,
-             l.glowColor.c_str(), l.h24, l.style.c_str(), l.font.c_str(), l.date, l.lang.c_str(), l.nativeDigits, l.rotate);
-    return b;
+    wchar_t b[96];  // the numbers; the names are joined around them (any length)
+    swprintf(b, 96, L"|%.3f|%.3f|%.3f|%.2f|", l.size, l.opacity, l.glow, l.glowSize);
+    wchar_t c[64];
+    swprintf(c, 64, L"|%d|%d|%d|%.1f", l.h24, l.date, l.nativeDigits, l.rotate);
+    return l.color + b + l.glowColor + L"|" + l.style + L"|" + l.font + L"|" + l.lang + c;
 }
 
 std::vector<ClockStyleInfo> Clock_Styles() {
@@ -1422,7 +1423,16 @@ float Clock_PixelScale() {
     return dpiX / 96.f;
 }
 
+// The upright pictures of the clocks last turned (the desktop's and a preview's), so dragging the handle
+// round only turns them: drawing the text and its glow again each time is what made it stutter.
+struct Upright {
+    std::wstring key;
+    ClockImage img;
+} g_upright[2];
+int g_uprightNext;
+
 void Clock_ReleasePainter() {
+    for (Upright& e : g_upright) e = Upright{};
     Rel(P.fonts);
     Rel(P.designFonts);
     if (P.f && P.loader) P.f->UnregisterFontFileLoader(P.loader);
@@ -1431,9 +1441,9 @@ void Clock_ReleasePainter() {
     Rel(P.d2f);
     if (P.dw) FreeLibrary(P.dw);
     if (P.d2) FreeLibrary(P.d2);
-    bool failed = P.failed;
+    const ULONGLONG failedAt = P.failedAt;
     P = Painter{};
-    P.failed = failed;
+    P.failedAt = failedAt;
 }
 
 // Layout as in Mond's Clock.ini (Scale = the look's size): three lines centred on one axis -
@@ -1495,9 +1505,24 @@ static bool RotateImage(ClockImage* img, float deg) {
 static bool PaintClock(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out, float flip);
 
 bool Clock_Paint(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out, float flip) {
-    if (!PaintClock(look, k, t, out, flip)) return false;
     const float deg = fmodf(look.rotate, 360.f);
-    return fabsf(deg) < 0.05f || RotateImage(out, deg);
+    if (fabsf(deg) < 0.05f) return PaintClock(look, k, t, out, flip);
+    ClockLook l = look;
+    l.rotate = 0;
+    wchar_t when[96];
+    swprintf(when, 96, L"|%.3f|%.3f|%04d%02d%02d%02d%02d%02d", k, flip, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    const std::wstring key = Clock_StyleKey(l) + when;
+    Upright* u = nullptr;
+    for (Upright& e : g_upright)
+        if (e.key == key) u = &e;
+    if (!u) {
+        u = &g_upright[g_uprightNext++ % 2];
+        u->key.clear();
+        if (!PaintClock(l, k, t, &u->img, flip)) return false;
+        u->key = key;
+    }
+    *out = u->img;
+    return RotateImage(out, deg);
 }
 
 static bool PaintClock(const ClockLook& look, float k, const SYSTEMTIME& t, ClockImage* out, float flip) {
@@ -1645,7 +1670,8 @@ void Clock_Show(HWND host, const ClockLook& look) {
 void Clock_Hide() {
     if (W.hwnd) KillTimer(W.hwnd, TIMER_MINUTE);
     DestroyClockWindow();
-    Clock_ReleasePainter();
+    W.flipAt = 0;
+    if (!UI_IsOpen() && !Modern_IsOpen()) Clock_ReleasePainter();  // (the settings or the picker draw clocks too)
 }
 
 void Clock_Refresh() {

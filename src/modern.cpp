@@ -63,10 +63,10 @@ enum Id {
     ID_P_GRID0 = 700,   // + colour in the grid (40 on: the saved ones)
     ID_V0 = 900,        // + version (0: the original)
     ID_CARD = 1000,     // + card index
-    ID_SONG0 = 2000,    // + song (in the playlist)
-    ID_GRIP0 = 6000,    // + song: its grip
-    ID_SONGX0 = 20000,  // + song: take it off the playlist
-    ID_P_LANG0 = 10000, // + language
+    ID_P_LANG0 = 10000,     // + language
+    ID_SONG0 = 100000,      // + song (in the playlist)
+    ID_GRIP0 = 1000000,     // + song: its grip
+    ID_SONGX0 = 2000000,    // + song: take it off the playlist
 };
 
 // ---------------------------------------------------------------------------------------
@@ -265,6 +265,10 @@ struct Picker {
     float songPressY = 0, songPressScroll = 0;
     bool songMoved = false;
     bool searchOn = false;            // the playlist's search box is out
+    bool eatS = false;                // S just opened it: its letter isn't typed in
+    UINT seekKeyMs = 0;               // the arrows' last seek (held, they go on from there, not from where the song last said)
+    ULONGLONG seekKeyAt = 0;
+    int menuFocus = -1;               // the Settings menu's keyboard focus (an item), -1 none
     std::wstring search;              // what's typed in it
     int searchHit = -1;               // the song that matches it best
     ID2D1Bitmap* player = nullptr;    // the desktop player's style, as it looks (redrawn while it turns)
@@ -279,7 +283,6 @@ struct Picker {
     bool pvMoving = false;            // the music screen: the player is being dragged to a new place
     D2D1_POINT_2F pvGrab{};           // where it was taken, from its centre
     Settings::PlayerLook looksWas[std::extent<decltype(Settings::playerLooks)>::value];  // the Music screen: as it opened (put back unless Done)
-    float playerXWas = 0, playerYWas = 0;
     std::vector<uint32_t> shot;       // the eyedropper: the screen as it came out (reading it live is slow)
     int shotW = 0, shotH = 0;
     bool pvRotating = false;          // its handle is held: the player turns
@@ -965,10 +968,13 @@ ClockLook LookFor(const std::wstring& path) {
     return s.clockVideoOwn ? s.clockVideo : s.clockLive;
 }
 
-// The clock's picture at P.clockTime (flip: a flip clock's flaps that far over to it).
+// The clock's picture at P.clockTime (flip: a flip clock's flaps that far over to it), upright: it's
+// turned as it's drawn.
 void PaintClock(float flip = 1) {
     ClockImage img;
-    if (!Clock_Paint(P.look, P.scale, P.clockTime, &img, flip)) return;
+    ClockLook upright = P.look;
+    upright.rotate = 0;
+    if (!Clock_Paint(upright, P.scale, P.clockTime, &img, flip)) return;
     SafeRelease(P.clockBmp);
     P.clockBmp = BitmapFrom(img.px, img.w, img.h, true);
     P.clockW = img.w / P.scale;
@@ -981,7 +987,9 @@ void UpdateClock() {
     wchar_t when[64];
     swprintf(when, 64, L"|%.3f|%04d%02d%02d%02d%02d", P.scale, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
     const bool shown = P.look.show || P.mode == 1;  // placing it: hidden ones too
-    const std::wstring style = shown ? Clock_StyleKey(P.look) : L"", key = shown ? style + when : L"";
+    ClockLook upright = P.look;  // (its angle isn't in the picture)
+    upright.rotate = 0;
+    const std::wstring style = shown ? Clock_StyleKey(upright) : L"", key = shown ? style + when : L"";
     if (key == P.clockKey) return;
     const bool flip = !key.empty() && style == P.clockStyle && Clock_Flips(P.look);  // just the minute: its flaps fall
     P.clockKey = key;
@@ -992,9 +1000,12 @@ void UpdateClock() {
     else PaintClock(flip ? 0 : 1);
 }
 
+// Round the turned clock (as the desktop's picture is).
 D2D1_RECT_F ClockRect() {
-    const float x = P.look.x * P.W, y = P.look.y * P.H;
-    return R(x - P.clockW / 2, y - P.clockH / 2, x + P.clockW / 2, y + P.clockH / 2);
+    const float x = P.look.x * P.W, y = P.look.y * P.H, rad = P.look.rotate * 3.14159265f / 180;
+    const float cs = fabsf(cosf(rad)), sn = fabsf(sinf(rad));
+    const float w = P.clockW * cs + P.clockH * sn, h = P.clockW * sn + P.clockH * cs;
+    return R(x - w / 2, y - h / 2, x + w / 2, y + h / 2);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1325,7 +1336,14 @@ void DrawStillLayer() {
 
 void DrawClock(float a) {
     if (!P.clockBmp || a <= 0) return;
-    G.ctx->DrawBitmap(P.clockBmp, ClockRect(), a, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    const float x = P.look.x * P.W, y = P.look.y * P.H;
+    D2D1_MATRIX_3X2_F was;
+    G.ctx->GetTransform(&was);
+    const float rad = P.look.rotate * 3.14159265f / 180, cs = cosf(rad), sn = sinf(rad);  // (round its centre)
+    G.ctx->SetTransform(D2D1::Matrix3x2F(cs, sn, -sn, cs, x - x * cs + y * sn, y - x * sn - y * cs) * D2D1::Matrix3x2F::ReinterpretBaseType(&was)[0]);
+    G.ctx->DrawBitmap(P.clockBmp, R(x - P.clockW / 2, y - P.clockH / 2, x + P.clockW / 2, y + P.clockH / 2), a,
+                      D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    G.ctx->SetTransform(was);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1405,6 +1423,9 @@ void SliderCtl(int id, const D2D1_RECT_F& r, float frac, const std::wstring& val
     P.hits.push_back({id, R(track.left - 9, r.top, track.right + 9, r.bottom)});
     P.tracks.push_back({id, track});
 }
+
+// How many places the music can come from: My music and each app (the music off: My music is one more step).
+int SourceChoices() { return (int)Music_Sources().size() + (g_settings.sound == 2 ? 0 : 1); }
 
 // A round icon button (no background until pointed at).
 // The control the Music screen's keyboard focus is on (ID_NONE: the player, the songs or nothing).
@@ -2018,8 +2039,10 @@ void DrawMusicEditPanel(float a) {
         if (P.kf == FOC_SOURCE) Stroke(R(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2), Col(0xFFFFFF, 0.85f * a), 10, 1.5f);
         const std::wstring name = !mine ? L"Off" : app ? NowPlaying_Name(g_settings.musicSource) : L"My music";
         Text(name, R(r.left + 26, r.top, r.right - 26, r.bottom), G.fBody, Col(0xFFFFFF, 0.9f * a), DWRITE_TEXT_ALIGNMENT_CENTER);
-        IconBtn(ID_MU_SRC_PREV, r.left + 14, (r.top + r.bottom) / 2, 12, L"\uE76B", a);
-        IconBtn(ID_MU_SRC_NEXT, r.right - 14, (r.top + r.bottom) / 2, 12, L"\uE76C", a);
+        if (SourceChoices() > 1) {  // (just My music: nothing to step to)
+            IconBtn(ID_MU_SRC_PREV, r.left + 14, (r.top + r.bottom) / 2, 12, L"\uE76B", a);
+            IconBtn(ID_MU_SRC_NEXT, r.right - 14, (r.top + r.bottom) / 2, 12, L"\uE76C", a);
+        }
     }
     yy += kRow;
     // Which player: off, or a style (step through them).
@@ -2208,7 +2231,7 @@ void DrawTopBar(float a) {
         tips = {L"Drag it where you want it", L"Arrow keys nudge it", L"Tab the settings", L"Esc goes back"};
     } else if (P.mode == 3) {
         title = L"Music";
-        tips = {L"The player works here as on your desktop", L"\u2191 \u2193 songs", L"Tab the controls", L"Esc goes back"};
+        tips = {L"The player works here as on your desktop", L"\u2191 \u2193 songs", L"\u2190 \u2192 seek", L"S search", L"Tab the controls", L"Esc cancels"};
     } else if (P.mode == 2) {
         title = L"Crop";
         tips = {L"Drag to move it", L"Scroll to zoom", L"Esc goes back"};
@@ -2253,6 +2276,7 @@ void DrawTopBar(float a) {
     if (P.mode == 3) {  // the eye stays when the rest hides: it brings it back
         place(ID_E_EYE, P.panelHidden ? L"\uE7B3" : L"\uE890", L"");
         place(ID_MU_DONE, L"\uE73E", L"Done", true, a * (1 - P.hideA));
+        place(ID_E_CANCEL, nullptr, L"Cancel", false, a * (1 - P.hideA));
         return;
     }
     if (P.mode == 2) {
@@ -2310,6 +2334,7 @@ void DrawMenu() {
             else Stroke(sw, Col(0xFFFFFF, 0.6f * a), 9, 1.2f);
             Circle(on ? sw.right - 9 : sw.left + 9, (sw.top + sw.bottom) / 2, 5, on ? Col(0x000000, 0.85f * a) : Col(0xFFFFFF, 0.8f * a));
         }
+        if (P.menu && P.menuFocus == (int)n) FocusRing(r, a);
         P.hits.push_back({items[n].id, r});
         yy += 40;
     }
@@ -2376,14 +2401,14 @@ void DrawVersions() {
         Text(b1, R(r.left + 36, r.top + 4, r.right - 70, r.top + 24), G.fBold, Col(0xFFFFFF, 0.95f * a));
         Text(b2, R(r.left + 36, r.top + 23, r.right - 10, r.top + 41), G.fSmall, Col(0xFFFFFF, 0.6f * a));
         if (cur) Text(P.actionsCard == P.applied ? L"In use" : L"Chosen", R(r.right - 70, r.top + 4, r.right - 12, r.top + 24), G.fSmall, g_accent * a, DWRITE_TEXT_ALIGNMENT_TRAILING);
-        P.hits.push_back({ID_V0 + k, r});
+        if (P.actions && P.versions) P.hits.push_back({ID_V0 + k, r});  // (fading out: not clickable)
         yy += rowH;
     }
     // Making one takes the settings window (it shows its progress there); it's made for the wallpaper.
     const D2D1_RECT_F more = R(x + 18, yy + 4, box.right - 16, yy + 30);
     if (P.actionsCard == P.applied) {
         Text(L"Make a lighter version\u2026", more, G.fBody, P.hot == ID_V_MORE ? Col(0xFFFFFF, a) : g_accent * a);
-        P.hits.push_back({ID_V_MORE, R(more.left, more.top, more.left + TextWidth(L"Make a lighter version\u2026", G.fBody), more.bottom)});
+        if (P.actions && P.versions) P.hits.push_back({ID_V_MORE, R(more.left, more.top, more.left + TextWidth(L"Make a lighter version\u2026", G.fBody), more.bottom)});
     } else {
         Text(L"Set it as your wallpaper to make lighter ones", more, G.fSmall, Col(0xFFFFFF, 0.45f * a));
     }
@@ -2393,7 +2418,7 @@ void DrawCardActions() {
     if (P.actionsA <= 0 || P.actionsCard < 0 || P.actionsCard >= (int)P.cards.size()) return;
     G.ctx->SetTransform(D2D1::Matrix3x2F::Identity());
     const bool wallpaper = P.actionsCard == P.applied;
-    if (P.actionsA > 0.5f) {  // over the buttons and between them, the cards underneath don't light up
+    if (P.actions && P.actionsA > 0.5f) {  // over the buttons and between them, the cards underneath don't light up
         const D2D1_POINT_2F b0 = ActionAt(0, 1), b2 = ActionAt(2, 1);
         P.hits.push_back({ID_A_ZONE, R(b0.x - 44, b0.y - 40, b0.x + 44, b2.y + 40)});
     }
@@ -2690,12 +2715,14 @@ void ShowToast(const std::wstring& t) {
 }
 
 void EndMusicEdit(bool keep);
+void EndPick(bool keep);
 
 void ReleaseHold();
 
 void BeginClose(const wchar_t* why) {
     if (P.phase == CLOSING) return;
     EndMove();
+    if (P.picking) EndPick(false);  // (its picture of the screen goes)
     if (P.mode == 3) EndMusicEdit(false);  // (the player's look is kept only by Done)
     if (P.mode == 2) {                     // and the crop only by Save: the wallpaper as it was
         if (Card* c = WallpaperCard()) c->crop = P.cropWas;
@@ -3046,8 +3073,6 @@ void StartMusicEdit() {
     KillTimer(P.hwnd, TIMER_DWELL);
     P.editPlay = card >= 0 ? P.cards[card].play : g_settings.video;
     std::copy(std::begin(g_settings.playerLooks), std::end(g_settings.playerLooks), P.looksWas);
-    P.playerXWas = g_settings.playerX;
-    P.playerYWas = g_settings.playerY;
     if (card < 0 || !P.cards[card].failed) AskPreview(P.editPlay, card >= 0 ? P.cards[card].info.time : 0);
     P.songDrag = -1;
     P.songJump = true;
@@ -3065,16 +3090,16 @@ void StartMusicEdit() {
     PreviewChanged();
 }
 
-// Done keeps the player's look and place; Esc puts them back (the player chosen, and the music, stay).
+// Done keeps the player's look; Cancel (Esc) puts it back. Its place, as dragged, stays either way (it's dragged on the desktop
+// as well), and so do the player chosen, the music and the songs.
 void EndMusicEdit(bool keep) {
     if (P.mode != 3) return;
+    if (KillTimer(P.hwnd, TIMER_ORDER)) Host_KeepSongOrder();  // (songs just moved by the keys: kept, Esc or not)
     if (P.picking) EndPick(keep);
     if (keep) {
         SaveSettings(g_settings);
     } else {
         std::copy(std::begin(P.looksWas), std::end(P.looksWas), g_settings.playerLooks);
-        g_settings.playerX = P.playerXWas;
-        g_settings.playerY = P.playerYWas;
         SaveSettings(g_settings);
         Player_Update();
         Player_Place();
@@ -3289,6 +3314,7 @@ void Command(int id) {
         case ID_MENU:
             P.menu = !P.menu;
             P.music = false;
+            P.menuFocus = -1;
             break;
         case ID_MUSIC: StartMusicEdit(); break;
         case ID_MU_DONE: EndMusicEdit(true); break;
@@ -3347,6 +3373,7 @@ void Command(int id) {
         case ID_MU_PREV:
         case ID_MU_NEXT: Music_Skip(id == ID_MU_NEXT); break;
         case ID_MU_SHUFFLE:
+            if (KillTimer(P.hwnd, TIMER_ORDER)) Host_KeepSongOrder();
             Host_ShuffleMusic(Host_Songs().size());
             UI_Refresh();
             break;
@@ -3364,6 +3391,7 @@ void Command(int id) {
         case ID_MU_SEARCH_X: P.searchOn = false; break;
         case ID_MU_PICK:
         case ID_MU_ADD:
+            if (KillTimer(P.hwnd, TIMER_ORDER)) Host_KeepSongOrder();
             P.dialog = true;
             Host_PickMusic(P.hwnd, id == ID_MU_ADD);
             P.dialog = false;
@@ -3411,7 +3439,8 @@ void Command(int id) {
             ShowToast(L"Clock saved");
             break;
         case ID_E_CANCEL:
-            if (P.mode == 2) EndCropEdit(false);
+            if (P.mode == 3) EndMusicEdit(false);
+            else if (P.mode == 2) EndCropEdit(false);
             else EndClockEdit();
             break;
         case ID_C_RESET:
@@ -3569,7 +3598,14 @@ float Spacing() {  // pointer travel (DIPs) for one card while dragging the deck
 
 void OnMouse(UINT m, WPARAM w, LPARAM l) {
     const float x = GET_X_LPARAM(l) / P.scale, y = GET_Y_LPARAM(l) / P.scale;
-    if (P.phase != BROWSING && P.phase != OPENING) return;
+    if (P.phase != BROWSING && P.phase != OPENING) {
+        if (m == WM_LBUTTONUP) {  // (pressed before Enter or Esc: the press ends here, with nothing done)
+            if (GetCapture() == P.hwnd) ReleaseCapture();
+            P.down = P.dragging = false;
+            P.slide = P.press = ID_NONE;
+        }
+        return;
+    }
     if (P.picking) {
         PickMouse(m, x, y);
         return;
@@ -4060,8 +4096,11 @@ bool FocusUsable(int kf) {
 // the colours and the rest are for the mouse. Up and down move over the songs (from the one playing)
 // without playing them; Alt with them moves the song. Left / right step the style when it has the
 // focus, and so does the music's source. Enter uses what has the focus and lets go of it (with nothing focused, Enter is Done); Space
-// uses it and keeps it; Esc lets go. Shift+N / P (or Shift+right / left): the next or previous song,
-// whatever has the focus. True if the key was used.
+// uses it and keeps it; Esc lets go. Shift+N / P: the next or previous song, whatever has the focus. With
+// nothing focused, left / right go 5 seconds back or on in the song (if it can be moved). S opens the search;
+// Delete takes the focused song off the playlist. True if the key was used.
+void SeekBy(int ms);
+
 bool MusicKey(WPARAM vk) {
     if (P.picking || P.gridFor) return false;
     const bool shift = GetKeyState(VK_SHIFT) < 0, alt = GetKeyState(VK_MENU) < 0;
@@ -4089,8 +4128,38 @@ bool MusicKey(WPARAM vk) {
         LetGo();
         return true;
     }
-    if (shift && (n || Music_FromApp()) && (vk == 'N' || vk == 'P' || vk == VK_RIGHT || vk == VK_LEFT)) {
-        Music_Skip(vk == 'N' || vk == VK_RIGHT);
+    if (shift && (n || Music_FromApp()) && (vk == 'N' || vk == 'P')) {
+        Music_Skip(vk == 'N');
+        return true;
+    }
+    if (vk == 'S' && !shift && !alt && GetKeyState(VK_CONTROL) >= 0 && FocusUsable(FOC_SEARCH)) {
+        LetGo();
+        Command(ID_MU_SEARCH);
+        P.eatS = true;  // (its WM_CHAR comes next)
+        return true;
+    }
+    if (vk == VK_DELETE && P.kf == FOC_SONGS) {
+        // Not while a song is held or the list is pressed (the mouse has it); keys' moves are kept first.
+        if (P.songDrag >= 0 || P.songPress != -1 || P.slide != ID_NONE) return true;
+        if (KillTimer(P.hwnd, TIMER_ORDER)) Host_KeepSongOrder();
+        const std::vector<int> order = MusicOrderFor(g_settings, n);
+        const int at = (int)(std::find(order.begin(), order.end(), P.kfSong) - order.begin());
+        Host_RemoveSong(P.kfSong);
+        P.searchHit = -1;
+        const int left = (int)Host_Songs().size();
+        if (left <= 0 || g_settings.sound != 2) {
+            LetGo();
+            P.kfLast = FOC_NONE;
+        } else {  // the focus onto the song that took its place (the last one: the one before)
+            const std::vector<int> now = MusicOrderFor(g_settings, left);
+            const int q = std::clamp(at, 0, left - 1);
+            P.kfSong = now[q];
+            ShowSongAt(q);
+        }
+        return true;
+    }
+    if ((vk == VK_LEFT || vk == VK_RIGHT) && !P.kf && !alt) {
+        SeekBy(vk == VK_RIGHT ? 5000 : -5000);
         return true;
     }
     if ((vk == VK_UP || vk == VK_DOWN) && n) {
@@ -4114,7 +4183,7 @@ bool MusicKey(WPARAM vk) {
         return true;
     }
     if (P.kf == FOC_SOURCE && (vk == VK_LEFT || vk == VK_RIGHT)) {
-        Command(vk == VK_RIGHT ? ID_MU_SRC_NEXT : ID_MU_SRC_PREV);
+        if (SourceChoices() > 1) Command(vk == VK_RIGHT ? ID_MU_SRC_NEXT : ID_MU_SRC_PREV);
         return true;
     }
     if ((vk == VK_RETURN || vk == VK_SPACE) && P.kf) {
@@ -4141,6 +4210,30 @@ bool MusicKey(WPARAM vk) {
         return true;
     }
     return P.kf != FOC_NONE && (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_SPACE);  // (nothing else to do with them)
+}
+
+// Back or on in the song by `ms` (held: on from the last step, before the song says where it got to). Nothing if it
+// can't be moved (the app doesn't let it, or nothing's loaded).
+void SeekBy(int ms) {
+    UINT pos = 0, dur = 0;
+    if (Music_FromApp()) {
+        const NowPlaying np = NowPlaying_Get();
+        if (!np.on || !np.canSeek || np.waiting) return;
+        pos = (UINT)np.PosNow();
+        dur = np.durMs;
+    } else if (g_settings.sound == 2) {
+        const MusicState ms = Host_MusicState();
+        if (ms.track < 0) return;
+        pos = ms.posMs;
+        dur = ms.durMs;
+    }
+    if (!dur) return;
+    const ULONGLONG now = GetTickCount64();
+    if (P.seekKeyAt && now - P.seekKeyAt < 1200) pos = P.seekKeyMs;
+    const UINT to = (UINT)std::clamp((long long)pos + ms, 0LL, (long long)dur - 500);
+    P.seekKeyMs = to;
+    P.seekKeyAt = now;
+    Music_SeekMs(to);
 }
 
 // The next language (or the one before) in the list, used at once; the list follows it.
@@ -4233,19 +4326,20 @@ void AltKey(bool down) {
 }
 
 void OnKey(WPARAM vk) {
+    P.eatS = false;  // (only the S that opened the search is eaten, straight after)
     if (P.phase != BROWSING && P.phase != OPENING) return;  // choosing or closing: nearly done
     if (vk == VK_MENU) {  // (held, it repeats: only the first counts)
         AltKey(true);
         return;
     }
     if (P.mode == 3 && P.searchOn && !P.picking) {  // the letters come as WM_CHAR
-        if (vk == VK_ESCAPE || vk == VK_RETURN) {
+        if (vk == VK_ESCAPE) {
             P.searchOn = false;
             P.dirty = true;
-        } else if (vk == VK_TAB || vk == VK_UP || vk == VK_DOWN) {  // to the songs: the one found (or the one playing), or one beside it
+        } else if (vk == VK_TAB || vk == VK_RETURN || vk == VK_UP || vk == VK_DOWN) {  // to the songs: the one found (or the one playing), or one beside it
             const int from = P.searchHit >= 0 ? P.searchHit : MusicCurrent();
             P.searchOn = false;
-            FocusSong(from, vk == VK_TAB ? 0 : vk == VK_DOWN ? 1 : -1);
+            FocusSong(from, vk == VK_TAB || vk == VK_RETURN ? 0 : vk == VK_DOWN ? 1 : -1);
             P.dirty = true;
         }
         return;
@@ -4308,6 +4402,20 @@ void OnKey(WPARAM vk) {
     if (P.actions && vk == VK_ESCAPE) {
         CloseActions();
         return;
+    }
+    if (P.menu && P.mode == 0) {
+        static const int items[] = {ID_M_SETTINGS, ID_M_ADD, ID_M_FIRST, ID_M_LOCK, ID_M_OFF, ID_M_NATIVE};
+        const int n = (int)std::size(items);
+        if (vk == VK_TAB) {
+            P.menuFocus = shift ? (P.menuFocus <= 0 ? n - 1 : P.menuFocus - 1) : (P.menuFocus + 1) % n;
+            P.dirty = true;
+            return;
+        }
+        if ((vk == VK_RETURN || vk == VK_SPACE) && P.menuFocus >= 0 && P.menuFocus < n) {
+            Command(items[P.menuFocus]);  // (the side and the lock screen flip and stay open; the rest go on from the menu)
+            P.dirty = true;
+            return;
+        }
     }
     if ((P.menu || P.music) && vk == VK_ESCAPE) {
         P.menu = P.music = false;
@@ -4629,7 +4737,8 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_MOUSEWHEEL: OnWheel(GET_WHEEL_DELTA_WPARAM(w), l); return 0;
         case WM_CHAR:
-            if (P.mode == 3 && P.searchOn) SearchChar((wchar_t)w);
+            if (P.eatS && (w == 's' || w == 'S')) P.eatS = false;  // (the S that opened it)
+            else if (P.mode == 3 && P.searchOn) SearchChar((wchar_t)w);
             return 0;
         case WM_MOUSEHWHEEL:
             if (P.mode != 2) OnWheel(-GET_WHEEL_DELTA_WPARAM(w), l);
@@ -4662,7 +4771,7 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             break;
         case WM_ACTIVATE:  // clicking another window (or another screen) puts the picker away
-            if (LOWORD(w) == WA_INACTIVE && !P.dialog && (P.phase == BROWSING || P.phase == OPENING) && !IsChild(h, (HWND)l))
+            if (LOWORD(w) == WA_INACTIVE && h == P.hwnd && !P.dialog && (P.phase == BROWSING || P.phase == OPENING) && !IsChild(h, (HWND)l))
                 BeginClose(L"another window came up");
             return 0;
         case WM_TIMER:
@@ -4738,8 +4847,9 @@ bool Modern_Open(int mode) {
     if (!CreateGraphics()) {
         Log(L"picker: graphics couldn't start");
         ReleaseGraphics();
-        DestroyWindow(P.hwnd);
-        P.hwnd = nullptr;
+        const HWND h = P.hwnd;
+        P.hwnd = nullptr;  // (first: its WM_ACTIVATE isn't taken for the picker closing)
+        DestroyWindow(h);
         return false;
     }
     LoadCards();

@@ -81,7 +81,7 @@ struct PreviewVideoData {
 };
 enum MusicCommand : WPARAM { MC_NEXT = 1, MC_PREV, MC_SEEK /* lParam = ms */, MC_PLAY_INDEX /* lParam = playlist index */ };
 inline LPARAM MusicPack(UINT durMs, int track, bool playing) {
-    return (LPARAM)((UINT64)durMs | ((UINT64)(UINT)(track + 2) << 32) | ((UINT64)playing << 48));
+    return (LPARAM)((UINT64)durMs | ((UINT64)((UINT)(track + 2) & 0xFFFF) << 32) | ((UINT64)playing << 48));
 }
 enum : LPARAM {
     LSF_LOCKSCREEN = 1,  // the lock screen shows the video's frame
@@ -331,7 +331,7 @@ void Update_Start(HWND notify, bool quiet);  // checks, then downloads and puts 
 int Update_Stage(int* percent, std::wstring* latest);
 bool Update_Available();          // a newer version is out (found by a check)
 void Update_Done();               // an answer (offline, up to date, failed) has been shown long enough
-void Update_Relaunch(bool wallpaperOn);  // starts the new exe (after this one has let go of its mutex)
+void Update_Relaunch(bool wallpaperOn, bool settings);  // starts the new exe (after this one has let go of its mutex)
 void Update_CleanUp();            // the new exe: deletes the old one and the download
 int RendererMain(HINSTANCE inst, HWND host);
 
@@ -372,6 +372,7 @@ struct MusicState {
     UINT posMs = 0, durMs = 0;
 };
 MusicState Host_MusicState();
+bool Host_SettingsOpenAtUpdate();            // the settings window was open when the update restarted VideoBG
 int Host_CurrentTrack();                     // playlist index playing, -1 none, -2 couldn't play
 void Host_SuspendHotkey(bool suspend);       // while the settings UI records a new shortcut (both shortcuts)
 bool Host_ClockLive();                       // true while the clock should use the video wallpaper look

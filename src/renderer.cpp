@@ -888,6 +888,7 @@ void StopPipeline() {
         g.thread = nullptr;
     }
     g.pipeGen++;  // (a first frame it announced and that's still queued is the old video's)
+    g.seekTo = -1;
     g.quit = false;
     if (g.eng) { g.eng->Shutdown(); SafeRelease(g.eng); }
     CloseReader();
@@ -1775,12 +1776,12 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_READER_FAILED:
             if ((UINT)w != g.pipeGen) return 0;  // the pipeline before (a new video came meanwhile)
             // Something in the silent pipeline isn't supported here: fall back to the media engine.
-            if (g.thread) { WaitForSingleObject(g.thread, 2000); CloseHandle(g.thread); g.thread = nullptr; }
             Log(L"silent pipeline unsupported here, using the media engine");
-            CloseReader();
-            g.silent = false;
-            g.playing = false;
-            g.pendingSeek = g.readerPos;
+            {
+                const double pos = g.readerPos;
+                StopPipeline();
+                g.pendingSeek = pos;
+            }
             StartEngine(ActiveVideo());
             return 0;
         case WM_VBG_QUIT: Exit(0); return 0;

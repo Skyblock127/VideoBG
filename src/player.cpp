@@ -1260,7 +1260,7 @@ float Loudness() {
         Rel(W.meter);  // the output changed: found again next time
         return 0;
     }
-    const float vol = std::clamp(g_settings.volume / 100.f, 0.04f, 1.f);
+    const float vol = Music_FromApp() ? 1.f : std::clamp(g_settings.volume / 100.f, 0.04f, 1.f);  // (an app's volume is its own)
     const float norm = std::clamp(peak / vol, 0.f, 1.f);
     return std::clamp(sqrtf(norm) * 1.15f, 0.f, 1.f);
 }
@@ -1660,6 +1660,15 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     y /= W.scale;
     switch (m) {
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;  // a click doesn't take the focus from the app in use
+        case WM_DESTROY:
+            if (h == W.hwnd) {  // destroyed with the desktop (Explorer restarting): put back once it's up, as the clock is
+                W.hwnd = nullptr;
+                W.dragging = W.sliding = W.seeking = W.turning = false;
+                W.hot = W.press = PART_NONE;
+                W.drawn.clear();
+                PostMessageW(FindWindowW(HOST_CLASS, nullptr), WM_VBG_CLOCK_LOST, 0, 0);
+            }
+            return 0;
         case WM_TIMER:
             if (w == TIMER_TURN) {
                 const double now = Now();
@@ -1793,8 +1802,9 @@ bool CreatePlayerWindow() {
 void Player_Show(const std::vector<std::wstring>& songs, bool force) {
     // Explorer restarted: the desktop is a new window now.
     if (W.hwnd && (!IsWindow(W.desktop) || GetWindow(W.hwnd, GW_OWNER) != W.desktop)) {
-        DestroyWindow(W.hwnd);
+        const HWND old = W.hwnd;
         W.hwnd = nullptr;
+        DestroyWindow(old);
     }
     const bool fresh = !W.hwnd;
     if (fresh && !CreatePlayerWindow()) return;
@@ -1826,8 +1836,9 @@ void Player_Update() {
 void Player_Hide() {
     if (!W.hwnd) return;
     KillTimer(W.hwnd, TIMER_TURN);
-    DestroyWindow(W.hwnd);
-    W.hwnd = nullptr;
+    const HWND old = W.hwnd;
+    W.hwnd = nullptr;  // (first: its WM_DESTROY isn't taken for the desktop going away)
+    DestroyWindow(old);
     W.hot = W.press = PART_NONE;
     W.dragging = W.sliding = W.turning = W.seeking = false;
     StopMeter();

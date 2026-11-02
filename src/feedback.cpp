@@ -199,7 +199,7 @@ std::wstring Feedback_Redact(std::wstring s) {
             if (!_wcsnicmp(s.c_str() + dot + 1, e, n) && (dot + 1 + n == s.size() || !iswalnum(s[dot + 1 + n]))) len = std::max(len, n);
         }
         if (!len) continue;
-        const size_t lineStart = s.rfind(L'\n', dot) == std::wstring::npos ? 0 : s.rfind(L'\n', dot) + 1;
+        const size_t nl = s.rfind(L'\n', dot), lineStart = nl == std::wstring::npos ? 0 : nl + 1;
         const size_t slash = s.find_last_of(L"\\/", dot);
         if (slash == std::wstring::npos || slash < lineStart || slash + 1 >= dot) continue;  // not a path
         if (s.compare(slash + 1, dot - slash - 1, L"<file>") == 0) continue;
@@ -228,7 +228,8 @@ std::wstring Feedback_Log() {
     const size_t max = 48 * 1024;  // the newest events: enough to see what led up to a problem
     std::string s = ReadTail(LogPath(false), max);
     if (s.size() < max) s = ReadTail(LogPath(true), max - s.size()) + s;
-    if (const size_t nl = s.find('\n'); nl != std::string::npos && nl + 1 < s.size()) s.erase(0, nl + 1);  // whole lines only
+    if (const size_t nl = s.find('\n'); s.size() >= max && nl != std::string::npos && nl + 1 < s.size())
+        s.erase(0, nl + 1);  // whole lines only (cut: its first line was a part)
     s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());  // lines end in \n, like the other fields
     return Feedback_Redact(Wide(s));
 }

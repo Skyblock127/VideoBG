@@ -48,16 +48,16 @@ enum Id {
     ID_PD_SCRIM, ID_PD_AREA, ID_PD_PREV, ID_PD_NEXT, ID_PD_COLOR, ID_PD_BODY, ID_PD_OPACITY, ID_PD_SIZE, ID_PD_CORNERS, ID_PD_RESET, ID_PD_DONE,
     ID_PD_PICK_COL, ID_PD_PICK_BODY, ID_PD_RST_COL, ID_PD_RST_BODY, ID_PD_RST_OPACITY, ID_PD_RST_SIZE, ID_PD_RST_CORNERS, ID_CLK_PICK, ID_PD_ROTATE, ID_PD_RST_ROTATE,
     ID_WALL_FIRST, ID_PRS, ID_PRS_SCRIM, ID_PRS_CLOSE, ID_PRS_YES, ID_PRS_NO, ID_PRS_NAME, ID_PRS_SAVE, ID_PRS_CANCEL, ID_PRS_CURRENT,
-    ID_MUSIC_SOURCE,
+    ID_MUSIC_SOURCE, ID_MUSIC_SRC_PREV, ID_MUSIC_SRC_NEXT, ID_WALL_LIST,
     ID_NAV = 200,        // sidebar pages: ID_NAV + page
     ID_DLG_SLOT0 = 300,  // colour dialog, "My colours" boxes: ID_DLG_SLOT0 + i
     ID_VER_ROW0 = 400,   // video versions dialog: a version's row, and its delete button
     ID_VER_DEL0 = 450,
-    ID_FNT_ROW0 = 500,   // font picker: a font's row, its "Get it" link, "Add font file" and "Remove" buttons
-    ID_FNT_GET0 = 600,
-    ID_FNT_ADD0 = 700,
-    ID_FNT_DEL0 = 800,
-    ID_LANG_ROW0 = 1000,  // the clock language list: a language's row (as many as Windows has)
+    ID_FNT_ROW0 = 40000,  // font picker (and the other lists): a row, its "Get it" link, "Add font file" and "Remove" buttons
+    ID_FNT_GET0 = 50000,
+    ID_FNT_ADD0 = 60000,
+    ID_FNT_DEL0 = 70000,
+    ID_LANG_ROW0 = 80000,  // the clock language list: a language's row (as many as Windows has)
     ID_SONG_ROW0 = 10000,  // the playlist: a song's row, and its grip for moving it (up to 10000 songs)
     ID_SONG_GRIP0 = 20000,
     ID_SONG_DEL0 = 30000,  // + song: take it off the playlist
@@ -327,6 +327,9 @@ struct UI {
     // A press on a song: a click plays it, a drag scrolls the list, a drag by its grip moves the song.
     int songPress = -1;        // the song (playlist index)
     int wallMove = -1;         // Your wallpapers: the row being moved by its grip
+    float wallY = 0, wallGrab = 0;  // ...where the pointer is, and where it took the row (from its top)
+    float wallPressY = 0, wallPressScroll = 0;  // a row pressed: a drag scrolls the list
+    bool wallScrolled = false;
     bool songMoving = false, songMoved = false;
     float songPressY = 0, songPressScroll = 0, songY = 0, songGrab = 0;
     int songIns = 0;           // moving: the place it would land
@@ -510,6 +513,7 @@ void ReleaseFontSamples();
 void ReleasePresetSamples();
 
 void ForgetScaled();
+void ReleasePlayerPicture();
 
 void ReleaseTarget() {
     ReleaseFontSamples();  // the font picker's, if it's open
@@ -519,6 +523,7 @@ void ReleaseTarget() {
     SafeRelease(u.clockBmp);
     SafeRelease(u.still);
     SafeRelease(u.logo);
+    ReleasePlayerPicture();  // (made on this target: made again on the next)
     SafeRelease(u.br);
     SafeRelease(u.dc);
     SafeRelease(u.rt);
@@ -1525,7 +1530,6 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
         const D2D1_RECT_F hr = R(x + kPad + 28, top + 16, x + kPad + 28 + tw, top + 40);
         const bool hot = n && IsHot(ID_MUSIC_HEAD);
         Text(L"Playlist", hr, u.fHeader, hot ? t.accentHover : t.text);
-        if (hot) Line(hr.left, hr.bottom - 1, hr.right, hr.bottom - 1, t.accentHover);
         AddHit(ID_MUSIC_HEAD, K_BUTTON, hr, n > 0);
     }
     if (u.searchOn) {  // the search box, across the heading: it only scrolls to the best match
@@ -1544,9 +1548,9 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
         IconButton(ID_MUSIC_SEARCH_X, sb.right - 18, (sb.top + sb.bottom) / 2, 13, L"\uE711", false, true);
     } else {
         const float right = x + w - kPad;
-        Button(ID_MUSIC_PICK, R(right - 148, top + 12, right, top + 44), L"Choose songs", L"\uE8D6", true);
-        Button(ID_MUSIC_ADD, R(right - 148 - 8 - 124, top + 12, right - 156, top + 44), L"Add songs", L"\uE710", false);
         IconButton(ID_MUSIC_SEARCH, right - 280 - 26, top + 28, 16, L"\uE721", false, n > 0);
+        Button(ID_MUSIC_ADD, R(right - 148 - 8 - 124, top + 12, right - 156, top + 44), L"Add songs", L"\uE710", false);
+        Button(ID_MUSIC_PICK, R(right - 148, top + 12, right, top + 44), L"Choose songs", L"\uE8D6", true);
         const std::wstring count = n ? Fmt(L"%zu song%ls", n, n == 1 ? L"" : L"s") : L"";
         Text(count, R(x + kPad + 126, top + 16, right - 330, top + 40), u.fSmall, t.text2);
     }
@@ -1655,7 +1659,17 @@ void PaintSoundPage(float x, float w) {
             if (v[i].id == g_settings.musicSource) sel = (int)i;
         }
         Row(lx, yy, kLabelW, L"Music from");
-        Seg(ID_MUSIC_SOURCE, SegRect(cx, yy, cw), names, sel);
+        const D2D1_RECT_F r = SegRect(cx, yy, cw);
+        const bool many = v.size() > 1;
+        Fill(r, t.ctrl, 5);
+        Stroke(r, t.ctrlStroke, 5);
+        AddHit(ID_MUSIC_SOURCE, K_BUTTON, r, many);  // (a click, Enter or the arrow keys: the next one)
+        Text(names[sel], R(r.left + 34, r.top, r.right - 34, r.bottom), u.fBody, t.text, DWRITE_TEXT_ALIGNMENT_CENTER);
+        if (many) {
+            const float my = (r.top + r.bottom) / 2;
+            IconButton(ID_MUSIC_SRC_PREV, r.left + 17, my, 13, L"\uE76B", false, true);
+            IconButton(ID_MUSIC_SRC_NEXT, r.right - 17, my, 13, L"\uE76C", false, true);
+        }
         yy += kRowH;
     }
     // The sound when the video pauses (covered, locked, screen off, on battery). With the
@@ -2014,6 +2028,11 @@ struct PlayerDialog {
     DWORD picAt = 0;
     Settings::PlayerLook was[std::extent<decltype(Settings::playerLooks)>::value];  // the looks when it opened (put back unless Done)
 } pd;
+
+void ReleasePlayerPicture() {
+    SafeRelease(pd.pic);
+    pd.picKey.clear();
+}
 
 Settings::PlayerLook& PdLook() { return g_settings.playerLooks[std::clamp(g_settings.musicPlayer, 1, (int)std::size(g_settings.playerLooks) - 1)]; }
 
@@ -2810,6 +2829,7 @@ struct FontDialog {
     float trackTop = 0, trackH = 0, thumbH = 0, grab = 0;  // the scroll bar, for dragging it
     float viewH = 0;                                       // the list's visible height
     D2D1_RECT_F view{};                                    // and where it is
+    std::vector<float> shift;                              // Your wallpapers: a row just moved, still gliding to its place (DIPs off it)
 } fnt;
 
 // A wallpaper in the list: one per video (a lighter version joins its original's row).
@@ -2848,6 +2868,7 @@ int PickerRows() {
 float PickerRowH() { return fnt.langs ? kLangRowH : fnt.dates ? kDateRowH : fnt.players ? 124.f : fnt.walls ? 88.f : kFontRowH; }
 
 void ReleaseFontSamples() {
+    ForgetScaled();  // (a copy made from one of them would outlive it)
     for (ID2D1Bitmap*& b : fnt.samples) SafeRelease(b);
     const size_t n = PickerRows();
     fnt.samples.assign(n, nullptr);
@@ -2949,6 +2970,7 @@ void WallInfo(WallpaperInfo* raw) {
         std::vector<uint32_t>().swap(info->frame);  // (clear() alone keeps the memory)
         w.info = std::move(*info);
         if (i < fnt.samples.size()) {
+            ForgetScaled();
             SafeRelease(fnt.samples[i]);
             fnt.tried[i] = false;
         }
@@ -3010,6 +3032,14 @@ void WallsMove(int from, int to) {
     WallRow w = std::move(g_walls[from]);
     g_walls.erase(g_walls.begin() + from);
     g_walls.insert(g_walls.begin() + to, std::move(w));
+    // The rows it passed glide a row's height to their new places, and so does it (held by the grip, it follows the pointer).
+    fnt.shift.resize(n, 0.f);
+    const float rowH = PickerRowH(), was = fnt.shift[from];
+    fnt.shift.erase(fnt.shift.begin() + from);
+    fnt.shift.insert(fnt.shift.begin() + to, was + (from - to) * rowH);
+    for (int j = std::min(from, to + 1); j <= std::max(from, to - 1); j++)
+        if (j != to) fnt.shift[j] += from < to ? rowH : -rowH;
+    SetTimer(u.hwnd, TIMER_SCROLL, 15, nullptr);
     if ((int)fnt.samples.size() == n) {
         ID2D1Bitmap* b = fnt.samples[from];
         fnt.samples.erase(fnt.samples.begin() + from);
@@ -3027,11 +3057,15 @@ void WallsSave() {
 }
 
 // The grip dragged: the row follows the pointer's place in the list (near its edges the list scrolls).
+// Where the row held by its grip is drawn: under the pointer, inside the list.
+float WallLiftTop() { return std::clamp(u.wallY - u.wallGrab, fnt.view.top, fnt.view.bottom - PickerRowH()); }
+
 void WallsDrag(float y) {
     const int n = (int)g_walls.size();
     if (u.wallMove < 0 || u.wallMove >= n) return;
+    u.wallY = y;
     const float rowH = PickerRowH();
-    const int at = std::clamp((int)floorf((y - fnt.view.top + fnt.scroll) / rowH), 0, n - 1);
+    const int at = std::clamp((int)floorf((WallLiftTop() + rowH / 2 - fnt.view.top + fnt.scroll) / rowH), 0, n - 1);
     if (at != u.wallMove) {
         WallsMove(u.wallMove, at);
         u.wallMove = at;
@@ -3121,6 +3155,15 @@ void PdDraw(const D2D1_RECT_F& screen) {
     const float pw = sw * scale, ph = sh * scale;
     const float cx = screen.left + g_settings.playerX * (screen.right - screen.left), cy = screen.top + g_settings.playerY * (screen.bottom - screen.top);
     D2D1_RECT_F dst = R(cx - pw / 2, cy - ph / 2, cx + pw / 2, cy + ph / 2);
+    MONITORINFO mi{sizeof mi};
+    if (GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi)) {  // inside the work area, as the player is
+        const float zx = (screen.right - screen.left) / std::max(1L, mi.rcMonitor.right - mi.rcMonitor.left);
+        const float zy = (screen.bottom - screen.top) / std::max(1L, mi.rcMonitor.bottom - mi.rcMonitor.top);
+        const float wl = screen.left + (mi.rcWork.left - mi.rcMonitor.left) * zx, wr = screen.left + (mi.rcWork.right - mi.rcMonitor.left) * zx;
+        const float wt = screen.top + (mi.rcWork.top - mi.rcMonitor.top) * zy, wb = screen.top + (mi.rcWork.bottom - mi.rcMonitor.top) * zy;
+        const float l = std::clamp(dst.left, wl, std::max(wl, wr - pw)), tp = std::clamp(dst.top, wt, std::max(wt, wb - ph));
+        dst = R(l, tp, l + pw, tp + ph);
+    }
     u.rt->DrawBitmap(pd.pic, &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
 }
 
@@ -3523,10 +3566,20 @@ void PaintFontDialog() {
     }
     const size_t firstHit = u.hits.size();
     u.rt->PushAxisAlignedClip(view, D2D1_ANTIALIAS_MODE_ALIASED);
-    float y = view.top - fnt.scroll;
     fnt.viewH = listH;
     fnt.view = view;
-    for (int i = 0; i < n; i++, y += rowH) {  // all rows, also the ones out of view: Tab goes through them
+    // A wallpaper held by its grip is drawn last (over the others), under the pointer; rows just moved glide to their places.
+    const bool lifting = fnt.walls && u.drag == ID_WALL_GRIP0 && u.wallMove >= 0 && u.wallMove < n;
+    if (fnt.walls && (int)fnt.shift.size() != n) fnt.shift.assign(n, 0.f);
+    std::vector<int> rows(n);
+    for (int i = 0; i < n; i++) rows[i] = i;
+    if (lifting) {
+        rows.erase(rows.begin() + u.wallMove);
+        rows.push_back(u.wallMove);
+    }
+    for (const int i : rows) {  // all rows, also the ones out of view: Tab goes through them
+        float y = view.top - fnt.scroll + i * rowH;
+        if (fnt.walls) y = lifting && i == u.wallMove ? WallLiftTop() : y + fnt.shift[i];
         if (fnt.langs) {  // a language: its name in English, and in itself
             if (y + rowH <= view.top - rowH || y >= view.bottom + rowH) {  // far out of view: just reachable by Tab
                 AddHit(ID_LANG_ROW0 + i, K_BUTTON, R(0, 0, 0, 0));
@@ -3553,6 +3606,10 @@ void PaintFontDialog() {
             WallRow& wr = g_walls[i];
             const D2D1_RECT_F r = R(L + 16, y + 3, L + W - 16 - barW, y + rowH - 3);
             const bool cur = SamePath(wr.play, g_settings.video), hot = IsHot(ID_FNT_ROW0 + i);
+            if (lifting && i == u.wallMove) {  // held up over the rest
+                Fill(R(r.left, r.top + 2, r.right, r.bottom + 4), D2D1::ColorF(0, 0, 0, 0.25f), 7);
+                Fill(r, face, 6);
+            }
             if (cur) {
                 Fill(r, Mix(face, t.accent, 0.14f), 6);
                 Stroke(r, t.accent, 6);
@@ -3572,7 +3629,8 @@ void PaintFontDialog() {
                 const float bw = pic.right - pic.left, bh = pic.bottom - pic.top, s = std::max(bw / sz.width, bh / sz.height);
                 const float sw = bw / s, sh = bh / s;
                 ID2D1RoundedRectangleGeometry* pclip = PushRounded(pic, 5);
-                DrawScaled(fnt.samples[i], pic, R((sz.width - sw) / 2, (sz.height - sh) / 2, (sz.width + sw) / 2, (sz.height + sh) / 2));
+                const D2D1_RECT_F src = R((sz.width - sw) / 2, (sz.height - sh) / 2, (sz.width + sw) / 2, (sz.height + sh) / 2);
+                u.dc->DrawBitmap(fnt.samples[i], &pic, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
                 PopRounded(pclip);
             }
             const float tx = pic.right + 14, cy = (r.top + r.bottom) / 2;
@@ -3710,10 +3768,10 @@ void PaintFontDialog() {
     }
     float noteL = L + 24;
     if (fnt.walls) {  // more videos for the list, and where they go
-        Button(ID_FNT_OWN, R(L + 24, by, L + 24 + 150, by + 32), L"Add videos\u2026", L"\uE710");
-        Text(L"New ones go", R(L + 190, by, L + 290, by + 32), u.fSmall, t.text2);
-        Seg(ID_WALL_FIRST, R(L + 270, by, L + 410, by + 32), {L"First", L"Last"}, g_settings.wallsFirst ? 0 : 1);
-        noteL += 400;
+        Button(ID_FNT_OWN, R(L + 24, by, L + 24 + 84, by + 32), L"Add", L"\uE710");
+        Text(L"New ones go", R(L + 124, by, L + 204, by + 32), u.fSmall, t.text2);
+        Seg(ID_WALL_FIRST, R(L + 200, by, L + 340, by + 32), {L"First", L"Last"}, g_settings.wallsFirst ? 0 : 1);
+        noteL += 330;
     } else if (!fnt.dates && !fnt.langs && !fnt.players) {  // any font of the user's own, always at hand
         Button(ID_FNT_OWN, R(L + 24, by, L + 24 + 196, by + 32), L"Add your own font\u2026", L"\uE710");
         noteL += 212;
@@ -5081,6 +5139,72 @@ void SongGlide(int song) {
         }
 }
 
+// Scrolls the playlist (gliding) just enough to show a song.
+void SongShow(int song) {
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
+    const auto at = std::find(order.begin(), order.end(), song);
+    if (at == order.end()) return;
+    const float top = (at - order.begin()) * kSongRowH, viewH = u.songView.bottom - u.songView.top;
+    if (top < u.songTarget) u.songTarget = top;
+    else if (top + kSongRowH > u.songTarget + viewH) u.songTarget = top + kSongRowH - viewH;
+    else return;
+    u.songTarget = std::clamp(u.songTarget, 0.f, u.songMax);
+    SetTimer(u.hwnd, TIMER_SONGS, 15, nullptr);
+}
+
+bool SongRowId(int id) { return id >= ID_SONG_ROW0 && id < ID_SONG_GRIP0; }
+
+// The song playing (or the one it carries on from).
+int SongNow() {
+    const int n = (int)Host_Songs().size();
+    const MusicState ms = Host_MusicState();
+    return ms.track >= 0 && ms.track < n ? ms.track : std::clamp(g_settings.musicTrack, 0, std::max(0, n - 1));
+}
+
+// The keyboard's focus onto the song `step` places from `from` in the play order (the list scrolls to it).
+void FocusSongStep(int from, int step) {
+    const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
+    if (order.empty()) return;
+    int p = (int)(std::find(order.begin(), order.end(), from) - order.begin());
+    if (p >= (int)order.size()) p = step > 0 ? -1 : (int)order.size();
+    p = std::clamp(p + step, 0, (int)order.size() - 1);
+    FinishStep();
+    u.focus = u.hot = u.tabFrom = ID_SONG_ROW0 + order[p];
+    u.hotSeg = -1;
+    u.keySlider = 0;
+    SongShow(order[p]);
+}
+
+// Delete on a song: it's taken off the playlist, and the focus goes to the one that took its place.
+void RemoveFocusedSong() {
+    const int n = (int)Host_Songs().size(), song = u.focus - ID_SONG_ROW0;
+    if (song < 0 || song >= n) return;
+    const std::vector<int> order = MusicOrderFor(g_settings, n);
+    const int at = (int)(std::find(order.begin(), order.end(), song) - order.begin());
+    Host_RemoveSong(song);
+    const int left = (int)Host_Songs().size();
+    if (left <= 0 || g_settings.sound != 2) {
+        u.focus = u.hot = 0;
+        return;
+    }
+    const std::vector<int> now = MusicOrderFor(g_settings, left);
+    const int q = std::clamp(at, 0, left - 1);
+    u.focus = u.hot = u.tabFrom = ID_SONG_ROW0 + now[q];
+    SongShow(now[q]);
+}
+
+// Music from: the next place (or the one before), round again.
+void MusicSourceStep(int dir) {
+    const std::vector<NowPlayingApp> v = Music_Sources();
+    const int n = (int)v.size();
+    if (n < 2) return;
+    int at = 0;
+    for (int i = 0; i < n; i++)
+        if (_wcsicmp(v[i].id.c_str(), g_settings.musicSource.c_str()) == 0) at = i;
+    Host_SetMusicSource(v[(at + dir + n) % n].id);
+    InvalidateRect(u.hwnd, nullptr, FALSE);
+}
+
 // The search: the list glides to the song that matches what's typed best (it only looks; nothing moves).
 void SongSearch() {
     const std::vector<int> order = MusicOrderFor(g_settings, Host_Songs().size());
@@ -5511,8 +5635,8 @@ void OnClick(int id) {
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return;
     }
-    if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) {
-        int i = (id - ID_FNT_ROW0) % 100;
+    if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 10000) {
+        int i = (id - ID_FNT_ROW0) % 10000;
         if (id < ID_FNT_GET0) FontPick(i);
         else if (id < ID_FNT_ADD0) FontGet(i);
         else if (id < ID_FNT_DEL0) FontAddFile(i);
@@ -5568,6 +5692,9 @@ void OnClick(int id) {
         case ID_MUSIC_ADD:
             Host_PickMusic(u.hwnd, id == ID_MUSIC_ADD);
             break;
+        case ID_MUSIC_SOURCE:
+        case ID_MUSIC_SRC_NEXT: MusicSourceStep(1); break;
+        case ID_MUSIC_SRC_PREV: MusicSourceStep(-1); break;
         case ID_MUSIC_SEARCH:
             if (!u.searchOn) {
                 u.searchOn = true;
@@ -5740,11 +5867,13 @@ void StopRecording() {
 // Tab / Shift+Tab move a focus through the controls in the order they're drawn: the header, the
 // sidebar, then the page from the top (only a dialog's own while one is open). Enter or Space uses
 // the focused control (a choice of several goes on to the next one, round and round); the arrow keys
-// step a slider, nudge the clock or the crop box, move through a choice or a colour field, and
-// otherwise move the focus. Esc lets go of the focus; Esc again closes the dialog or the window.
+// step a slider, nudge the clock or the crop box, move through a choice or a colour field, or go up and
+// down a list (the songs too: Tab stops at them once). They never move the focus elsewhere: only Tab
+// does. Esc lets go of the focus; Esc again closes the dialog or the window.
 
 bool Focusable(const Hit& h) {
     if (!h.enabled) return false;
+    if ((h.id >= ID_SONG_DEL0 && h.id < ID_SONG_DEL0 + 10000) || h.id == ID_MUSIC_SRC_PREV || h.id == ID_MUSIC_SRC_NEXT) return false;
     if (h.kind == K_BUTTON || h.kind == K_TOGGLE || h.kind == K_SEG || h.kind == K_SLIDER) return true;
     return h.id == ID_CLK_AREA || h.id == ID_C_AREA || h.id == ID_DLG_SV || h.id == ID_DLG_HUE || FbBox(h.id);
 }
@@ -5770,7 +5899,7 @@ void FontScrollToFocus() {
     const int id = u.focus;
     float top;
     if (id >= ID_LANG_ROW0 && id < ID_LANG_ROW0 + 1000) top = (id - ID_LANG_ROW0) * kLangRowH;
-    else if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 100) top = ((id - ID_FNT_ROW0) % 100) * PickerRowH();
+    else if (id >= ID_FNT_ROW0 && id < ID_FNT_DEL0 + 10000) top = ((id - ID_FNT_ROW0) % 10000) * PickerRowH();
     else return;
     const float bottom = top + PickerRowH();
     if (top < fnt.target) FontScrollTo(top, true);
@@ -5789,15 +5918,38 @@ void SetFocusTo(int id) {
 }
 
 void FocusMove(int dir) {
-    std::vector<int> ids;  // the controls Tab goes through, in order
-    for (size_t i = FocusStart(); i < u.hits.size(); i++)
-        if (Focusable(u.hits[i]) && std::find(ids.begin(), ids.end(), u.hits[i].id) == ids.end()) ids.push_back(u.hits[i].id);
+    std::vector<int> ids;  // the controls Tab goes through, in order (the songs: one stop, ID_SONG_ROW0)
+    for (size_t i = FocusStart(); i < u.hits.size(); i++) {
+        if (!Focusable(u.hits[i])) continue;
+        const int id = SongRowId(u.hits[i].id) ? ID_SONG_ROW0 : u.hits[i].id;
+        if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+    }
     if (ids.empty()) return;
-    auto it = std::find(ids.begin(), ids.end(), u.focus ? u.focus : u.tabFrom);
+    int from = u.focus ? u.focus : u.tabFrom;
+    if (SongRowId(from)) from = ID_SONG_ROW0;
+    auto it = std::find(ids.begin(), ids.end(), from);
     const int n = (int)ids.size();
     int i = it == ids.end() ? (dir > 0 ? -1 : 0) : (int)(it - ids.begin());  // nothing yet: the first (backwards: the last)
-    SetFocusTo(ids[(i + dir + n) % n]);
+    const int to = ids[(i + dir + n) % n];
+    if (to == ID_SONG_ROW0) FocusSongStep(SongNow(), 0);  // into the songs: at the one playing
+    else SetFocusTo(to);
     InvalidateRect(u.hwnd, nullptr, FALSE);
+}
+
+// Up / down in a list (fonts, styles, languages, versions): the row above or below; true if `id` is in one.
+bool ListRowStep(int id, int dir) {
+    int base = 0, end = 0;
+    if (id >= ID_FNT_ROW0 && id < ID_FNT_GET0) base = ID_FNT_ROW0, end = ID_FNT_GET0;
+    else if (id >= ID_LANG_ROW0 && id < ID_LANG_ROW0 + 1000) base = ID_LANG_ROW0, end = ID_LANG_ROW0 + 1000;
+    else if (id >= ID_VER_ROW0 && id < ID_VER_DEL0) base = ID_VER_ROW0, end = ID_VER_DEL0;
+    else return false;
+    for (int j = id + dir; j >= base && j < end; j += dir)
+        for (size_t i = FocusStart(); i < u.hits.size(); i++)
+            if (u.hits[i].id == j && Focusable(u.hits[i])) {
+                SetFocusTo(j);
+                return true;
+            }
+    return true;  // (the first or the last: it stays)
 }
 
 // Enter on the clock: centred across the screen; Enter again puts it back.
@@ -5873,8 +6025,10 @@ void FocusArrow(UINT vk) {
         CropNudge(vk);
     } else if (id == ID_DLG_SV || id == ID_DLG_HUE) {
         DlgNudge(id, vk);
-    } else {
-        FocusMove(dir);
+    } else if (id == ID_MUSIC_SOURCE && (vk == VK_LEFT || vk == VK_RIGHT)) {
+        MusicSourceStep(dir);
+    } else if (vk == VK_UP || vk == VK_DOWN) {
+        ListRowStep(id, dir);  // (anything else: only Tab moves the focus)
     }
 }
 
@@ -5887,7 +6041,7 @@ void PaintFocus() {
         const D2D1_RECT_F c = ClockRectIn(u.clockBox, *EditedLook());
         r = R(c.left - 4, c.top - 4, c.right + 4, c.bottom + 4);
     }
-    const bool inList = fnt.open && ((h->id >= ID_FNT_ROW0 && h->id < ID_FNT_DEL0 + 100) ||
+    const bool inList = fnt.open && ((h->id >= ID_FNT_ROW0 && h->id < ID_FNT_DEL0 + 10000) ||
                                      (h->id >= ID_LANG_ROW0 && h->id < ID_LANG_ROW0 + 1000));
     if (inList) u.rt->PushAxisAlignedClip(fnt.view, D2D1_ANTIALIAS_MODE_ALIASED);
     Stroke(r, u.th.accent, h->kind == K_AREA ? 8.f : 7.f, 2);
@@ -5958,12 +6112,19 @@ bool OnKeyInner(UINT vk) {
         }
     }
     if (u.searchOn && u.page == 0 && u.nav == NAV_SOUND && !DialogOpen() && (u.focus == ID_MUSIC_SEARCH || u.focus == 0)) {
-        if (vk == VK_ESCAPE || vk == VK_RETURN) {  // put away (the list stays where it found the song)
+        if (vk == VK_ESCAPE) {  // put away (the list stays where it found the song)
             SearchClose();
             InvalidateRect(u.hwnd, nullptr, FALSE);
             return true;
         }
-        if (vk != VK_TAB && vk != VK_UP && vk != VK_DOWN) return true;  // letters come as WM_CHAR
+        if (vk == VK_RETURN || vk == VK_TAB || vk == VK_UP || vk == VK_DOWN) {  // to the songs: the one found, or one beside it
+            const int from = u.searchHit >= 0 ? u.searchHit : SongNow();
+            SearchClose();
+            if (!Host_Songs().empty()) FocusSongStep(from, vk == VK_UP ? -1 : vk == VK_DOWN ? 1 : 0);
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return true;
+        }
+        return true;  // letters come as WM_CHAR
     }
     if (vk == VK_TAB && u.picking) return true;  // the eyedropper is out: Esc or a click first
     if (vk == VK_TAB) {
@@ -5991,8 +6152,28 @@ bool OnKeyInner(UINT vk) {
     }
     if (u.focus >= ID_SONG_ROW0 && u.focus < ID_SONG_GRIP0 && GetKeyState(VK_MENU) < 0 && (vk == VK_UP || vk == VK_DOWN)) {
         MusicMove(u.focus - ID_SONG_ROW0, vk == VK_UP ? -1 : 1);  // Alt+arrows move the focused song
+        SongShow(u.focus - ID_SONG_ROW0);
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
+    }
+    // The songs (also one scrolled out of view): up / down go along them, Enter plays one, Delete takes it off the
+    // list (not while the mouse has the list). With nothing focused, up / down start at the one playing.
+    if (!typing && u.page == 0 && u.nav == NAV_SOUND && !DialogOpen() && g_settings.sound == 2 && !Host_Songs().empty() &&
+        GetKeyState(VK_MENU) >= 0) {
+        const int n = (int)Host_Songs().size();
+        if (SongRowId(u.focus) && u.focus - ID_SONG_ROW0 < n) {
+            if (vk == VK_UP || vk == VK_DOWN) FocusSongStep(u.focus - ID_SONG_ROW0, vk == VK_DOWN ? 1 : -1);
+            else if ((vk == VK_RETURN || vk == VK_SPACE) && Host_IsOn()) OnClick(u.focus);
+            else if (vk == VK_DELETE && Host_IsOn() && u.drag != ID_MUSIC_LIST) RemoveFocusedSong();
+            if (vk == VK_UP || vk == VK_DOWN || vk == VK_RETURN || vk == VK_SPACE || vk == VK_DELETE || vk == VK_LEFT || vk == VK_RIGHT) {
+                InvalidateRect(u.hwnd, nullptr, FALSE);
+                return true;
+            }
+        } else if (!u.focus && (vk == VK_UP || vk == VK_DOWN)) {
+            FocusSongStep(SongNow(), vk == VK_DOWN ? 1 : -1);
+            InvalidateRect(u.hwnd, nullptr, FALSE);
+            return true;
+        }
     }
     if (u.focus && !typing && FocusHit()) {
         if (vk == VK_RETURN || vk == VK_SPACE) {
@@ -6136,6 +6317,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
             }
+            if (u.drag == ID_WALL_LIST) {  // the list follows the pointer
+                if (std::abs(y - u.wallPressY) > 4) u.wallScrolled = true;
+                if (u.wallScrolled) FontScrollTo(u.wallPressScroll - (y - u.wallPressY), false);
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             if (u.drag) {
                 for (auto& ht : u.hits)
                     if (ht.id == u.drag) {
@@ -6255,6 +6442,18 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 SetCapture(h);
                 u.drag = ID_WALL_GRIP0;
                 u.wallMove = ht->id - ID_WALL_GRIP0;
+                u.wallY = y;
+                u.wallGrab = y - (fnt.view.top - fnt.scroll + u.wallMove * PickerRowH());
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
+            if (fnt.open && fnt.walls && ht->id >= ID_FNT_ROW0 && ht->id < ID_FNT_ROW0 + (int)g_walls.size()) {  // a row: a click, or a drag scrolls
+                SetCapture(h);
+                u.drag = ID_WALL_LIST;
+                u.press = ht->id;
+                u.wallPressY = y;
+                u.wallPressScroll = fnt.scroll;
+                u.wallScrolled = false;
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
             }
@@ -6320,8 +6519,18 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
             }
+            if (dragId == ID_WALL_LIST) {  // not dragged: a click
+                u.drag = u.press = 0;
+                const Hit* ht = HitAt(x, y);
+                if (!u.wallScrolled && ht && ht->id == pressId) OnClick(pressId);
+                InvalidateRect(h, nullptr, FALSE);
+                return 0;
+            }
             if (dragId == ID_WALL_GRIP0) {  // the wallpaper's new place is kept
                 if (u.wallMove >= 0 && u.wallMove < (int)g_walls.size()) {
+                    fnt.shift.resize(g_walls.size(), 0.f);  // (from under the pointer into its place)
+                    fnt.shift[u.wallMove] = WallLiftTop() - (fnt.view.top - fnt.scroll + u.wallMove * PickerRowH());
+                    SetTimer(h, TIMER_SCROLL, 15, nullptr);
                     WallsSave();
                     Log(L"ui: %ls moved to place %d", g_walls[u.wallMove].path.c_str(), u.wallMove + 1);
                 }
@@ -6431,12 +6640,17 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 KillTimer(h, TIMER_SHARPEN);
                 InvalidateRect(h, nullptr, FALSE);
             }
-            if (w == TIMER_SCROLL) {  // ease towards the target: a third of the way each frame
+            if (w == TIMER_SCROLL) {  // ease towards the target: a third of the way each frame (and moved rows to their places)
                 fnt.scroll += (fnt.target - fnt.scroll) * 0.3f;
-                if (!fnt.open || std::abs(fnt.target - fnt.scroll) < 0.5f) {
-                    fnt.scroll = fnt.target;
-                    KillTimer(h, TIMER_SCROLL);
+                const bool there = std::abs(fnt.target - fnt.scroll) < 0.5f;
+                if (there) fnt.scroll = fnt.target;
+                bool gliding = false;
+                for (float& d : fnt.shift) {
+                    d *= 0.7f;
+                    if (std::abs(d) < 0.5f) d = 0;
+                    else gliding = true;
                 }
+                if (!fnt.open || (there && !gliding)) KillTimer(h, TIMER_SCROLL);
                 InvalidateRect(h, nullptr, FALSE);
             }
             return 0;
@@ -6593,6 +6807,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             StopRecording();
             KillTimer(h, TIMER_STATUS);
             u.worker.Stop();
+            {
+                MSG msg;  // (posted and not read: they'd be lost with the window)
+                while (PeekMessageW(&msg, h, WM_UI_WALL, WM_UI_WALL, PM_REMOVE)) delete (WallpaperInfo*)msg.lParam;
+                while (PeekMessageW(&msg, h, WM_UI_FRAME, WM_UI_FRAME, PM_REMOVE)) delete (FrameMsg*)msg.lParam;
+                while (PeekMessageW(&msg, h, WM_UI_INFO, WM_UI_INFO, PM_REMOVE)) delete (InfoMsg*)msg.lParam;
+                while (PeekMessageW(&msg, h, WM_UI_STILL, WM_UI_STILL, PM_REMOVE)) delete (StillMsg*)msg.lParam;
+                while (PeekMessageW(&msg, h, WM_UI_FEEDBACK, WM_UI_FEEDBACK, PM_REMOVE)) delete (std::wstring*)msg.lParam;
+            }
             ReleaseTarget();
             u.framePx = {};
             IUnknown** all[] = {(IUnknown**)&u.fTitle, (IUnknown**)&u.fSubtitle, (IUnknown**)&u.fHeader, (IUnknown**)&u.fBody, (IUnknown**)&u.fStrong,
@@ -6704,7 +6926,7 @@ void UI_Show() {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
-                                   GetSystemMetrics(SM_CYSMICON), 0);
+                                   GetSystemMetrics(SM_CYSMICON), LR_SHARED);  // (shared: not one more each time it opens)
     wc.lpszClassName = UI_CLASS;
     RegisterClassExW(&wc);
 

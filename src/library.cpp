@@ -281,7 +281,12 @@ DWORD WINAPI WorkerMain(void* arg) {
             auto* info = new WallpaperInfo;
             if (wic && mf) Make(wic, grab, want, W.screenW, W.screenH, info);
             else info->fault = VF_NO_MEDIA;
-            if (!PostMessageW(W.notify, W.msg, 0, (LPARAM)info)) delete info;
+            EnterCriticalSection(&W.cs);  // (stopped meanwhile: nobody's there to take it)
+            const bool stopped = W.quit;
+            const bool posted = !stopped && PostMessageW(W.notify, W.msg, 0, (LPARAM)info);
+            LeaveCriticalSection(&W.cs);
+            if (!posted) delete info;
+            if (stopped) break;
         }
     }
     if (mf) MF.Stop();

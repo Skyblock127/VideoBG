@@ -58,6 +58,7 @@ bool g_endingSession;       // Windows is signing out / shutting down
 UINT64 g_rendererGraphics;  // the renderer's graphics memory, as it last reported
 bool g_hotkeysOff;          // the shortcuts are off while one is being recorded
 bool g_musicKeyRaw;         // the sound shortcut's key is listened for as raw input too
+bool g_settingsOpenAtUpdate;  // the settings window was open when an update restarted VideoBG (the new one opens it)
 bool g_musicKeyHeld;        // and it's down now (seen that way)
 ULONGLONG g_musicKeyAt;     // when the sound shortcut last did something (either way)
 
@@ -98,6 +99,12 @@ void SyncPlayer(bool force) {
 
 // The desktop clock (and the music player beside it) as the wallpaper and settings want them now.
 void SyncClock(bool force = false) {
+    const bool wanted = !g_exiting && (WantedLook().show || (g_settings.musicPlayer >= 1 && g_settings.sound == 2 && WallpaperShowing()));
+    if (wanted && !FindWindowW(L"Progman", nullptr)) {  // no desktop yet (Explorer restarting): again in a moment
+        g_clockShown.clear();
+        SetTimer(g_wnd, TIMER_CLOCK, 1500, nullptr);
+        return;
+    }
     SyncPlayer(force);
     if (!WantedLook().show || g_exiting) {
         if (!g_clockShown.empty()) Log(L"clock: hidden");
@@ -724,7 +731,7 @@ void ListenForMusicKey(bool on) {
     if (on == g_musicKeyRaw) return;
     RAWINPUTDEVICE d{1, 6, on ? (DWORD)RIDEV_INPUTSINK : (DWORD)RIDEV_REMOVE, on ? g_wnd : nullptr};  // generic desktop: keyboard
     if (RegisterRawInputDevices(&d, 1, sizeof d)) g_musicKeyRaw = on;
-    g_musicKeyHeld = false;
+    g_musicKeyHeld = g_settings.musicHkVk && GetAsyncKeyState((int)g_settings.musicHkVk) < 0;  // (down already: let go first)
 }
 
 bool RegisterMusicHotkey(UINT mods, UINT vk) {
@@ -855,6 +862,12 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_VBG_TRACK:
             g_track = (int)(INT_PTR)w;
+            if (g_track < 0) {  // stopped, or couldn't play: nothing's playing (the last place it said is old)
+                g_music = MusicState{};
+                Player_Update();
+                Modern_MusicChanged();
+                Media_Update();
+            }
             UI_Refresh();
             return 0;
         case WM_VBG_MUSIC_POS:  // twice a second while there's music (the settings window repaints on its own)
@@ -892,6 +905,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_VBG_UPDATE:
             if (w == UP_RESTART) {  // the new version is in place: close as usual, then main() starts it
+                g_settingsOpenAtUpdate = UI_IsOpen();
                 DestroyWindow(h);
                 return 0;
             }
@@ -936,12 +950,13 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             g_lockHr = (HRESULT)w;
             g_lsf = (int)(l & (LSF_LOCKSCREEN | LSF_BACKGROUND));
             g_lockBusy = LockScreen_Busy();
-            FinishPendingStop();
+            if (!g_lockBusy) FinishPendingStop();  // (another run follows: it says when the video may go)
             if (!g_lockBusy && !UI_IsOpen() && !Modern_IsOpen()) Host_TrimMemory();  // the frame decoder and WinRT are done
             UI_Refresh();
             return 0;
         case WM_DESTROY:
             g_exiting = true;
+            TrayMenuClose();  // (open at exit: its fonts go too)
             Media_Stop();
             NowPlaying_Stop();
             SyncClock();  // takes the clock off the desktop
@@ -1277,6 +1292,8 @@ void Host_MusicCommand(MusicCommand cmd, LPARAM value) {
 
 MusicState Host_MusicState() { return g_music; }
 
+bool Host_SettingsOpenAtUpdate() { return g_settingsOpenAtUpdate; }
+
 void Host_KeepMusicPlace() { KeepMusicPlace(); }
 
 void Host_PlayMusic(bool play) {
@@ -1299,7 +1316,7 @@ std::vector<NowPlayingApp> Music_Sources() {
     std::vector<NowPlayingApp> v{{L"", L"My music", g_settings.musicPlaying && g_music.playing}};
     for (const NowPlayingApp& a : NowPlaying_Apps()) v.push_back(a);
     const std::wstring& id = g_settings.musicSource;
-    if (!id.empty() && std::none_of(v.begin(), v.end(), [&](const NowPlayingApp& a) { return a.id == id; }))
+    if (!id.empty() && std::none_of(v.begin(), v.end(), [&](const NowPlayingApp& a) { return _wcsicmp(a.id.c_str(), id.c_str()) == 0; }))
         v.push_back({id, NowPlaying_Name(id), false});  // (closed now: still there to go back to)
     return v;
 }
@@ -1405,13 +1422,16 @@ void Host_RemoveSong(int song) {
     const auto at = std::find(order.begin(), order.end(), song);
     if (at == order.end()) return;
     const bool live = g_music.track >= 0 && g_music.track < n;
-    int current = live ? g_music.track : std::clamp(g_settings.musicTrack, 0, n - 1);
+    int current = live ? g_music.track : g_settings.musicTrack >= 0 ? std::min(g_settings.musicTrack, n - 1) : order[0];
     UINT pos = live ? g_music.posMs : g_settings.musicPosMs, dur = live ? g_music.durMs : g_settings.musicDurMs;
     if (current == song) {  // the one playing: the next one takes its place, from its start
         current = n > 1 ? *(at + 1 == order.end() ? order.begin() : at + 1) : 0;
         pos = dur = 0;
     }
     Log(L"music: %ls taken off the playlist", list[song].c_str());
+    MSG stale;  // (its places were for the list before)
+    while (PeekMessageW(&stale, g_wnd, WM_VBG_MUSIC_POS, WM_VBG_MUSIC_POS, PM_REMOVE)) {}
+    while (PeekMessageW(&stale, g_wnd, WM_VBG_TRACK, WM_VBG_TRACK, PM_REMOVE)) {}
     list.erase(list.begin() + song);
     order.erase(at);
     for (int& i : order)

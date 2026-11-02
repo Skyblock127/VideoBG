@@ -1,4 +1,5 @@
 #include "common.h"
+#include <atomic>
 #include <shlobj.h>
 #include <cwchar>
 #include <cstdarg>
@@ -41,9 +42,8 @@ std::wstring LogPath(bool old) { return AppDataDir() + (old ? L"\\videobg.old.lo
 void Log(const wchar_t* fmt, ...) {
     // Every process (tray, wallpaper, settings) appends to the same file. Past 512 KB it becomes
     // videobg.old.log (replacing the one before), so about 1 MB at most, with the latest events kept.
-    static std::wstring path;
-    static unsigned writes;
-    if (path.empty()) path = LogPath(false);
+    static const std::wstring path = LogPath(false);  // (made once, whichever thread logs first)
+    static std::atomic<unsigned> writes;
     if (writes++ % 64 == 0) {  // checked now and then, also by processes that run for weeks
         WIN32_FILE_ATTRIBUTE_DATA fa;
         if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa) && (fa.nFileSizeHigh || fa.nFileSizeLow > 512 * 1024))
@@ -57,7 +57,7 @@ void Log(const wchar_t* fmt, ...) {
     if (n < 0) return;
     SYSTEMTIME st;
     GetLocalTime(&st);
-    char line[2048];
+    char line[3200];  // (1024 characters: up to 3072 bytes as UTF-8)
     int len = snprintf(line, sizeof line, "%04d-%02d-%02d %02d:%02d:%02d.%03d [%lu] ", st.wYear, st.wMonth, st.wDay,
                        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentProcessId());
     len += WideCharToMultiByte(CP_UTF8, 0, msg, n, line + len, (int)sizeof line - len - 3, nullptr, nullptr);
@@ -79,7 +79,11 @@ static LONG WINAPI CrashLogFilter(EXCEPTION_POINTERS* ep) {
     wchar_t name[MAX_PATH] = L"unknown module";
     if (mod) GetModuleFileNameW(mod, name, MAX_PATH);
     // The return address on top of the stack tells where a bad call came from.
-    void* ret = ep->ContextRecord ? *(void**)ep->ContextRecord->Rsp : nullptr;
+    // (Not after a stack overflow, or when the stack pointer itself is bad.)
+    void* ret = nullptr;
+    if (ep->ContextRecord && ep->ExceptionRecord->ExceptionCode != EXCEPTION_STACK_OVERFLOW &&
+        !IsBadReadPtr((void*)ep->ContextRecord->Rsp, sizeof(void*)))
+        ret = *(void**)ep->ContextRecord->Rsp;
     HMODULE rmod = nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)ret, &rmod);
     Log(L"CRASH 0x%08lx at %ls+0x%llx (called from +0x%llx), thread %lu", ep->ExceptionRecord->ExceptionCode, name,
@@ -397,8 +401,8 @@ std::wstring VideoId(const std::wstring& path) {
         ULONGLONG size = 0;
         FILETIME mtime{};
     };
-    static Entry cache[16];
-    static int next;
+    static Entry cache[128];  // (every wallpaper of a big library, read on the UI thread)
+    static unsigned next;
     static SRWLOCK lock = SRWLOCK_INIT;  // the modern look's preview worker asks from its own thread
     WIN32_FILE_ATTRIBUTE_DATA fa;
     if (path.empty() || !GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa)) return L"";
@@ -438,7 +442,7 @@ std::wstring VideoId(const std::wstring& path) {
     wchar_t id[48];
     swprintf(id, 48, L"%016llx-%llu", h, size);
     AcquireSRWLockExclusive(&lock);
-    cache[next++ % 16] = Entry{path, id, size, fa.ftLastWriteTime};
+    cache[next++ % std::size(cache)] = Entry{path, id, size, fa.ftLastWriteTime};
     ReleaseSRWLockExclusive(&lock);
     return id;
 }

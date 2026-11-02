@@ -172,6 +172,7 @@ EventRegistrationToken g_tSessions{}, g_tCurrent{};
 std::atomic<bool> g_posted{false};  // a look is on its way to the host (events come in bursts)
 
 std::vector<NowPlayingApp> g_apps;  // every other app with a session
+ULONGLONG g_propsAskedAt = 0, g_coverAskedAt = 0;  // when the song's details and its cover were asked for
 std::wstring g_self;                // VideoBG's own session (its exe's name)
 std::wstring g_sessionsLogged;
 
@@ -234,6 +235,19 @@ int Finished(IInspectable* op) {
     info->get_Status(&s);
     info->Release();
     return s == ASYNC_STARTED ? 0 : s == ASYNC_COMPLETED ? 1 : -1;
+}
+
+bool SameId(const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) == 0; }
+
+// A request no longer wanted: stopped too (not left to run on), then let go.
+template <class T> void Drop(T*& op) {
+    IAsyncInfoX* info = nullptr;
+    if (op && SUCCEEDED(op->QueryInterface(kIID_AsyncInfo, (void**)&info))) {
+        info->Cancel();
+        info->Close();
+        info->Release();
+    }
+    Rel(op);
 }
 
 std::wstring AppId(ISession* s) {
@@ -316,8 +330,8 @@ void Unwatch() {
     g_tProps = g_tInfo = g_tTime = EventRegistrationToken{};
     Rel(g_watched);
     Rel(g_watchedId);
-    Rel(g_propsOp);
-    Rel(g_coverOp);
+    Drop(g_propsOp);
+    Drop(g_coverOp);
     g_coverFor.clear();  // (watched again later: its cover is read again)
     g_coverSong.clear();
 }
@@ -449,15 +463,21 @@ void NowPlaying_Tick() {
             const std::wstring id = AppId(s);
             const int st = Status(s);
             all += (all.empty() ? L"" : L", ") + id + L" (" + std::to_wstring(st) + L")";
-            const bool dup = std::any_of(apps.begin(), apps.end(), [&](const NowPlayingApp& a) { return a.id == id; });
-            if (_wcsicmp(id.c_str(), g_self.c_str()) != 0 && !id.empty() && !dup) {
-                NowPlayingApp a;
-                a.id = id;
-                auto known = std::find_if(g_apps.begin(), g_apps.end(), [&](const NowPlayingApp& o) { return o.id == id; });
-                a.name = known != g_apps.end() ? known->name : LookUpName(id);
-                a.playing = st == SESSION_PLAYING;
-                apps.push_back(a);
-                if (id == want && !source && st != SESSION_CLOSED) {
+            // (A browser can have several sessions under one id, its tabs: the one playing counts.)
+            if (_wcsicmp(id.c_str(), g_self.c_str()) != 0 && !id.empty() && st != SESSION_CLOSED) {
+                auto have = std::find_if(apps.begin(), apps.end(), [&](const NowPlayingApp& a) { return SameId(a.id, id); });
+                if (have == apps.end()) {
+                    NowPlayingApp a;
+                    a.id = id;
+                    auto known = std::find_if(g_apps.begin(), g_apps.end(), [&](const NowPlayingApp& o) { return SameId(o.id, id); });
+                    a.name = known != g_apps.end() ? known->name : LookUpName(id);
+                    a.playing = st == SESSION_PLAYING;
+                    apps.push_back(a);
+                } else if (st == SESSION_PLAYING) {
+                    have->playing = true;
+                }
+                if (SameId(id, want) && (!source || (st == SESSION_PLAYING && Status(source) != SESSION_PLAYING))) {
+                    Rel(source);
                     source = s;
                     continue;
                 }
@@ -490,7 +510,7 @@ void NowPlaying_Tick() {
         const ULONGLONG at = GetTickCount64();
         if (!g_lostAt) g_lostAt = at;
         Unwatch();
-        if (g_now.on && g_now.id == want && at - g_lostAt < 8000) {
+        if (g_now.on && SameId(g_now.id, want) && at - g_lostAt < 8000) {
             if (!g_skipAt) {  // (skipped in the app itself)
                 g_skipAt = at;
                 g_skipKey = g_now.title + L"\n" + g_now.artist;
@@ -513,13 +533,16 @@ void NowPlaying_Tick() {
     now.app = want.empty() ? L"" : NowPlaying_Name(want);
     if (g_watched) {
         now.on = true;
-        if (g_now.on && g_now.id == want) {  // the song stays until it's read again
+        if (g_now.on && SameId(g_now.id, want)) {  // the song stays until it's read again
             now.title = g_now.title;
             now.artist = g_now.artist;
             now.cover = g_now.cover;
             now.coverKey = g_now.coverKey;
         }
         ReadWatched(now);
+        const ULONGLONG tick = GetTickCount64();  // (an app that never answers: asked again)
+        if (g_propsOp && !Finished(g_propsOp) && tick - g_propsAskedAt > 5000) Drop(g_propsOp);
+        if (g_coverOp && !Finished(g_coverOp) && tick - g_coverAskedAt > 5000) Drop(g_coverOp);
         if (g_propsOp && Finished(g_propsOp)) {
             g_propsAt = GetTickCount64();  // (answered, even with an error: not asked again at once)
             IProps* props = nullptr;
@@ -536,6 +559,7 @@ void NowPlaying_Tick() {
                 const std::wstring key = now.title + L"\n" + now.artist;
                 const ULONGLONG at = GetTickCount64();
                 if (key != g_coverFor) {
+                    Drop(g_coverOp);  // (the song before's picture, still on its way)
                     g_coverFor = key;
                     g_coverTries = g_coverLooks = 0;
                     g_songAt = at;
@@ -549,6 +573,7 @@ void NowPlaying_Tick() {
                 }
                 if (read && !g_coverOp && SUCCEEDED(props->get_Thumbnail(&ref)) && ref) {
                     ref->OpenReadAsync(&g_coverOp);
+                    g_coverAskedAt = GetTickCount64();
                 }
                 Rel(ref);
             }
@@ -579,6 +604,7 @@ void NowPlaying_Tick() {
         if (!g_propsOp && due) {
             g_opChanged = g_propsChanged.exchange(false);
             g_watched->TryGetMediaPropertiesAsync(&g_propsOp);
+            g_propsAskedAt = at;
         }
     }
     // A skip on its way: the place isn't shown (nor moves on) until the app shows the next song: its
@@ -630,7 +656,7 @@ std::vector<NowPlayingApp> NowPlaying_Apps() { return g_apps; }
 
 std::wstring NowPlaying_Name(const std::wstring& id) {
     for (const NowPlayingApp& a : g_apps)
-        if (a.id == id) return a.name;
+        if (SameId(a.id, id)) return a.name;
     static std::wstring lastId, lastName;  // (an app that's gone: still named as it was)
     if (id != lastId) {
         lastId = id;
@@ -705,7 +731,14 @@ void NowPlaying_ShowApp() {
                         std::wstring id = f.id, lexe = exe;
                         for (auto& c : id) c = towlower(c);
                         for (auto& c : lexe) c = towlower(c);
-                        if (!lexe.empty() && id.find(lexe) != std::wstring::npos) score = 1;
+                        // (a whole part of it: "code" isn't found in "...unicode...")
+                        for (size_t at = lexe.empty() ? std::wstring::npos : id.find(lexe); at != std::wstring::npos; at = id.find(lexe, at + 1)) {
+                            const size_t end = at + lexe.size();
+                            if ((at == 0 || !iswalnum(id[at - 1])) && (end >= id.size() || !iswalnum(id[end]))) {
+                                score = 1;
+                                break;
+                            }
+                        }
                     }
                     CloseHandle(pr);
                 }
@@ -740,6 +773,7 @@ void NowPlaying_Seek(UINT ms) {
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
     g_now.posAt = (INT64)((UINT64)ft.dwHighDateTime << 32 | ft.dwLowDateTime);
+    Host_NowPlayingChanged();  // (the desktop player too, even while the app is paused)
 }
 
 void NowPlaying_Stop() {
@@ -749,7 +783,7 @@ void NowPlaying_Stop() {
         if (g_tCurrent.value) g_manager->remove_CurrentSessionChanged(g_tCurrent);
     }
     g_tSessions = g_tCurrent = EventRegistrationToken{};
-    Rel(g_request);
+    Drop(g_request);
     Rel(g_manager);
     g_now = NowPlaying{};
     g_apps.clear();

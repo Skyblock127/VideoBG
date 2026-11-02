@@ -93,7 +93,7 @@ bool RunHidden(std::wstring cmd) {
     STARTUPINFOW si{sizeof si};
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) return false;
-    WaitForSingleObject(pi.hProcess, 60000);
+    if (WaitForSingleObject(pi.hProcess, 60000) == WAIT_TIMEOUT) TerminateProcess(pi.hProcess, 1);  // (it would hold the files)
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread);
@@ -297,6 +297,7 @@ void Work(bool quiet) {
 void Run(bool quiet) {
     Work(quiet);
     g_busy = false;
+    if (g_notify && g_stage != UP_RESTART) PostMessageW(g_notify, WM_VBG_UPDATE, UP_IDLE, 0);  // (Update_Available counts now)
 }
 
 }  // namespace
@@ -330,8 +331,8 @@ void Update_Done() {
 }
 
 // The new VideoBG, once this one has closed (its mutex is free).
-void Update_Relaunch(bool wallpaperOn) {
-    std::wstring cmd = L"\"" + ExeDir() + L"\\VideoBG.exe\" --updated" + (wallpaperOn ? L" --on" : L"");
+void Update_Relaunch(bool wallpaperOn, bool settings) {
+    std::wstring cmd = L"\"" + ExeDir() + L"\\VideoBG.exe\" --updated" + (wallpaperOn ? L" --on" : L"") + (settings ? L" --settings" : L"");
     STARTUPINFOW si{sizeof si};
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {

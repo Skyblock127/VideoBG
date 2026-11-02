@@ -384,8 +384,9 @@ bool FrameGrabber::ToPixels(IMFSample* best, std::vector<uint32_t>& px, int& w, 
             }
         }
         // The chroma plane follows the luma plane (fh_ rows); check it's all there before reading.
-        const size_t need = (size_t)(scan0 - start) + (size_t)pitch * fh_ * 3 / 2;
-        if (scan0 && pitch >= (LONG)fw_ && need <= len && ap_.right <= (LONG)fw_ && ap_.bottom <= (LONG)fh_) {
+        const bool fits = scan0 && scan0 >= start && pitch >= (LONG)fw_ && ap_.left >= 0 && ap_.top >= 0 && ap_.right <= (LONG)fw_ &&
+                          ap_.bottom <= (LONG)fh_;
+        if (fits && (size_t)(scan0 - start) + (size_t)pitch * fh_ * 3 / 2 <= len) {
             w = ap_.right - ap_.left;
             h = ap_.bottom - ap_.top;
             Nv12ToBgrx(scan0, scan0 + (ptrdiff_t)pitch * fh_, pitch, (int)fw_, ap_, kr_, kb_, fullRange_, px);
@@ -409,7 +410,8 @@ bool FrameGrabber::ToPixels(IMFSample* best, std::vector<uint32_t>& px, int& w, 
         if (SUCCEEDED(buf->QueryInterface(__uuidof(IMF2DBuffer), (void**)&b2)) && SUCCEEDED(b2->Lock2D(&scan0, &pitch))) {
         } else if (SUCCEEDED(buf->Lock(&raw, nullptr, &len))) {
             pitch = stride_;
-            scan0 = pitch < 0 ? raw + (size_t)(-pitch) * (fh_ - 1) : raw;
+            const size_t rowLen = (size_t)(pitch < 0 ? -pitch : pitch);
+            if (fh_ > 0 && rowLen * fh_ <= len) scan0 = pitch < 0 ? raw + rowLen * (fh_ - 1) : raw;  // (too small: nothing read)
         }
         const bool locked2d = scan0 && !raw;  // (unlocked the way it was locked, whatever's read)
         const LONG rowBytes = pitch < 0 ? -pitch : pitch;

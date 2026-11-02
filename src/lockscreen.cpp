@@ -435,6 +435,14 @@ struct Sync {
     UINT msg = 0;
 } S;
 
+// True when a newer request wants the user's own pictures back: the frame being put up is dropped.
+bool FrameUnwanted() {
+    AcquireSRWLockShared(&S.lock);
+    const bool no = S.pending && !S.want.frame;
+    ReleaseSRWLockShared(&S.lock);
+    return no;
+}
+
 // Lock screen and background. Going back to the user's pictures, the background goes first and the
 // host hears about it at once (LSF_EARLY), so the video can stop without the frame showing through.
 HRESULT Apply(const LockScreenWant& w, HWND notify, UINT msg, int* flags) {
@@ -449,8 +457,9 @@ HRESULT Apply(const LockScreenWant& w, HWND notify, UINT msg, int* flags) {
         SetEvent(S.early);
         if (notify) PostMessageW(notify, msg, (WPARAM)hb, LSF_EARLY | (bg ? LSF_BACKGROUND : 0));
     }
+    if (w.frame && FrameUnwanted()) return S_OK;  // (the next run puts the user's back)
     hr = ApplyLockScreen(w, &lock);
-    if (w.frame) hb = ApplyBackground(w, &bg);
+    if (w.frame && !FrameUnwanted()) hb = ApplyBackground(w, &bg);
     *flags = (lock ? LSF_LOCKSCREEN : 0) | (bg ? LSF_BACKGROUND : 0);
     return FAILED(hr) ? hr : hb;
 }
