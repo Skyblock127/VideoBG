@@ -91,7 +91,7 @@ Using it
     single-picture background on Windows 11 24H2 or newer.)
   - Video page: "Your wallpapers" lists the videos you switch between (the
     modern look's too), with their pictures: click one to make it your
-    wallpaper, "Add videos" adds more, the bin takes one off the list (the
+    wallpaper, "Add" adds more, the bin takes one off the list (the
     file isn't touched).
   - Clock page:
       * The row at the top picks the clock you're editing: Video / Still

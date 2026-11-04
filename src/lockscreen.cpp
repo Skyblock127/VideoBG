@@ -277,7 +277,8 @@ HRESULT ApplyLockScreen(const LockScreenWant& w, bool* frame) {
     std::string cur;
     std::wstring fp = ReadCurrent(api, cur) ? Fingerprint(cur) : L"";
     std::wstring shows = ReadState(L"LockScreen", L"Shows");
-    if (!fp.empty() && fp != ReadState(L"LockScreen", L"Ours")) {
+    const std::wstring ours = ReadState(L"LockScreen", L"Ours");
+    if (!fp.empty() && fp != ours && !(ours.empty() && !shows.empty())) {  // (the two are written together: one alone is a read that failed)
         // A picture VideoBG didn't set: the user's own. It's the one for while the wallpaper is off.
         bool ok = WriteFileAtomic(BackupPath(), cur);
         Log(L"lock screen: kept your picture (%ls) for while the wallpaper is off -> %ls", fp.c_str(), ok ? L"ok" : L"failed");

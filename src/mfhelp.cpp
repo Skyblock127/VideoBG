@@ -384,9 +384,10 @@ bool FrameGrabber::ToPixels(IMFSample* best, std::vector<uint32_t>& px, int& w, 
             }
         }
         // The chroma plane follows the luma plane (fh_ rows); check it's all there before reading.
-        const bool fits = scan0 && scan0 >= start && pitch >= (LONG)fw_ && ap_.left >= 0 && ap_.top >= 0 && ap_.right <= (LONG)fw_ &&
+        // (Odd sizes: the chroma plane has half a row or column more; if they aren't there, the converter takes over.)
+        const bool fits = scan0 && scan0 >= start && pitch >= (LONG)(fw_ + (fw_ & 1)) && ap_.left >= 0 && ap_.top >= 0 && ap_.right <= (LONG)fw_ &&
                           ap_.bottom <= (LONG)fh_;
-        if (fits && (size_t)(scan0 - start) + (size_t)pitch * fh_ * 3 / 2 <= len) {
+        if (fits && (size_t)(scan0 - start) + (size_t)pitch * (fh_ + (fh_ + 1) / 2) <= len) {
             w = ap_.right - ap_.left;
             h = ap_.bottom - ap_.top;
             Nv12ToBgrx(scan0, scan0 + (ptrdiff_t)pitch * fh_, pitch, (int)fw_, ap_, kr_, kb_, fullRange_, px);

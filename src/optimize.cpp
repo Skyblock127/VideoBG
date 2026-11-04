@@ -322,6 +322,8 @@ HRESULT MakeVideoFromGif(const std::wstring& gif, const std::wstring& dst, HWND 
         }
         if (!cw || !ch) { cw = fr.empty() ? 0 : fr[0].w; ch = fr.empty() ? 0 : fr[0].h; }
         if (SUCCEEDED(hr) && (!cw || !ch || cw > 16384 || ch > 16384)) hr = HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+        for (const GifFrame& g : fr)
+            if (g.w > 16384 || g.h > 16384) hr = HRESULT_FROM_WIN32(ERROR_INVALID_DATA);  // (a broken file: not gigabytes for one frame)
     }
 
     // A frame rate every delay is a whole number of frames of (at most 50 fps); a still GIF

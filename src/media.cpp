@@ -162,9 +162,9 @@ void Media_Start(HWND host) {
 // song and whether it plays.
 void Media_Update() {
     if (!g_controls) return;
-    const std::vector<std::wstring> songs = g_settings.sound == 2 && g_settings.musicSource.empty() ? Host_Songs() : std::vector<std::wstring>{};
+    const std::vector<std::wstring>& songs = Host_Songs();  // (this runs twice a second: not a copy of them all)
     const MusicState ms = Host_MusicState();
-    const int n = (int)songs.size();
+    const int n = g_settings.sound == 2 && g_settings.musicSource.empty() ? (int)songs.size() : 0;
     const int track = ms.track >= 0 && ms.track < n ? ms.track : g_settings.musicTrack >= 0 && g_settings.musicTrack < n ? g_settings.musicTrack : 0;
     const bool on = n > 0, playing = on && g_settings.musicPlaying;
     const std::wstring title = on ? SongName(songs[track]) : L"";

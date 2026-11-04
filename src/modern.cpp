@@ -258,6 +258,7 @@ struct Picker {
     int kf = FOC_NONE, kfSong = -1;  // the keyboard's focus there (FOC_*), and the song it's on
     int kfLast = FOC_NONE, kfLastSong = -1;  // where it was before it let go: Tab picks up there
     int cf = CF_NONE, cfLast = CF_NONE;      // the Clock screen's (CF_*), and where it was
+    bool lost = false;                // the graphics device is gone: nothing can be drawn any more
     int songDrag = -1, songIns = 0;   // a song being moved, and where it would land
     float songGrab = 0, songY = 0;
     double songEdgeAt = 0;            // moving one: since when it's been near the list's edge
@@ -906,7 +907,7 @@ void AskPictures() {
     for (int r = 0; r < n; r++)
         each(r, [&](Card& c) {
             if (!c.asked) {
-                Library_Request(c.path, r <= 2, false);
+                Library_Request(P.hwnd, c.path, r <= 2, false);
                 c.asked = true;
                 c.frameAsked = r <= 2;
             }
@@ -914,7 +915,7 @@ void AskPictures() {
     for (int r = 2; r >= 0; r--)
         each(r, [&](Card& c) {
             if (!c.frame && (!c.frameAsked || r == 0) && (!c.ready || c.info.ok)) {
-                Library_Request(c.path, true, r <= 1);
+                Library_Request(P.hwnd, c.path, true, r <= 1);
                 c.frameAsked = true;
             }
         });
@@ -2692,7 +2693,10 @@ void Paint() {
     DrawMenu();
     DrawToast();
     HRESULT hr = G.ctx->EndDraw();
-    if (FAILED(hr)) Log(L"picker: drawing failed 0x%08lx", (unsigned long)hr);
+    if (FAILED(hr)) {
+        Log(L"picker: drawing failed 0x%08lx", (unsigned long)hr);
+        P.lost = hr == D2DERR_RECREATE_TARGET;
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2705,6 +2709,21 @@ void SetFocus(int i, bool scrollThere = true) {
     if (i == P.focus) return;
     P.focus = i;
     FocusChanged();
+}
+
+// A screen ending with the mouse still down on it (Enter or Esc pressed meanwhile): what the mouse held is
+// let go, and it does nothing to the screen that comes next.
+void DropPresses() {
+    P.slide = P.press = ID_NONE;
+    P.pvMoving = P.pvRotating = P.pvSeeking = P.pv.sliding = false;
+    P.pvSnapX = P.pvSnapY = false;
+    P.pv.press = PLAYER_NONE;
+    P.pv.seek = -1;
+    P.seekFrac = -1;
+    P.rotating = P.clockDrag = P.cropDrag = false;
+    P.snapX = P.snapY = false;
+    P.songDrag = P.songPress = -1;
+    P.songMoved = false;
 }
 
 void ShowToast(const std::wstring& t) {
@@ -2963,6 +2982,7 @@ void StartCropEdit() {
     Card* c = WallpaperCard();
     if (!c || !c->info.ok) return;
     CloseActions();
+    P.down = P.dragging = false;  // (the deck was being dragged)
     P.mode = 2;
     P.menu = P.music = false;
     KillTimer(P.hwnd, TIMER_DWELL);
@@ -2997,7 +3017,7 @@ void EndCropEdit(bool save) {
         SafeRelease(c->brush);
         SafeRelease(c->image);
     }
-    P.cropDrag = false;
+    DropPresses();
     P.mode = 0;
     P.enter = 0;  // the cards rise again
     if (P.focus >= 0 && P.focus < (int)P.cards.size()) FocusChanged();
@@ -3012,6 +3032,7 @@ void StartClockEdit() {
         ShowToast(L"Choose a wallpaper first: each video has its own clock");
         return;
     }
+    P.down = P.dragging = false;  // (the deck was being dragged)
     P.mode = 1;
     P.menu = P.music = false;
     P.actions = P.versions = P.binArmed = false;
@@ -3049,7 +3070,7 @@ void EndClockEdit() {
     P.clockDrag = P.clockHot = P.snapX = P.snapY = false;
     P.langsOpen = false;
     P.gridFor = P.picking = 0;
-    P.slide = ID_NONE;
+    DropPresses();
     P.enter = 0;
     P.clockKey.clear();
     P.clockStyle.clear();
@@ -3067,6 +3088,7 @@ void EndPick(bool keep);
 void StartMusicEdit() {
     EndMove();
     const int card = P.focus >= 0 && P.focus < (int)P.cards.size() ? P.focus : -1;
+    P.down = P.dragging = false;  // (the deck was being dragged)
     P.mode = 3;
     P.menu = P.music = false;
     P.actions = P.versions = P.binArmed = false;
@@ -3107,8 +3129,7 @@ void EndMusicEdit(bool keep) {
     }
     P.mode = 0;
     P.gridFor = 0;
-    P.slide = ID_NONE;
-    P.songDrag = -1;
+    DropPresses();
     P.enter = 0;  // the cards rise again
     if (P.focus >= 0 && P.focus < (int)P.cards.size()) FocusChanged();
     P.dirty = true;
@@ -4022,6 +4043,7 @@ void DropCard() {
 }
 
 void OnWheel(int delta, LPARAM l) {
+    if (P.phase != BROWSING && P.phase != OPENING) return;
     if (P.mode == 2) {  // zooms the crop where the pointer is
         const float x = (GET_X_LPARAM(l) - P.mon.left) / P.scale, y = (GET_Y_LPARAM(l) - P.mon.top) / P.scale;
         ZoomCropAt(powf(0.92f, delta / 120.f), x, y);
@@ -4040,7 +4062,7 @@ void OnWheel(int delta, LPARAM l) {
         P.dirty = true;
         return;
     }
-    if ((P.phase != BROWSING && P.phase != OPENING) || P.mode != 0 || P.cards.empty()) return;
+    if (P.mode != 0 || P.cards.empty()) return;
     if ((delta > 0) != (P.wheel > 0)) P.wheel = 0;  // turned the other way
     P.wheel += delta;
     while (fabsf(P.wheel) >= 60) {  // a notch is 120; touchpads send smaller steps, and half a notch starts a card
@@ -4230,7 +4252,7 @@ void SeekBy(int ms) {
     if (!dur) return;
     const ULONGLONG now = GetTickCount64();
     if (P.seekKeyAt && now - P.seekKeyAt < 1200) pos = P.seekKeyMs;
-    const UINT to = (UINT)std::clamp((long long)pos + ms, 0LL, (long long)dur - 500);
+    const UINT to = (UINT)std::clamp((long long)pos + ms, 0LL, std::max(0LL, (long long)dur - 500));
     P.seekKeyMs = to;
     P.seekKeyAt = now;
     Music_SeekMs(to);
@@ -4698,7 +4720,7 @@ void Destroy() {
     }
     if (P.showcaseAsked) Host_Showcase(nullptr);
     if (!P.used) AskPreview(g_settings.video, 0);  // back to the wallpaper's own video
-    Library_Stop();
+    Library_Stop(P.hwnd);
     Player_FreePreview();
     HWND h = P.hwnd;
     P.hwnd = nullptr;
@@ -4816,7 +4838,7 @@ bool Modern_IsOpen() { return P.hwnd != nullptr; }
 bool Modern_Open(int mode) {
     if (P.hwnd && P.phase == CLOSING) Destroy();  // (asked for again while it fades out: it opens afresh)
     if (P.hwnd) {  // open already: switch to what was asked
-        if (mode == 1 && P.mode == 0) StartClockEdit();
+        if (mode == 1 && P.mode == 0 && P.phase != SELECTING) StartClockEdit();
         SetForegroundWindow(P.hwnd);
         return true;
     }
@@ -4909,7 +4931,13 @@ void Modern_Frame() {
     P.frames++;
     P.drawTime += took;
     P.drawMax = std::max(P.drawMax, took);
-    G.sc->Present(1, 0);  // shown at the next refresh
+    const HRESULT shown = G.sc->Present(1, 0);  // shown at the next refresh
+    if (P.lost || shown == DXGI_ERROR_DEVICE_REMOVED || shown == DXGI_ERROR_DEVICE_RESET) {
+        // (a driver update or a reset) It can't draw or fade any more: it goes at once, and opens afresh next time.
+        BeginClose(L"the graphics device was lost");
+        Destroy();
+        return;
+    }
     P.dirty = moving;
 }
 
@@ -4953,6 +4981,7 @@ void Modern_RendererEvent(UINT msg, WPARAM w, LPARAM l) {
             }
             P.live = g_settings.video;
             P.previewAsked = g_settings.video;
+            if (P.mode == 0 && (P.phase == BROWSING || P.phase == OPENING)) SetTimer(P.hwnd, TIMER_DWELL, kDwellMs, nullptr);  // (the card looked at plays again)
             break;
         case WM_VBG_SHOWCASE_UP:
             P.showcaseUp = true;

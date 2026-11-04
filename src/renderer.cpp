@@ -31,7 +31,7 @@ constexpr UINT WM_READER_FAILED = WM_APP + 64;
 constexpr UINT WM_MUSIC_EVENT = WM_APP + 65;
 constexpr UINT WM_PREVIEW_VIDEO = WM_APP + 66;  // lParam = PreviewAsk*
 constexpr UINT WM_PREVIEW_FAILED = WM_APP + 67;
-constexpr UINT_PTR TIMER_HEALTH = 1, TIMER_DISPLAY = 2, TIMER_TRIM = 3, TIMER_RECHECK = 4, TIMER_PARK = 5, TIMER_MUSIC = 6;
+constexpr UINT_PTR TIMER_HEALTH = 1, TIMER_DISPLAY = 2, TIMER_TRIM = 3, TIMER_RECHECK = 4, TIMER_PARK = 5, TIMER_MUSIC = 6, TIMER_RELOAD = 7;
 
 struct Target {
     HWND hwnd = nullptr;
@@ -74,7 +74,7 @@ struct State {
     // media engine pipeline
     IMFMediaEngine* eng = nullptr;
     UINT engineGen = 0;          // tags engine events so late ones from a replaced engine are ignored
-    bool metadata = false;
+    std::atomic<bool> metadata{false};  // (the frame pump reads it too)
     bool videoAudio = false;     // engine plays the video's own sound
     double pendingSeek = 0;      // position to resume at once the engine has loaded
     std::atomic<bool> engineRun{false};  // engine clock running (may be true while the picture is paused)
@@ -194,7 +194,7 @@ void Exit(DWORD code) {
 void Fail(HRESULT hr, int fault = -1) {
     if (!g.preview.empty()) {  // only the preview: back to the wallpaper's own video
         Log(L"preview of %ls failed 0x%08lx", g.preview.c_str(), (unsigned long)hr);
-        PostMessageW(g.ctl, WM_PREVIEW_FAILED, 0, 0);
+        PostMessageW(g.ctl, WM_PREVIEW_FAILED, g.pipeGen, 0);
         return;
     }
     if (fault < 0) fault = DiagnoseVideo(g.s.video, g.vi);
@@ -597,6 +597,7 @@ DWORD WINAPI SilentThread(void*) {
     LONGLONG skipTo = (LONGLONG)((g.skipTo - g.frameDur / 2) * 1e7);
     int skipped = 0;
     bool jumped = false;  // moved by the Preview slider: the frame there is shown even while paused
+    int emptyRuns = 0;    // ends of the video in a row with no frame in between (a stream with no frames at all)
 
     auto videoTime = [&](double now) { return baseVt + (now - baseClock) * lastRate; };
     while (!g.quit) {
@@ -651,6 +652,7 @@ DWORD WINAPI SilentThread(void*) {
             if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
                 // Loop: jump back to the start and keep the timeline running.
                 SafeRelease(s);
+                if (++emptyRuns >= 2) { Log(L"silent pipeline: the video has no frames"); result = 2; break; }
                 PROPVARIANT pv;
                 PropVariantInit(&pv);
                 pv.vt = VT_I8;
@@ -667,6 +669,7 @@ DWORD WINAPI SilentThread(void*) {
             // The first frame comes one frame after the last, whatever time the file starts at
             // (some encoders start at a frame or two in).
             if (looped) { loopOffset -= ts; looped = false; }
+            emptyRuns = 0;
             next = s;
             nextFileTs = ts;
             nextTs = ts + loopOffset;
@@ -1041,7 +1044,7 @@ void StopMusic() {
     SafeRelease(mu.eng);
     mu.list.clear();
     mu.order.clear();
-    ReportTrack(-1);
+    if (!g.shuttingDown) ReportTrack(-1);  // (going away: the host keeps the music's place as it last heard it)
 }
 
 // The settings changed: true if the song playing is still on the playlist (songs added or taken off
@@ -1636,6 +1639,10 @@ void PreviewVideo(const std::wstring& path, double time, UINT seq) {
 void Reload() {
     Settings ns;
     LoadSettings(ns);
+    if (ns.video.empty() && !g.s.video.empty()) {  // (the file couldn't be read just then: not "no video"; again in a moment)
+        SetTimer(g.ctl, TIMER_RELOAD, 200, nullptr);
+        return;
+    }
     Settings old = g.s;
     g.s = ns;
     if (ns.monitors != old.monitors || ns.gpu != old.gpu) { Exit(EXIT_RENDER_RESTART); return; }  // new windows, or another chip
@@ -1759,10 +1766,13 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         case WM_PREVIEW_VIDEO: {
             std::unique_ptr<PreviewAsk> ask((PreviewAsk*)l);
+            // (Asked again while this was busy, and the first asking got here too: it's on its way, not up yet.)
+            if (ask->seq == g.previewSeq && g.announce && _wcsicmp(ask->path.c_str(), g.preview.c_str()) == 0) return 0;
             PreviewVideo(ask->path, ask->time, ask->seq);
             return 0;
         }
         case WM_PREVIEW_FAILED:
+            if ((UINT)w != g.pipeGen) return 0;  // (the preview before: a newer one has started since)
             PostMessageW(g.host, WM_VBG_PREVIEW_UP, 0, g.previewSeq);
             g.announce = false;
             g.preview.clear();
@@ -1807,6 +1817,7 @@ LRESULT CALLBACK CtlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (w == TIMER_RECHECK) { KillTimer(h, TIMER_RECHECK); CheckCovered(); }
             else if (w == TIMER_PARK) { KillTimer(h, TIMER_PARK); Park(); }
             else if (w == TIMER_MUSIC) ReportMusic();
+            else if (w == TIMER_RELOAD) { KillTimer(h, TIMER_RELOAD); Reload(); }
             else if (w == TIMER_TRIM) {
                 KillTimer(h, TIMER_TRIM);
                 IDXGIDevice3* d3 = nullptr;  // what the graphics driver still keeps for freed frames goes back too
@@ -1850,7 +1861,13 @@ void Shutdown() {
     g.shuttingDown = true;
     g.quit = true;
     if (g.wake) SetEvent(g.wake);
-    if (g.thread) { WaitForSingleObject(g.thread, 3000); CloseHandle(g.thread); }
+    if (g.thread) {
+        if (WaitForSingleObject(g.thread, 3000) == WAIT_TIMEOUT) {  // stuck: what it uses can't be freed under it
+            Log(L"render thread didn't stop at exit");
+            TerminateProcess(GetCurrentProcess(), g.exitCode);
+        }
+        CloseHandle(g.thread);
+    }
     // Hide first: the static wallpaper comes back the instant our windows go away.
     for (auto& t : g.targets) if (t.hwnd) ShowWindow(t.hwnd, SW_HIDE);
     StopMusic();

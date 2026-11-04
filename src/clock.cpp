@@ -467,7 +467,10 @@ void DrawClock() {
     // Explorer restarted: the desktop is a new window now.
     if (!IsWindow(W.desktop) || GetWindow(W.hwnd, GW_OWNER) != W.desktop) {
         DestroyClockWindow();
-        if (!CreateClockWindow()) return;
+        if (!CreateClockWindow()) {  // (no desktop yet: tried again in a moment)
+            if (W.host) PostMessageW(W.host, WM_VBG_CLOCK_LOST, 0, 0);
+            return;
+        }
     }
     SYSTEMTIME t;
     GetLocalTime(&t);

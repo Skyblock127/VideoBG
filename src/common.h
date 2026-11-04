@@ -478,8 +478,8 @@ struct WallpaperInfo {           // what the picker shows for one video (made of
 };
 // Results are posted to `notify` as msg with lParam = WallpaperInfo* (the receiver deletes it).
 void Library_Start(HWND notify, UINT msg, int screenW, int screenH);
-void Library_Request(const std::wstring& path, bool frame, bool urgent);
-void Library_Stop();
+void Library_Request(HWND notify, const std::wstring& path, bool frame, bool urgent);
+void Library_Stop(HWND notify);
 
 // lockscreen.cpp - the lock screen picture and the desktop background follow the wallpaper.
 struct LockScreenWant {

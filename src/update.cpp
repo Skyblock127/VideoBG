@@ -88,6 +88,13 @@ struct Http {
     }
 };
 
+// Windows' own command line (not one that happens to be beside the exe).
+std::wstring CmdExe() {
+    wchar_t sys[MAX_PATH];
+    GetSystemDirectoryW(sys, MAX_PATH);
+    return L"\"" + std::wstring(sys) + L"\\cmd.exe\"";
+}
+
 // Runs a program hidden and waits for it; true if it ended with 0.
 bool RunHidden(std::wstring cmd) {
     STARTUPINFOW si{sizeof si};
@@ -222,9 +229,9 @@ void Work(bool quiet) {
         ReleaseSRWLockExclusive(&g_lock);
         PostMessageW(g_notify, WM_VBG_UPDATE, UP_IDLE, 0);  // the sidebar marks Update
     }
+    if (quiet && g_asked == tag) return;  // "Not now" holds until VideoBG starts again
     const std::wstring notes = ReleaseNotes(tag);
     if (quiet) {
-        if (g_asked == tag) return;  // "Not now" holds until VideoBG starts again
         QUERY_USER_NOTIFICATION_STATE busy;  // a full-screen game, a presentation: the next check asks
         if (SUCCEEDED(SHQueryUserNotificationState(&busy)) && busy != QUNS_ACCEPTS_NOTIFICATIONS && busy != QUNS_QUIET_TIME) return;
         g_asked = tag;
@@ -240,7 +247,7 @@ void Work(bool quiet) {
     g_percent = 0;
     SetStage(UP_DOWNLOADING);
     const std::wstring dir = LocalDataDir() + L"\\update", zip = dir + L"\\VideoBG.zip", out = dir + L"\\files";
-    RunHidden(L"cmd.exe /c rd /s /q \"" + dir + L"\"");
+    RunHidden(CmdExe() + L" /c rd /s /q \"" + dir + L"\"");
     CreateDirectoryW(dir.c_str(), nullptr);
     {
         Http h;
@@ -347,7 +354,7 @@ void Update_CleanUp() {
     std::thread([] {
         const std::wstring old = ExeDir() + L"\\VideoBG.old.exe";
         for (int i = 0; i < 40 && GetFileAttributesW(old.c_str()) != INVALID_FILE_ATTRIBUTES && !DeleteFileW(old.c_str()); i++) Sleep(250);
-        RunHidden(L"cmd.exe /c rd /s /q \"" + LocalDataDir() + L"\\update\"");
+        RunHidden(CmdExe() + L" /c rd /s /q \"" + LocalDataDir() + L"\\update\"");
     }).detach();
     const std::wstring file = LocalDataDir() + L"\\whatsnew.txt";
     HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);

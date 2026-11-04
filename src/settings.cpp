@@ -54,7 +54,10 @@ void Log(const wchar_t* fmt, ...) {
     va_start(ap, fmt);
     int n = vswprintf(msg, 1024, fmt, ap);
     va_end(ap);
-    if (n < 0) return;
+    if (n < 0) {  // too long for it: what fits
+        msg[1023] = 0;
+        n = (int)wcslen(msg);
+    }
     SYSTEMTIME st;
     GetLocalTime(&st);
     char line[3200];  // (1024 characters: up to 3072 bytes as UTF-8)
@@ -110,11 +113,20 @@ void SavePlaylist(const std::vector<std::wstring>& files) { WriteFileList(Playli
 bool ReadFileList(const std::wstring& path, std::vector<std::wstring>* outList) {
     std::vector<std::wstring>& out = *outList;
     out.clear();
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    HANDLE f = INVALID_HANDLE_VALUE;
+    for (int i = 0; i < 20; i++) {  // (held for a moment by a scanner, or being replaced)
+        f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (f != INVALID_HANDLE_VALUE || (GetLastError() != ERROR_SHARING_VIOLATION && GetLastError() != ERROR_ACCESS_DENIED)) break;
+        Sleep(10);
+    }
     if (f == INVALID_HANDLE_VALUE) return false;
-    DWORD size = GetFileSize(f, nullptr), got = 0;
-    std::string data(size, '\0');
-    if (size && size < (16u << 20)) ReadFile(f, data.data(), size, &got, nullptr);
+    const DWORD size = GetFileSize(f, nullptr);
+    DWORD got = 0;
+    std::string data;
+    if (size && size < (16u << 20)) {
+        data.resize(size);
+        ReadFile(f, data.data(), size, &got, nullptr);
+    }
     CloseHandle(f);
     data.resize(got);
     size_t pos = 0;
@@ -124,7 +136,7 @@ bool ReadFileList(const std::wstring& path, std::vector<std::wstring>* outList) 
         std::string line = data.substr(pos, end - pos);
         pos = end + 1;
         while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-        if (line.size() >= 3 && (unsigned char)line[0] == 0xEF) line = line.substr(3);  // BOM
+        if (line.compare(0, 3, "\xEF\xBB\xBF") == 0) line = line.substr(3);  // BOM
         if (line.empty() || line[0] == '#') continue;
         int n = MultiByteToWideChar(CP_UTF8, 0, line.data(), (int)line.size(), nullptr, 0);
         std::wstring w(n, L'\0');
@@ -142,12 +154,23 @@ bool WriteFileList(const std::wstring& path, const std::vector<std::wstring>& fi
         WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
         data += s + "\r\n";
     }
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // A new file that replaces the old one in one step: a crash or a reader never meets half a list.
+    const std::wstring tmp = path + L".new";
+    HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
     DWORD w = 0;
     bool ok = WriteFile(f, data.data(), (DWORD)data.size(), &w, nullptr) && w == data.size();
     CloseHandle(f);
-    return ok;
+    bool moved = false;
+    for (int i = 0; ok && !moved && i < 20; i++) {
+        moved = MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+        if (!moved) Sleep(10);
+    }
+    if (!moved) {
+        Log(L"settings: couldn't replace %ls (error %lu)", path.c_str(), GetLastError());
+        DeleteFileW(tmp.c_str());
+    }
+    return moved;
 }
 
 static std::wstring Utf16Ini(const wchar_t* name) {
@@ -341,12 +364,20 @@ static std::wstring CropKey(const std::wstring& video) {
     return buf;
 }
 
+// Reads wait for a save in this process (the workers read on their own threads): a value read just as
+// the file is replaced must not come back empty.
+static UINT IniInt(const wchar_t* sec, const wchar_t* key, int def, const wchar_t* ini) {
+    IniLock lock;
+    return GetPrivateProfileIntW(sec, key, def, ini);
+}
+
 static int ReadInt(const wchar_t* ini, const wchar_t* key, int def, int lo, int hi) {
-    int v = (int)GetPrivateProfileIntW(L"General", key, def, ini);
+    int v = (int)IniInt(L"General", key, def, ini);
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
 static std::wstring ReadStr(const wchar_t* ini, const wchar_t* sec, const wchar_t* key) {
+    IniLock lock;
     wchar_t buf[2048];
     GetPrivateProfileStringW(sec, key, L"", buf, (DWORD)std::size(buf), ini);
     return buf;
@@ -392,7 +423,9 @@ static std::wstring VRead(const std::wstring& id, const wchar_t* key) {
 
 static void VWrite(const std::wstring& id, const wchar_t* key, const wchar_t* value) {
     IniLock lock;
-    WritePrivateProfileStringW(id.c_str(), key, value, VideosIni().c_str());
+    const std::wstring ini = VideosIni();
+    WritePrivateProfileStringW(id.c_str(), key, value, ini.c_str());
+    WritePrivateProfileStringW(nullptr, nullptr, nullptr, ini.c_str());  // (as WriteState: nothing of it stays cached)
 }
 
 std::wstring VideoId(const std::wstring& path) {
@@ -592,11 +625,11 @@ static ClockLook ReadLook(const wchar_t* ini, const wchar_t* sec, const std::wst
     l.color = ReadStr(ini, sec, (prefix + L"Color").c_str());
     if (l.color.empty()) l.color = def.color;
     l.glowColor = ReadStr(ini, sec, (prefix + L"GlowColor").c_str());  // "" = the text colour
-    l.show = GetPrivateProfileIntW(sec, (prefix + L"Show").c_str(), 1, ini) != 0;
-    l.h24 = GetPrivateProfileIntW(sec, (prefix + L"Hours").c_str(), def.h24 ? 24 : 12, ini) == 24;
-    l.date = std::clamp((int)GetPrivateProfileIntW(sec, (prefix + L"Date").c_str(), 0, ini), 0, 99);
+    l.show = IniInt(sec, (prefix + L"Show").c_str(), 1, ini) != 0;
+    l.h24 = IniInt(sec, (prefix + L"Hours").c_str(), def.h24 ? 24 : 12, ini) == 24;
+    l.date = std::clamp((int)IniInt(sec, (prefix + L"Date").c_str(), 0, ini), 0, 99);
     l.lang = ReadStr(ini, sec, (prefix + L"Language").c_str());
-    l.nativeDigits = GetPrivateProfileIntW(sec, (prefix + L"NativeDigits").c_str(), 0, ini) != 0;
+    l.nativeDigits = IniInt(sec, (prefix + L"NativeDigits").c_str(), 0, ini) != 0;
     l.font = ReadStr(ini, sec, (prefix + L"Font").c_str());
     if (l.font.empty()) l.font = base.font;
     l.style = ReadStr(ini, sec, (prefix + L"Style").c_str());
@@ -711,10 +744,13 @@ void LoadSettings(Settings& s) {
     s.volume = ReadInt(ini, L"Volume", 60, 0, 100);
     // Older settings had no sound mode: any volume above 0 meant "the video's audio".
     s.sound = ReadInt(ini, L"Sound", -1, -1, 2);
-    if (s.sound < 0) s.sound = GetPrivateProfileIntW(L"General", L"Volume", 0, ini) > 0 ? 1 : 0;
+    if (s.sound < 0) s.sound = IniInt(L"General", L"Volume", 0, ini) > 0 ? 1 : 0;
     {
         std::wstring v(65536, L'\0');  // the play order: "3,0,1,2"
-        v.resize(GetPrivateProfileStringW(L"General", L"MusicOrder", L"", v.data(), (DWORD)v.size(), ini));
+        {
+            IniLock lock;
+            v.resize(GetPrivateProfileStringW(L"General", L"MusicOrder", L"", v.data(), (DWORD)v.size(), ini));
+        }
         for (size_t at = 0; at < v.size();) {
             size_t end = v.find(L',', at);
             if (end == std::wstring::npos) end = v.size();
@@ -755,14 +791,14 @@ void LoadSettings(Settings& s) {
     s.wallsFirst = ReadInt(ini, L"NewWallpapersFirst", 0, 0, 1) != 0;
     s.clockStill.size = s.clockLive.size = ReadFloat(ini, L"Clock", L"Size", 1.06f, 0.5f, 2.5f);  // older: one size for all
     // Older versions had one 12/24-hour setting for every look: it's where each look starts from.
-    s.clockStill.h24 = s.clockLive.h24 = GetPrivateProfileIntW(L"Clock", L"Hours", 12, ini) == 24;
+    s.clockStill.h24 = s.clockLive.h24 = IniInt(L"Clock", L"Hours", 12, ini) == 24;
     s.clockStill = ReadLook(ini, L"Clock", L"Still", s.clockStill);
     s.clockLive = ReadLook(ini, L"Clock", L"Live", s.clockLive);
     LoadMyColors(ini, s);
     LoadPresets(ini, s);
     LoadVideoProfile(s);
     // Older versions had one switch for the clock: off there means off with every look.
-    if (!GetPrivateProfileIntW(L"Clock", L"Enabled", 1, ini)) s.clockStill.show = s.clockLive.show = s.clockVideo.show = false;
+    if (!IniInt(L"Clock", L"Enabled", 1, ini)) s.clockStill.show = s.clockLive.show = s.clockVideo.show = false;
     // Older versions had one preview frame for every video: it becomes the current video's.
     std::wstring pt = ReadStr(ini, L"General", L"PreviewTime");
     if (s.previewTime < 0 && !pt.empty()) s.previewTime = wcstod(pt.c_str(), nullptr);
@@ -778,7 +814,7 @@ void LoadVideoProfile(Settings& s) {
     std::wstring vini = VideosIni();
     std::wstring pt = ReadStr(vini.c_str(), pid.c_str(), L"PreviewTime");
     if (!pt.empty()) s.previewTime = std::max(0.0, wcstod(pt.c_str(), nullptr));
-    s.clockVideoOwn = GetPrivateProfileIntW(pid.c_str(), L"ClockOwn", 0, vini.c_str()) != 0;
+    s.clockVideoOwn = IniInt(pid.c_str(), L"ClockOwn", 0, vini.c_str()) != 0;
     // Its own look stays stored while switched off, so switching it back on brings it back.
     s.clockVideoSaved = !ReadStr(vini.c_str(), pid.c_str(), L"ClockColor").empty();
     if (s.clockVideoSaved) s.clockVideo = ReadLook(vini.c_str(), pid.c_str(), L"Clock", s.clockLive);

@@ -96,8 +96,10 @@ struct PlayerWindow {
     HDC tdc = nullptr;   // the turned picture
     HBITMAP tdib = nullptr;
     HGDIOBJ toldBmp = nullptr;
+    int tdibW = 0, tdibH = 0;
     int hot = PART_NONE, press = PART_NONE;
     bool dragging = false, sliding = false;
+    bool lettingGo = false;  // the button came up (its capture ends as usual: not cut short)
     POINT grab{};      // where the pointer took hold of it, in the window
     POINT pressAt{};   // ...on the screen
     bool moved = false;      // dragged since (else it's a click)
@@ -1477,7 +1479,7 @@ bool WindowDib() {
 
 // The turned picture's surface (made again when its size changes).
 bool TurnedDib(int w, int h) {
-    if (W.tdc && W.ow == w && W.oh == h) return true;
+    if (W.tdc && W.tdibW == w && W.tdibH == h) return true;
     if (W.tdc) {
         SelectObject(W.tdc, W.toldBmp);
         DeleteObject(W.tdib);
@@ -1500,6 +1502,8 @@ bool TurnedDib(int w, int h) {
     W.tdc = dc;
     W.tdib = bmp;
     W.toldBmp = SelectObject(dc, bmp);
+    W.tdibW = w;
+    W.tdibH = h;
     return true;
 }
 
@@ -1553,10 +1557,10 @@ void Draw(bool force = false) {
         force = true;
     }
     const float deg = TurnOf(look);
-    wchar_t key[300];
-    swprintf(key, 300, L"%d|%ls|%ls|%d|%d|%d|%d|%d|%d|%.2f|%ls|%ls|%ls|%.1f|%.2f|%.1f", g_settings.musicPlayer, s.song.c_str(), s.where.c_str(),
-             s.playing, (int)(s.done * 400), W.hot, W.press, W.sliding, s.noVolume ? -1 : g_settings.volume, W.scale, W.artFor.c_str(), look.color.c_str(),
-             look.body.c_str(), look.corners, look.opacity, deg);
+    wchar_t numbers[128];  // (the names around them can be any length)
+    swprintf(numbers, 128, L"%d|%d|%d|%d|%d|%d|%d|%.2f|%.1f|%.2f|%.1f", g_settings.musicPlayer, s.playing, (int)(s.done * 400), W.hot, W.press, W.sliding,
+             s.noVolume ? -1 : g_settings.volume, W.scale, look.corners, look.opacity, deg);
+    const std::wstring key = numbers + (L"|" + s.song) + L"|" + s.where + L"|" + W.artFor + L"|" + look.color + L"|" + look.body;
     if (!force && W.drawn == key) {
         KeepTurning();
         return;
@@ -1738,8 +1742,29 @@ LRESULT CALLBACK PlayerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             Draw();
             return 0;
+        case WM_CAPTURECHANGED:
+            if (W.lettingGo || (!W.dragging && !W.sliding && !W.seeking)) return 0;
+            W.press = PART_NONE;
+            if (W.sliding) {
+                W.sliding = false;
+                Host_SettingsChanged();
+            } else if (W.seeking) {
+                W.seeking = false;
+                W.seekFrac = -1;
+            } else {
+                W.dragging = false;
+                if (W.moved) {
+                    KeepPlace(h);
+                    SaveSettings(g_settings);
+                }
+                W.moved = W.onCover = false;
+            }
+            Draw();
+            return 0;
         case WM_LBUTTONUP: {
+            W.lettingGo = true;
             ReleaseCapture();
+            W.lettingGo = false;
             const int part = W.press;
             W.press = PART_NONE;
             if (W.sliding) {

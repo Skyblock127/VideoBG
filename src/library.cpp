@@ -151,7 +151,7 @@ struct Want {
     bool frame = false;
 };
 
-// One per picker session. Freed by whichever lets go last: the picker closing, or the thread
+// One per window showing wallpapers (the deck, the settings' list). Freed by whichever lets go last: the picker closing, or the thread
 // finishing a slow video after the picker has gone.
 struct Worker {
     LONG refs = 2;
@@ -169,7 +169,13 @@ struct Worker {
         delete this;
     }
 };
-Worker* g_worker;
+std::vector<Worker*> g_workers;
+
+Worker* WorkerOf(HWND notify) {
+    for (Worker* w : g_workers)
+        if (w->notify == notify) return w;
+    return nullptr;
+}
 
 void Make(IWICImagingFactory* wic, FrameGrabber& grab, const Want& want, int screenW, int screenH, WallpaperInfo* info) {
     info->path = want.path;
@@ -303,9 +309,15 @@ DWORD WINAPI WorkerMain(void* arg) {
 std::vector<std::wstring> LoadWallpapers(const std::wstring& current) {
     std::vector<std::wstring> list;
     bool changed = false;
-    if (!ReadFileList(ListPath(), &list)) {  // the first time: every video used before
-        list = KnownVideos();
-        changed = true;
+    bool unread = false;  // it's there, but couldn't be read: never written over
+    if (!ReadFileList(ListPath(), &list)) {
+        if (GetFileAttributesW(ListPath().c_str()) != INVALID_FILE_ATTRIBUTES) {
+            unread = true;
+            Log(L"picker: couldn't read the wallpapers' list");
+        } else {  // the first time: every video used before
+            list = KnownVideos();
+            changed = true;
+        }
     }
     // A lighter version belongs on its original's line: one that got in on its own (put there when
     // it was the wallpaper) goes, so a version change never moves the video in the list.
@@ -327,14 +339,14 @@ std::vector<std::wstring> LoadWallpapers(const std::wstring& current) {
         list.insert(g_settings.wallsFirst ? list.begin() : list.end(), current);
         changed = true;
     }
-    if (changed) SaveWallpapers(list);
+    if (changed && !unread) SaveWallpapers(list);
     return list;
 }
 
 void SaveWallpapers(const std::vector<std::wstring>& files) { WriteFileList(ListPath(), files); }
 
 void Library_Start(HWND notify, UINT msg, int screenW, int screenH) {
-    Library_Stop();
+    Library_Stop(notify);
     auto* w = new Worker;
     InitializeCriticalSection(&w->cs);
     w->notify = notify;
@@ -344,12 +356,13 @@ void Library_Start(HWND notify, UINT msg, int screenW, int screenH) {
     w->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     w->thread = CreateThread(nullptr, 0, WorkerMain, w, 0, nullptr);
     if (!w->thread) w->refs = 1;
-    g_worker = w;
+    g_workers.push_back(w);
 }
 
-void Library_Request(const std::wstring& path, bool frame, bool urgent) {
-    if (!g_worker) return;
-    Worker& W = *g_worker;
+void Library_Request(HWND notify, const std::wstring& path, bool frame, bool urgent) {
+    Worker* found = WorkerOf(notify);
+    if (!found) return;
+    Worker& W = *found;
     EnterCriticalSection(&W.cs);
     for (auto it = W.queue.begin(); it != W.queue.end(); ++it)
         if (SamePath(it->path, path)) {  // already asked: maybe sooner, maybe with the frame now
@@ -368,10 +381,11 @@ void Library_Request(const std::wstring& path, bool frame, bool urgent) {
     SetEvent(W.wake);
 }
 
-void Library_Stop() {
-    if (!g_worker) return;
-    Worker& W = *g_worker;
-    g_worker = nullptr;
+void Library_Stop(HWND notify) {
+    Worker* found = WorkerOf(notify);
+    if (!found) return;
+    Worker& W = *found;
+    g_workers.erase(std::find(g_workers.begin(), g_workers.end(), found));
     EnterCriticalSection(&W.cs);
     W.quit = true;
     W.queue.clear();

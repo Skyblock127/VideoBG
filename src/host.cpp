@@ -18,7 +18,7 @@ Settings g_settings;
 
 namespace {
 
-constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4, TIMER_UPDATE = 5, TIMER_CHECK = 6, TIMER_NOWPLAYING = 7;
+constexpr UINT_PTR TIMER_RESTART = 1, TIMER_TRIM = 2, TIMER_CLOCK = 3, TIMER_STOP = 4, TIMER_UPDATE = 5, TIMER_CHECK = 6, TIMER_NOWPLAYING = 7, TIMER_PREVIEW = 8;
 constexpr int HOTKEY_ID = 1, HOTKEY_MUSIC = 2;
 enum { CMD_TOGGLE = 100, CMD_SETTINGS, CMD_EXIT, CMD_PICKER, CMD_LOOK };
 
@@ -164,6 +164,25 @@ void RefreshStaticWallpaper() {
     wchar_t path[MAX_PATH] = {};
     if (SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, path, 0))
         SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, path, 0);
+}
+
+// The picker's last request to preview a video (the renderer may be busy starting the one before: asked again).
+struct {
+    std::wstring path;
+    double time = 0;
+    UINT seq = 0;
+} g_previewAsk;
+int g_previewTries;
+
+bool SendPreview() {
+    std::vector<BYTE> buf(offsetof(PreviewVideoData, path) + (g_previewAsk.path.size() + 1) * sizeof(wchar_t));
+    auto* pv = (PreviewVideoData*)buf.data();
+    pv->time = g_previewAsk.time;
+    pv->seq = g_previewAsk.seq;
+    memcpy(pv->path, g_previewAsk.path.c_str(), (g_previewAsk.path.size() + 1) * sizeof(wchar_t));
+    COPYDATASTRUCT cd{COPY_PREVIEW_VIDEO, (DWORD)buf.size(), buf.data()};
+    DWORD_PTR res = 0;
+    return SendMessageTimeoutW(g_ctl, WM_COPYDATA, (WPARAM)g_wnd, (LPARAM)&cd, SMTO_ABORTIFHUNG, 500, &res) != 0 && res != 0;
 }
 
 void Balloon(const wchar_t* title, const std::wstring& text) {
@@ -438,7 +457,7 @@ void TrayMenuDo(int i) {
         PostMessageW(g_wnd, WM_COMMAND, cmd, 0);
         return;
     }
-    InvalidateRect(g_tm.hwnd, nullptr, FALSE);
+    if (g_tm.hwnd) InvalidateRect(g_tm.hwnd, nullptr, FALSE);
 }
 
 void TrayMenuPaint(HWND h) {
@@ -728,10 +747,10 @@ bool RegisterToggleHotkey(UINT mods, UINT vk) {
 // input with "no hotkeys"), so the sound shortcut is also listened for as raw input: it still
 // arrives that way then (and only then: a hotkey that works takes the key before raw input sees it).
 void ListenForMusicKey(bool on) {
+    g_musicKeyHeld = on && g_settings.musicHkVk && GetAsyncKeyState((int)g_settings.musicHkVk) < 0;  // (down already, as when just recorded: let go first)
     if (on == g_musicKeyRaw) return;
     RAWINPUTDEVICE d{1, 6, on ? (DWORD)RIDEV_INPUTSINK : (DWORD)RIDEV_REMOVE, on ? g_wnd : nullptr};  // generic desktop: keyboard
     if (RegisterRawInputDevices(&d, 1, sizeof d)) g_musicKeyRaw = on;
-    g_musicKeyHeld = g_settings.musicHkVk && GetAsyncKeyState((int)g_settings.musicHkVk) < 0;  // (down already: let go first)
 }
 
 bool RegisterMusicHotkey(UINT mods, UINT vk) {
@@ -891,6 +910,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_TIMER:
             if (w == TIMER_RESTART) { KillTimer(h, TIMER_RESTART); Reconcile(); }
             else if (w == TIMER_TRIM) { KillTimer(h, TIMER_TRIM); Host_TrimMemory(); }
+            else if (w == TIMER_PREVIEW) { if (!g_ctl || SendPreview() || ++g_previewTries >= 10) KillTimer(h, TIMER_PREVIEW); }
             else if (w == TIMER_CLOCK) { KillTimer(h, TIMER_CLOCK); SyncClock(true); }
             else if (w == TIMER_STOP) FinishPendingStop();
             else if (w == TIMER_NOWPLAYING) {
@@ -919,6 +939,7 @@ LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_TIMECHANGE:
         case WM_DISPLAYCHANGE:
             Clock_Refresh();
+            if (m == WM_DISPLAYCHANGE) Player_Place();  // (kept on the screen, also while it isn't redrawing)
             return 0;
         case WM_POWERBROADCAST:
             if (w == PBT_APMRESUMEAUTOMATIC) Clock_Refresh();  // the minute timer doesn't run while asleep
@@ -1128,15 +1149,13 @@ void Host_HoldWallpaper(bool hold) {
 }
 
 void Host_PreviewVideo(const std::wstring& path, double time, UINT seq) {
+    KillTimer(g_wnd, TIMER_PREVIEW);  // (this one replaces any waiting)
     if (!g_ctl) return;
-    std::vector<BYTE> buf(offsetof(PreviewVideoData, path) + (path.size() + 1) * sizeof(wchar_t));
-    auto* pv = (PreviewVideoData*)buf.data();
-    pv->time = time;
-    pv->seq = seq;
-    memcpy(pv->path, path.c_str(), (path.size() + 1) * sizeof(wchar_t));
-    COPYDATASTRUCT cd{COPY_PREVIEW_VIDEO, (DWORD)buf.size(), buf.data()};
-    DWORD_PTR res = 0;
-    SendMessageTimeoutW(g_ctl, WM_COPYDATA, (WPARAM)g_wnd, (LPARAM)&cd, SMTO_ABORTIFHUNG, 500, &res);
+    g_previewAsk.path = path;
+    g_previewAsk.time = time;
+    g_previewAsk.seq = seq;
+    g_previewTries = 0;
+    if (!SendPreview()) SetTimer(g_wnd, TIMER_PREVIEW, 150, nullptr);
 }
 
 void Host_PreviewSize(UINT w, UINT h) {
@@ -1386,6 +1405,7 @@ void Host_ShuffleMusic(size_t n) {
             seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
             std::swap(order[i], order[1 + (size_t)((seed >> 33) % i)]);
         }
+        if (!MusicShuffled(order)) std::swap(order[n - 1], order[n - 2]);  // (it came out as chosen: a press always shuffles)
         g_settings.musicOrder = order;
     }
     Log(L"music: %ls", g_settings.musicOrder.empty() ? L"in the order chosen" : L"shuffled");
@@ -1476,15 +1496,16 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker, int wallpaperOn
     InstallCrashLog(L"tray app");
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     LoadSettings(g_settings);
-    if (!openSettings && !openPicker && g_settings.musicPlaying) {  // started with Windows: My music waits for Play (never loud at sign-in)
+    const bool bySystem = (!openSettings && !openPicker) || wallpaperOn >= 0;  // started with Windows, or by an update
+    if (bySystem && g_settings.musicPlaying) {  // My music waits for Play (never loud at sign-in)
         g_settings.musicPlaying = false;
         SaveSettings(g_settings);
-        Log(L"tray: started with Windows, so the music stays paused");
+        Log(L"tray: started by itself, so the music stays paused");
     }
-    if (!openSettings && !openPicker && g_settings.sound == 1 && !g_settings.videoMuted) {  // and the video's sound starts muted
+    if (bySystem && g_settings.sound == 1 && !g_settings.videoMuted) {  // and the video's sound starts muted
         g_settings.videoMuted = true;  // (the video plays; the sound shortcut or Unmute brings the sound back)
         SaveSettings(g_settings);
-        Log(L"tray: started with Windows, so the video's sound starts muted");
+        Log(L"tray: started by itself, so the video's sound starts muted");
     }
 
     g_job = CreateJobObjectW(nullptr, nullptr);
@@ -1545,12 +1566,13 @@ int HostMain(HINSTANCE inst, bool openSettings, bool openPicker, int wallpaperOn
         if (g_proc) waits[n++] = g_proc;
         HANDLE frame = Modern_FrameWait();
         if (frame) waits[n++] = frame;
-        DWORD r = MsgWaitForMultipleObjectsEx(n, waits, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        // (Not forever for a frame: with the graphics device lost its signal can stop, and the picker must still be able to go.)
+        DWORD r = MsgWaitForMultipleObjectsEx(n, waits, frame ? 250 : INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (g_proc && r == WAIT_OBJECT_0) {
             OnRendererExit();
             continue;
         }
-        if (frame && r == WAIT_OBJECT_0 + n - 1) Modern_Frame();  // then the messages, so input never waits behind frames
+        if (frame && (r == WAIT_OBJECT_0 + n - 1 || r == WAIT_TIMEOUT)) Modern_Frame();  // then the messages, so input never waits behind frames
         bool quit = false;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) { quit = true; break; }

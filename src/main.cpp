@@ -162,5 +162,5 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     const bool on = Host_IsOn() || Host_BatteryOff();
     if (mutex) CloseHandle(mutex);
     if (Update_Stage(nullptr, nullptr) == UP_RESTART) Update_Relaunch(on, Host_SettingsOpenAtUpdate());
-    return r;
+    ExitProcess((UINT)r);  // (straight out: a detached worker may still be running, so global objects aren't torn down under it)
 }

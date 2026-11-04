@@ -200,18 +200,20 @@ public:
         ev_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         thread_ = CreateThread(nullptr, 0, Proc, this, 0, nullptr);
     }
-    void Stop() {
-        if (!thread_) return;
+    // False if the thread is stuck (a file that doesn't answer): it keeps all it uses, and ends by itself when it can.
+    bool Stop() {
+        if (!thread_) return true;
         cancel_ = 1;  // abort a light copy in progress
         EnterCriticalSection(&cs_);
         quit_ = true;
         LeaveCriticalSection(&cs_);
         SetEvent(ev_);
-        WaitForSingleObject(thread_, 20000);  // a light copy stops at its next frame
+        if (WaitForSingleObject(thread_, 20000) == WAIT_TIMEOUT) return false;  // (a light copy stops at its next frame)
         CloseHandle(thread_);
         CloseHandle(ev_);
         DeleteCriticalSection(&cs_);
         thread_ = nullptr;
+        return true;
     }
     void Post(const Job& j) {
         EnterCriticalSection(&cs_);
@@ -261,7 +263,11 @@ private:
                     bool ok = grab.Open(j.path);
                     auto* im = new InfoMsg{j.path, grab.info, ok, ok ? VF_NONE : DiagnoseVideo(j.path, grab.info)};
                     if (!PostMessageW(notify_, WM_UI_INFO, 0, (LPARAM)im)) delete im;
-                    if (!ok) continue;
+                    if (!ok) {  // (no picture, but the request is answered)
+                        auto* none = new FrameMsg{j.path, 0, {}, 0, 0, j.serial};
+                        if (!PostMessageW(notify_, WM_UI_FRAME, 0, (LPARAM)none)) delete none;
+                        continue;
+                    }
                 }
                 // The default frame depends on the length, known only now (a short GIF video ends before 1 s).
                 double t = PreviewTimeFor(j.t, grab.info.duration);
@@ -297,6 +303,7 @@ struct UI {
 
     std::vector<Hit> hits;
     int hot = 0, hotSeg = -1, press = 0, drag = 0;
+    bool lettingGo = false;  // the button came up (its capture ends as usual: not cut short)
     int focus = 0;          // the control with the keyboard focus (Tab), outlined; 0 = none
     int tabFrom = 0;        // the control clicked last: Tab goes on from there
     float clockPrevX = -1;  // where Enter on the clock moved it from (to centre it), for Enter again
@@ -306,7 +313,7 @@ struct UI {
     bool keyStepped = false;  // it moved by key and isn't saved yet (saved when the key goes up)
     bool tracking = false;
 
-    Worker worker;
+    Worker* worker = nullptr;
     int serial = 0;
     ID2D1Bitmap* frame = nullptr;
     std::vector<uint32_t> framePx;
@@ -861,6 +868,7 @@ std::wstring Fmt(const wchar_t* f, ...) {
     va_start(ap, f);
     vswprintf(b, 512, f, ap);
     va_end(ap);
+    b[511] = 0;  // (too long for it: cut, not left without an end)
     return b;
 }
 
@@ -976,7 +984,7 @@ void StartLightCopy(const std::wstring& original, UINT ow, UINT oh, const std::w
     u.optTime = g_settings.previewTime;
     Log(L"ui: %ls version of %ls (%ux%u)%ls", label.c_str(), original.c_str(), ow, oh, made ? L", made before" : L"");
     if (made) PostMessageW(u.hwnd, WM_UI_OPT_DONE, (WPARAM)S_OK, 0);
-    else u.worker.Post(j);
+    else u.worker->Post(j);
 }
 
 // Videos made from GIFs: "<name>.mp4" in %LOCALAPPDATA%\VideoBG\Converted, linked to their GIF
@@ -1018,7 +1026,7 @@ void StartGifConvert(const std::wstring& gif) {
         j.kind = 3;
         j.path = gif;
         j.dst = dst;
-        u.worker.Post(j);
+        u.worker->Post(j);
     }
     InvalidateRect(u.hwnd, nullptr, FALSE);
 }
@@ -1046,7 +1054,7 @@ void RequestFrame(bool reopen = false) {
     j.t = g_settings.previewTime;  // -1 = the default frame
     j.serial = ++u.serial;
     u.frameBusy = true;
-    u.worker.Post(j);
+    u.worker->Post(j);
 }
 
 // Draws the video frame into `box` the way the wallpaper shows it (crop + scaling mode).
@@ -2948,7 +2956,7 @@ void OpenWallpapers() {
     }
     ReleaseFontSamples();
     Library_Start(u.hwnd, WM_UI_WALL, u.screenW, u.screenH);
-    for (const WallRow& w : g_walls) Library_Request(w.path, false, false);
+    for (const WallRow& w : g_walls) Library_Request(u.hwnd, w.path, false, false);
     fnt.scroll = fnt.target = std::max(0, current - 1) * 88.f;  // the next paint keeps it in range
 }
 
@@ -3008,7 +3016,7 @@ void WallsAdd() {
         WallRow w;
         w.path = w.play = p;
         g_walls.insert(g_settings.wallsFirst ? g_walls.begin() + added : g_walls.end(), w);  // first or last, as set
-        Library_Request(p, false, true);
+        Library_Request(u.hwnd, p, false, true);
         added++;
     }
     if (!added) return;
@@ -3412,7 +3420,9 @@ void CloseFontDialog() {
     ReleaseFontSamples();
     if (fnt.players) Player_FreePreview();
     if (fnt.walls) {
-        Library_Stop();
+        Library_Stop(u.hwnd);
+        if (u.drag == ID_WALL_GRIP0) WallsSave();  // (closed with a row held: it stays where it was put)
+        u.wallMove = -1;
         g_walls.clear();
     }
     fnt.open = false;
@@ -4292,13 +4302,14 @@ void DragCrop(float x, float y) {
             ch *= s;
             if (cw < minW) { cw = minW; ch = cw / k; }
         } else {
-            cw = std::clamp(cw, (double)minW, maxW);
-            ch = std::clamp(ch, (double)minH, maxH);
+            cw = std::max((double)minW, std::min(cw, maxW));  // (at the video's edge there may be less room than the smallest size)
+            ch = std::max((double)minH, std::min(ch, maxH));
         }
         c.l = sx > 0 ? ax : ax - (float)cw;
         c.r = c.l + (float)cw;
         c.t = sy > 0 ? ay : ay - (float)ch;
         c.b = c.t + (float)ch;
+        ClampCrop(c);
     };
     auto edgeX = [&](bool right) {  // dragging the left/right edge
         double cw = right ? mx - o.l : o.r - mx;
@@ -4339,7 +4350,10 @@ void DragCrop(float x, float y) {
         case H_N: edgeY(false); break;
         case H_MOVE: {
             float dx = mx - sx0, dy = my - sy0;
-            c = {o.l + dx, o.t + dy, o.r + dx, o.b + dy};
+            c.l = o.l + dx;
+            c.t = o.t + dy;
+            c.r = o.r + dx;
+            c.b = o.b + dy;
             ClampCrop(c);
             break;
         }
@@ -4363,7 +4377,10 @@ void ZoomCrop(float factor) {
     }
     if (w < 0.04 || h < 0.04) return;
     double cx = (c.l + c.r) / 2, cy = (c.t + c.b) / 2;
-    c = {(float)(cx - w / 2), (float)(cy - h / 2), (float)(cx + w / 2), (float)(cy + h / 2)};
+    c.l = (float)(cx - w / 2);
+    c.t = (float)(cy - h / 2);
+    c.r = (float)(cx + w / 2);
+    c.b = (float)(cy + h / 2);
     ClampCrop(c);
     u.edit = c;
     SendPreview(true);
@@ -4466,7 +4483,7 @@ void ShowClockPage() {
         u.stillLoading = true;
         Job j;
         j.kind = 5;
-        u.worker.Post(j);
+        u.worker->Post(j);
     }
 }
 
@@ -5077,15 +5094,15 @@ bool StepSlider(int dir) {
             // (from where the bar shows: a step taken before the music reported the last one counts)
             if (Music_FromApp()) {
                 const NowPlaying np = NowPlaying_Get();
-                if (!np.canSeek) return false;
-                const int to = std::clamp((int)(SeekShown(np.PosNow(), np.durMs) * np.durMs) + dir * 5000, 0, (int)np.durMs - 1000);
+                if (!np.canSeek || !np.durMs) return false;
+                const int to = std::clamp((int)(SeekShown(np.PosNow(), np.durMs) * np.durMs) + dir * 5000, 0, std::max(0, (int)np.durMs - 1000));
                 NowPlaying_Seek((UINT)to);
                 SeekHold((float)to / np.durMs);
                 break;
             }
             const MusicState ms = Host_MusicState();
             if (!ms.durMs) return false;
-            const int to = std::clamp((int)(SeekShown(ms.posMs, ms.durMs) * ms.durMs) + dir * 5000, 0, (int)ms.durMs - 1000);
+            const int to = std::clamp((int)(SeekShown(ms.posMs, ms.durMs) * ms.durMs) + dir * 5000, 0, std::max(0, (int)ms.durMs - 1000));
             Host_MusicCommand(MC_SEEK, (LPARAM)to);
             SeekHold((float)to / ms.durMs);
             break;
@@ -5149,6 +5166,7 @@ void FinishStep() {
         case ID_PD_SIZE:
         case ID_PD_CORNERS:
         case ID_PD_ROTATE: SaveSettings(g_settings); break;
+        case ID_MUSIC_SEEK: break;  // (it's gone there already: nothing to save)
         default: ClockEdited();
     }
 }
@@ -6636,9 +6654,22 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             InvalidateRect(h, nullptr, FALSE);
             return 0;
         }
+        case WM_CAPTURECHANGED:  // the mouse taken away mid-press (Alt+Tab, a prompt, the PC locking): let go there, with no click
+            if (!u.lettingGo && (u.drag || u.press)) {
+                POINT p;
+                GetCursorPos(&p);
+                ScreenToClient(h, &p);
+                u.songMoved = u.songMoved || !u.songMoving;  // (no song played)
+                u.wallScrolled = true;                       // (no wallpaper chosen)
+                if (!u.drag) u.press = 0;                    // (no button pressed)
+                WndProc(h, WM_LBUTTONUP, 0, MAKELPARAM(p.x, p.y));
+            }
+            return 0;
         case WM_LBUTTONUP: {
             float x = Dip(GET_X_LPARAM(l)), y = Dip(GET_Y_LPARAM(l));
+            u.lettingGo = true;
             ReleaseCapture();
+            u.lettingGo = false;
             int dragId = u.drag, pressId = u.press;
             if (dragId == ID_MUSIC_LIST) {
                 SongRelease();
@@ -6817,7 +6848,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_UI_FRAME: {
             auto* fm = (FrameMsg*)l;
             if (fm->serial == u.serial) u.frameBusy = false;
-            if (_wcsicmp(fm->path.c_str(), g_settings.video.c_str()) == 0) {
+            const bool current = _wcsicmp(fm->path.c_str(), g_settings.video.c_str()) == 0;
+            if (current) {
                 if (!fm->px.empty()) {
                     ForgetScaled();
                     SafeRelease(u.frame);
@@ -6831,6 +6863,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 }
             }
             delete fm;
+            if (!current) UI_Refresh();  // the video changed while this one was being read: the new one's picture now
             InvalidateRect(h, nullptr, FALSE);
             return 0;
         }
@@ -6917,7 +6950,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             ReleaseWallpaper();  // (closed while a frame was being picked)
             if (fnt.players) Player_FreePreview();
             if (fnt.walls) {  // its worker stops; what it had sent is let go
-                Library_Stop();
+                Library_Stop(u.hwnd);
                 MSG msg;
                 while (PeekMessageW(&msg, h, WM_UI_WALL, WM_UI_WALL, PM_REMOVE)) delete (WallpaperInfo*)msg.lParam;
             }
@@ -6931,7 +6964,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             fb.sent.clear();
             StopRecording();
             KillTimer(h, TIMER_STATUS);
-            u.worker.Stop();
+            if (u.worker && u.worker->Stop()) delete u.worker;  // (stuck: it's left to end by itself)
+            u.worker = nullptr;
             {
                 MSG msg;  // (posted and not read: they'd be lost with the window)
                 while (PeekMessageW(&msg, h, WM_UI_WALL, WM_UI_WALL, PM_REMOVE)) delete (WallpaperInfo*)msg.lParam;
@@ -7076,7 +7110,8 @@ void UI_Show() {
     if (!u.hwnd) return;
     u.dpi = (float)GetDpiForWindow(u.hwnd);
     LoadTheme();  // applies the dark title bar now that the window exists
-    u.worker.Start(u.hwnd);
+    u.worker = new Worker;
+    u.worker->Start(u.hwnd);
     RequestFrame();
     SetTimer(u.hwnd, TIMER_STATUS, 1000, nullptr);
     ShowWindow(u.hwnd, SW_SHOWNORMAL);
