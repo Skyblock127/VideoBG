@@ -3686,18 +3686,6 @@ void PaintFontDialog(bool backKept = false) {
     fnt.view = view;
     // A wallpaper held by its grip is drawn last (over the others), under the pointer; rows just moved glide to their places.
     const bool lifting = fnt.walls && u.drag == ID_WALL_GRIP0 && u.wallMove >= 0 && u.wallMove < n;
-    // A soft white fade at an edge with more wallpapers past it (it comes in over the first few DIPs of scrolling).
-    auto wallFades = [&] {
-        if (!fnt.walls || fnt.maxScroll <= 0) return;
-        const float fadeH = 22, peak = t.dark ? 0.16f : 0.9f;
-        auto fade = [&](float y0, float y1, float strength) {
-            if (strength <= 0) return;
-            const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(1, 1, 1, peak * strength)}, {1, D2D1::ColorF(1, 1, 1, 0)}};
-            FillGradient(R(view.left, std::min(y0, y1), view.right, std::max(y0, y1)), 0, D2D1::Point2F(view.left, y0), D2D1::Point2F(view.left, y1), stops, 2);
-        };
-        fade(view.top, view.top + fadeH, std::min(1.f, fnt.scroll / 24));
-        fade(view.bottom, view.bottom - fadeH, std::min(1.f, (fnt.maxScroll - fnt.scroll) / 24));
-    };
     std::vector<int> rows(n);
     for (int i = 0; i < n; i++) rows[i] = i;
     if (lifting) {
@@ -3707,7 +3695,6 @@ void PaintFontDialog(bool backKept = false) {
     for (const int i : rows) {  // all rows, also the ones out of view: Tab goes through them
         float y = view.top - fnt.scroll + i * rowH;
         if (fnt.walls) y = lifting && i == u.wallMove ? WallLiftTop() : y + fnt.shift[i];
-        if (lifting && i == u.wallMove) wallFades();  // (under the row being held)
         if (fnt.langs) {  // a language: its name in English, and in itself
             if (y + rowH <= view.top - rowH || y >= view.bottom + rowH) {  // far out of view: just reachable by Tab
                 AddHit(ID_LANG_ROW0 + i, K_BUTTON, R(0, 0, 0, 0));
@@ -3861,7 +3848,6 @@ void PaintFontDialog(bool backKept = false) {
             Button(ID_FNT_GET0 + i, R(r.right - 12 - 150 - 8 - 96, cy - 16, r.right - 12 - 158, cy + 16), L"Get it", L"\uE8A7");
         }
     }
-    if (!lifting) wallFades();
     u.rt->PopAxisAlignedClip();
     for (size_t h = firstHit; h < u.hits.size(); h++) {  // what's scrolled out of the list can't be clicked
         D2D1_RECT_F& hr = u.hits[h].r;
