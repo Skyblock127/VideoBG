@@ -206,7 +206,7 @@ struct FeedbackPicture {
 };
 struct FeedbackReport {
     bool bug = false;
-    std::wstring text, steps, often, email, system, log;
+    std::wstring text, often, email, system, log;
     std::vector<FeedbackPicture> pictures;
 };
 constexpr size_t kFeedbackPictures = 3;  // pictures a report can carry

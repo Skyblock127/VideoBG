@@ -238,7 +238,6 @@ std::wstring Feedback_Preview(const FeedbackReport& r) {
     std::wstring t = r.bug ? L"Problem report" : L"Feature idea";
     t += L" from VideoBG " APP_VERSION L"\r\n\r\n";
     t += (r.bug ? L"What went wrong:\r\n" : L"Idea:\r\n") + r.text + L"\r\n";
-    if (!r.steps.empty()) t += L"\r\nWhat you were doing:\r\n" + r.steps + L"\r\n";
     if (!r.often.empty()) t += L"\r\nHow often: " + r.often + L"\r\n";
     if (!r.email.empty()) t += L"\r\nReply to: " + r.email + L"\r\n";
     if (!r.system.empty()) t += L"\r\nYour PC and settings:\r\n" + r.system + L"\r\n";
@@ -266,7 +265,6 @@ bool Feedback_Send(const FeedbackReport& r, std::wstring* error) {
     Json(body, "version", APP_VERSION);
     Json(body, "text", r.text);
     if (r.bug) {
-        Json(body, "steps", r.steps);
         Json(body, "often", r.often);
         Json(body, "email", r.email);
         Json(body, "system", r.system);

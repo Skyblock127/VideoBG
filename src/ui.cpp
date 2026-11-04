@@ -43,7 +43,7 @@ enum Id {
     ID_DLG_SCRIM, ID_DLG_TARGET, ID_DLG_SV, ID_DLG_HUE, ID_DLG_HEX, ID_DLG_COPY, ID_DLG_PICK, ID_DLG_SAME, ID_DLG_SAVE,
     ID_DLG_USE, ID_DLG_OK, ID_DLG_CANCEL,
     ID_FNT_YES, ID_FNT_NO, ID_VER_YES, ID_VER_NO,
-    ID_FB_IDEA, ID_FB_BUG, ID_FB_SCRIM, ID_FB_TEXT, ID_FB_STEPS, ID_FB_EMAIL, ID_FB_OFTEN, ID_FB_LOG, ID_FB_PREVIEW, ID_FB_CANCEL,
+    ID_FB_IDEA, ID_FB_BUG, ID_FB_SCRIM, ID_FB_TEXT, ID_FB_EMAIL, ID_FB_OFTEN, ID_FB_LOG, ID_FB_PREVIEW, ID_FB_CANCEL,
     ID_FB_SEND, ID_MEMINFO, ID_FB_PICS, ID_FB_PICS_CLEAR,
     ID_PD_SCRIM, ID_PD_AREA, ID_PD_PREV, ID_PD_NEXT, ID_PD_COLOR, ID_PD_BODY, ID_PD_OPACITY, ID_PD_SIZE, ID_PD_CORNERS, ID_PD_RESET, ID_PD_DONE,
     ID_PD_PICK_COL, ID_PD_PICK_BODY, ID_PD_RST_COL, ID_PD_RST_BODY, ID_PD_RST_OPACITY, ID_PD_RST_SIZE, ID_PD_RST_CORNERS, ID_CLK_PICK, ID_PD_ROTATE, ID_PD_RST_ROTATE,
@@ -330,6 +330,8 @@ struct UI {
     float wallY = 0, wallGrab = 0;  // ...where the pointer is, and where it took the row (from its top)
     float wallPressY = 0, wallPressScroll = 0;  // a row pressed: a drag scrolls the list
     bool wallScrolled = false;
+    double wallStepAt = 0, wallEdgeSince = 0;   // the list's last step (seconds); since when the held row has been at its edge
+    ID2D1Bitmap* wallBack = nullptr;            // the page under the list, kept while something in the list moves
     bool songMoving = false, songMoved = false;
     float songPressY = 0, songPressScroll = 0, songY = 0, songGrab = 0;
     int songIns = 0;           // moving: the place it would land
@@ -523,6 +525,7 @@ void ReleaseTarget() {
     SafeRelease(u.clockBmp);
     SafeRelease(u.still);
     SafeRelease(u.logo);
+    SafeRelease(u.wallBack);
     ReleasePlayerPicture();  // (made on this target: made again on the next)
     SafeRelease(u.br);
     SafeRelease(u.dc);
@@ -1531,9 +1534,10 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
         const bool hot = n && IsHot(ID_MUSIC_HEAD);
         Text(L"Playlist", hr, u.fHeader, hot ? t.accentHover : t.text);
         AddHit(ID_MUSIC_HEAD, K_BUTTON, hr, n > 0);
+        if (n) Text(Fmt(L"%zu song%ls", n, n == 1 ? L"" : L"s"), R(hr.right + 10, top + 16, x + w - kPad - 330, top + 40), u.fSmall, t.text2);
     }
-    if (u.searchOn) {  // the search box, across the heading: it only scrolls to the best match
-        const D2D1_RECT_F sb = R(x + kPad + 126, top + 12, x + w - kPad, top + 44);
+    if (u.searchOn) {  // the search box, from its button rightwards: it only scrolls to the best match
+        const D2D1_RECT_F sb = R(x + w - kPad - 322, top + 12, x + w - kPad, top + 44);
         Fill(sb, t.ctrl, 6);
         Stroke(sb, u.focus == ID_MUSIC_SEARCH || u.focus == 0 ? t.accent : t.ctrlStroke, 6);
         Text(L"\uE721", R(sb.left + 10, sb.top, sb.left + 28, sb.bottom), u.fIconSmall, t.text2);
@@ -1551,8 +1555,6 @@ void PaintPlaylist(float x, float w, float top, float bottom) {
         IconButton(ID_MUSIC_SEARCH, right - 280 - 26, top + 28, 16, L"\uE721", false, n > 0);
         Button(ID_MUSIC_ADD, R(right - 148 - 8 - 124, top + 12, right - 156, top + 44), L"Add songs", L"\uE710", false);
         Button(ID_MUSIC_PICK, R(right - 148, top + 12, right, top + 44), L"Choose songs", L"\uE8D6", true);
-        const std::wstring count = n ? Fmt(L"%zu song%ls", n, n == 1 ? L"" : L"s") : L"";
-        Text(count, R(x + kPad + 126, top + 16, right - 330, top + 40), u.fSmall, t.text2);
     }
     const D2D1_RECT_F view = R(x + 8, top + kCardHead + 8, x + w - 8, bottom - 8);
     u.songView = view;
@@ -1784,8 +1786,8 @@ struct FeedbackUI {
     std::wstring note;                     // the bottom bar: why it wasn't sent
     std::wstring sent;                     // on the page for a few seconds once sent
     DWORD sentAt = 0;
-    std::wstring idea, what, doing, mail, howOften;  // drafts, kept while VideoBG runs (Cancel doesn't lose them)
-    D2D1_RECT_F boxText{}, boxSteps{}, boxEmail{}, boxOften{};
+    std::wstring idea, what, mail, howOften;  // drafts, kept while VideoBG runs (Cancel doesn't lose them)
+    D2D1_RECT_F boxText{}, boxEmail{}, boxOften{};
     D2D1_RECT_F picsButton{}, strip{};      // adding pictures; the strip that shows them (once there are some)
     float picScroll = 0, picMax = 0;        // the strip, scrolled sideways
     std::vector<FeedbackPicture> pictures;  // screenshots for it (added, or pasted with Ctrl+V)
@@ -1799,37 +1801,32 @@ std::wstring FbGet(HWND e) {
     return a == std::wstring::npos ? L"" : t.substr(a, b - a + 1);
 }
 
-bool FbBox(int id) { return id == ID_FB_TEXT || id == ID_FB_STEPS || id == ID_FB_OFTEN || id == ID_FB_EMAIL; }
+bool FbBox(int id) { return id == ID_FB_TEXT || id == ID_FB_OFTEN || id == ID_FB_EMAIL; }
 HWND FbEditFor(int id) {
-    return id == ID_FB_TEXT ? fb.text : id == ID_FB_STEPS ? fb.steps : id == ID_FB_OFTEN ? fb.often : id == ID_FB_EMAIL ? fb.email : nullptr;
+    return id == ID_FB_TEXT ? fb.text : id == ID_FB_OFTEN ? fb.often : id == ID_FB_EMAIL ? fb.email : nullptr;
 }
 
 // The dialog (DIPs), and its text boxes.
 constexpr float kFbStripH = 86;  // the pictures' strip (72 DIP tall pictures)
 
 D2D1_RECT_F FeedbackLayout() {
-    const float base = fb.bug ? 548 : 376, strip = fb.pictures.empty() ? 0 : kFbStripH, W = kDialogW, L = (kW - W) / 2;
+    const float base = fb.bug ? 482 : 376, strip = fb.pictures.empty() ? 0 : kFbStripH, W = kDialogW, L = (kW - W) / 2;
     const float H = std::min(base + strip, kH - 24), squeeze = base + strip - H;  // (a short window: the text boxes give up the room)
     float T = std::max(12.f, (kH - base) / 2);
     if (T + H > kH - 12) T = std::max(12.f, kH - 12 - H);  // it grows down, as far as there's room
     float y = T + 84;
-    if (!fb.bug) {
-        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 144 - squeeze);
-        fb.boxSteps = fb.boxEmail = R(0, 0, 0, 0);
-        fb.picsButton = R(L + 24, fb.boxText.bottom + 14, L + 164, fb.boxText.bottom + 46);
-        y = fb.picsButton.bottom;
-    } else {
-        const float textCut = std::min(squeeze, 40.f);
-        fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + 96 - textCut);
-        y = fb.boxText.bottom + 14;
-        fb.boxSteps = R(L + 24, y + 24, L + W - 24, y + 24 + 64 - (squeeze - textCut));
-        fb.boxOften = R(L + W - 24 - 330, fb.boxSteps.bottom + 14, L + W - 24, fb.boxSteps.bottom + 14 + 32);
-        y = fb.boxSteps.bottom + 14 + 32 + 14 + 28 + 14;
-        fb.boxEmail = R(L + 24, y + 24, L + 24 + 320, y + 24 + 32);
-        fb.picsButton = R(L + 356, fb.boxEmail.top, L + 496, fb.boxEmail.bottom);
-        y = fb.boxEmail.bottom;
-    }
+    // What happened, with its pictures under it; a problem report then has its details in rows.
+    fb.boxText = R(L + 24, y + 24, L + W - 24, y + 24 + (fb.bug ? 120 : 144) - squeeze);
+    fb.picsButton = R(L + 24, fb.boxText.bottom + 14, L + 164, fb.boxText.bottom + 46);
+    y = fb.picsButton.bottom;
     fb.strip = strip ? R(L + 24, y + 12, L + W - 24, y + 12 + 72) : R(0, 0, 0, 0);
+    if (strip) y = fb.strip.bottom + 2;
+    fb.boxOften = fb.boxEmail = R(0, 0, 0, 0);
+    if (fb.bug) {
+        const float boxL = L + W - 24 - 330;
+        fb.boxOften = R(boxL, y + 14, L + W - 24, y + 14 + 32);
+        fb.boxEmail = R(boxL, fb.boxOften.bottom + 10, L + W - 24, fb.boxOften.bottom + 10 + 32);
+    }
     return R(L, T, L + W, T + H);
 }
 
@@ -1850,7 +1847,6 @@ void FbPlaceEdits() {
         FbFitScroll(e);
     };
     place(fb.text, fb.boxText, true);
-    place(fb.steps, fb.boxSteps, true);
     place(fb.often, fb.boxOften, false);
     place(fb.email, fb.boxEmail, false);
 }
@@ -3039,7 +3035,7 @@ void WallsMove(int from, int to) {
     fnt.shift.insert(fnt.shift.begin() + to, was + (from - to) * rowH);
     for (int j = std::min(from, to + 1); j <= std::max(from, to - 1); j++)
         if (j != to) fnt.shift[j] += from < to ? rowH : -rowH;
-    SetTimer(u.hwnd, TIMER_SCROLL, 15, nullptr);
+    InvalidateRect(u.hwnd, nullptr, FALSE);
     if ((int)fnt.samples.size() == n) {
         ID2D1Bitmap* b = fnt.samples[from];
         fnt.samples.erase(fnt.samples.begin() + from);
@@ -3056,7 +3052,7 @@ void WallsSave() {
     SaveWallpapers(list);
 }
 
-// The grip dragged: the row follows the pointer's place in the list (near its edges the list scrolls).
+// The grip dragged: the row follows the pointer's place in the list (WallsStep scrolls it near its edges).
 // Where the row held by its grip is drawn: under the pointer, inside the list.
 float WallLiftTop() { return std::clamp(u.wallY - u.wallGrab, fnt.view.top, fnt.view.bottom - PickerRowH()); }
 
@@ -3070,8 +3066,109 @@ void WallsDrag(float y) {
         WallsMove(u.wallMove, at);
         u.wallMove = at;
     }
-    if (y < fnt.view.top + 24) FontScrollTo(fnt.target - 18, true);
-    else if (y > fnt.view.bottom - 24) FontScrollTo(fnt.target + 18, true);
+}
+
+// How far past the list's edge zone the held row is (-2..2, 0: not near an edge).
+float WallsEdgeDepth() {
+    if (u.drag != ID_WALL_GRIP0) return 0;
+    const float zone = 24, top = u.wallY - u.wallGrab, bottom = top + PickerRowH();
+    const float depth = top < fnt.view.top + zone ? (top - fnt.view.top - zone) / zone
+                        : bottom > fnt.view.bottom - zone ? (bottom - fnt.view.bottom + zone) / zone : 0;
+    if ((depth < 0 && fnt.target <= 0) || (depth > 0 && fnt.target >= fnt.maxScroll)) return 0;  // (nowhere to go)
+    return std::clamp(depth, -2.f, 2.f);
+}
+
+// Something in the list is still moving: it's drawn again as soon as the screen can show it.
+bool WallsMoving() {
+    if (!fnt.open || !fnt.walls) return false;
+    if (std::abs(fnt.target - fnt.scroll) > 0.5f || WallsEdgeDepth() != 0) return true;
+    return std::any_of(fnt.shift.begin(), fnt.shift.end(), [](float d) { return d != 0; });
+}
+
+// One step of what moves in the list, by the real time gone, so it's even whatever the frame rate: the
+// held row near an edge scrolls the list (slowly at first, faster the further, as the songs do), the
+// wheel's glide, and rows gliding to their new places.
+void WallsStep() {
+    LARGE_INTEGER f, c;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    const double now = (double)c.QuadPart / f.QuadPart, gap = now - u.wallStepAt;
+    const float dt = gap > 0.1 ? 1 / 60.f : (float)gap;  // (after a rest, one frame's worth)
+    u.wallStepAt = now;
+    if (u.drag == ID_WALL_GRIP0) {
+        if (const float depth = WallsEdgeDepth()) {
+            if (!u.wallEdgeSince) u.wallEdgeSince = now;
+            const float ease = std::min(1.f, (float)(now - u.wallEdgeSince) / 0.5f);
+            fnt.target = std::clamp(fnt.target + depth * fabsf(depth) * 560 * ease * dt, 0.f, fnt.maxScroll);
+            fnt.scroll = fnt.target;
+        } else {
+            u.wallEdgeSince = 0;
+        }
+        WallsDrag(u.wallY);
+    }
+    const float keep = expf(-dt * 24);  // (what's left of a distance after this step)
+    fnt.scroll = fnt.target + (fnt.scroll - fnt.target) * keep;
+    if (std::abs(fnt.target - fnt.scroll) <= 0.5f) fnt.scroll = fnt.target;
+    for (float& d : fnt.shift) {
+        d *= keep;
+        if (std::abs(d) < 0.5f) d = 0;
+    }
+}
+
+// A wallpaper's picture, scaled once to the size it's shown and with its corners rounded: after that it's a
+// plain copy, so rows that move cost next to nothing on this (software) target.
+void MakeWallPicture(int i, const WallRow& wr, float bw, float bh) {
+    fnt.tried[i] = true;
+    if (wr.thumb.empty()) return;
+    const float k = u.dpi / 96;
+    const UINT32 pw = (UINT32)lroundf(bw * k), ph = (UINT32)lroundf(bh * k);
+    ID2D1Bitmap* from = nullptr;
+    D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+    u.rt->CreateBitmap(D2D1::SizeU((UINT32)wr.tw, (UINT32)wr.th), wr.thumb.data(), (UINT32)wr.tw * 4, &bp, &from);
+    ID2D1BitmapRenderTarget* brt = nullptr;
+    if (from && SUCCEEDED(u.rt->CreateCompatibleRenderTarget(D2D1::SizeF(bw, bh), D2D1::SizeU(pw, ph),
+                                                             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), &brt))) {
+        // The middle of the picture, filling its box.
+        const D2D1_SIZE_F sz = from->GetSize();
+        const float s = std::max(bw / sz.width, bh / sz.height), sw = bw / s, sh = bh / s;
+        const D2D1_RECT_F src = R((sz.width - sw) / 2, (sz.height - sh) / 2, (sz.width + sw) / 2, (sz.height + sh) / 2), all = R(0, 0, bw, bh);
+        ID2D1RoundedRectangleGeometry* round = nullptr;
+        D2D1_ROUNDED_RECT rr{all, 5, 5};
+        u.d2d->CreateRoundedRectangleGeometry(&rr, &round);
+        ID2D1DeviceContext* bdc = nullptr;
+        brt->QueryInterface(__uuidof(ID2D1DeviceContext), (void**)&bdc);
+        brt->BeginDraw();
+        D2D1_COLOR_F none = D2D1::ColorF(0, 0, 0, 0);
+        brt->Clear(&none);
+        D2D1_LAYER_PARAMETERS lp = D2D1::LayerParameters(D2D1::InfiniteRect(), round);
+        brt->PushLayer(&lp, nullptr);
+        if (bdc) bdc->DrawBitmap(from, &all, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
+        else brt->DrawBitmap(from, &all, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &src);
+        brt->PopLayer();
+        if (SUCCEEDED(brt->EndDraw())) brt->GetBitmap(&fnt.samples[i]);
+        SafeRelease(bdc);
+        SafeRelease(round);
+        SafeRelease(brt);
+    }
+    SafeRelease(from);
+}
+
+// The page under the list, as it is now (with its dimming), for the frames when only the list changes.
+void KeepWallBack() {
+    const D2D1_SIZE_U px = u.rt->GetPixelSize();
+    if (u.wallBack) {
+        const D2D1_SIZE_U have = u.wallBack->GetPixelSize();
+        if (have.width != px.width || have.height != px.height) SafeRelease(u.wallBack);
+    }
+    if (!u.wallBack) {
+        D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), u.dpi, u.dpi);
+        u.rt->CreateBitmap(px, nullptr, 0, &bp, &u.wallBack);
+    }
+    if (u.wallBack) {
+        D2D1_POINT_2U at = D2D1::Point2U(0, 0);
+        D2D1_RECT_U all = D2D1::RectU(0, 0, px.width, px.height);
+        if (FAILED(u.wallBack->CopyFromRenderTarget(&at, u.rt, &all))) SafeRelease(u.wallBack);
+    }
 }
 
 // Takes a wallpaper off the list (the file stays where it is).
@@ -3319,6 +3416,7 @@ void CloseFontDialog() {
         g_walls.clear();
     }
     fnt.open = false;
+    SafeRelease(u.wallBack);
     Clock_ReleasePainter();  // the samples' fonts
 }
 
@@ -3507,9 +3605,12 @@ void EnsureFontSample(int i, float maxW, float maxH) {
     fnt.sizes[i] = D2D1::SizeF(img.w / k, img.h / k);
 }
 
-void PaintFontDialog() {
+void PaintFontDialog(bool backKept = false) {
     const Theme& t = u.th;
-    Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
+    if (!backKept) {
+        Fill(R(0, 0, kW, kH), D2D1::ColorF(0, 0, 0, t.dark ? 0.5f : 0.3f));
+        if (fnt.walls) KeepWallBack();
+    }
     AddHit(ID_FNT_SCRIM, K_AREA, R(0, 0, kW, kH));  // the page underneath can't be used meanwhile
     const int n = PickerRows();
     const float rowH = PickerRowH(), W = kDialogW, content = n * rowH;
@@ -3551,6 +3652,11 @@ void PaintFontDialog() {
     fnt.maxScroll = std::max(0.f, content - listH);
     fnt.scroll = std::clamp(fnt.scroll, 0.f, fnt.maxScroll);
     fnt.target = std::clamp(fnt.target, 0.f, fnt.maxScroll);
+    if (fnt.walls) {
+        if ((int)fnt.shift.size() != n) fnt.shift.assign(n, 0.f);
+        fnt.view = view;
+        WallsStep();
+    }
     const float barW = fnt.maxScroll > 0 ? 14 : 0;
     // The styles' names and what they are take the room their longest needs; a sample gets the rest.
     float nameW = 120;
@@ -3570,7 +3676,18 @@ void PaintFontDialog() {
     fnt.view = view;
     // A wallpaper held by its grip is drawn last (over the others), under the pointer; rows just moved glide to their places.
     const bool lifting = fnt.walls && u.drag == ID_WALL_GRIP0 && u.wallMove >= 0 && u.wallMove < n;
-    if (fnt.walls && (int)fnt.shift.size() != n) fnt.shift.assign(n, 0.f);
+    // A soft white fade at an edge with more wallpapers past it (it comes in over the first few DIPs of scrolling).
+    auto wallFades = [&] {
+        if (!fnt.walls || fnt.maxScroll <= 0) return;
+        const float fadeH = 22, peak = t.dark ? 0.16f : 0.9f;
+        auto fade = [&](float y0, float y1, float strength) {
+            if (strength <= 0) return;
+            const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(1, 1, 1, peak * strength)}, {1, D2D1::ColorF(1, 1, 1, 0)}};
+            FillGradient(R(view.left, std::min(y0, y1), view.right, std::max(y0, y1)), 0, D2D1::Point2F(view.left, y0), D2D1::Point2F(view.left, y1), stops, 2);
+        };
+        fade(view.top, view.top + fadeH, std::min(1.f, fnt.scroll / 24));
+        fade(view.bottom, view.bottom - fadeH, std::min(1.f, (fnt.maxScroll - fnt.scroll) / 24));
+    };
     std::vector<int> rows(n);
     for (int i = 0; i < n; i++) rows[i] = i;
     if (lifting) {
@@ -3580,6 +3697,7 @@ void PaintFontDialog() {
     for (const int i : rows) {  // all rows, also the ones out of view: Tab goes through them
         float y = view.top - fnt.scroll + i * rowH;
         if (fnt.walls) y = lifting && i == u.wallMove ? WallLiftTop() : y + fnt.shift[i];
+        if (lifting && i == u.wallMove) wallFades();  // (under the row being held)
         if (fnt.langs) {  // a language: its name in English, and in itself
             if (y + rowH <= view.top - rowH || y >= view.bottom + rowH) {  // far out of view: just reachable by Tab
                 AddHit(ID_LANG_ROW0 + i, K_BUTTON, R(0, 0, 0, 0));
@@ -3606,6 +3724,12 @@ void PaintFontDialog() {
             WallRow& wr = g_walls[i];
             const D2D1_RECT_F r = R(L + 16, y + 3, L + W - 16 - barW, y + rowH - 3);
             const bool cur = SamePath(wr.play, g_settings.video), hot = IsHot(ID_FNT_ROW0 + i);
+            if (r.bottom < view.top || r.top > view.bottom) {  // out of view: only what Tab needs
+                AddHit(ID_FNT_ROW0 + i, K_BUTTON, r);
+                if (!cur) AddHit(ID_FNT_DEL0 + i, K_BUTTON, R(r.right - 84, r.top, r.right - 52, r.bottom));
+                AddHit(ID_WALL_GRIP0 + i, K_AREA, R(r.right - 44, r.top, r.right - 4, r.bottom));
+                continue;
+            }
             if (lifting && i == u.wallMove) {  // held up over the rest
                 Fill(R(r.left, r.top + 2, r.right, r.bottom + 4), D2D1::ColorF(0, 0, 0, 0.25f), 7);
                 Fill(r, face, 6);
@@ -3618,20 +3742,14 @@ void PaintFontDialog() {
             }
             AddHit(ID_FNT_ROW0 + i, K_BUTTON, r);
             const D2D1_RECT_F pic = R(r.left + 10, r.top + 8, r.left + 10 + (r.bottom - r.top - 16) * 16 / 9, r.bottom - 8);
-            if (!fnt.samples[i] && !fnt.tried[i] && !wr.thumb.empty()) {
-                fnt.tried[i] = true;
-                D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
-                u.rt->CreateBitmap(D2D1::SizeU((UINT32)wr.tw, (UINT32)wr.th), wr.thumb.data(), (UINT32)wr.tw * 4, &bp, &fnt.samples[i]);
-            }
-            Fill(pic, Mix(face, t.text, 0.08f), 5);
-            if (fnt.samples[i]) {  // the middle of the picture, filling its box
-                const D2D1_SIZE_F sz = fnt.samples[i]->GetSize();
-                const float bw = pic.right - pic.left, bh = pic.bottom - pic.top, s = std::max(bw / sz.width, bh / sz.height);
-                const float sw = bw / s, sh = bh / s;
-                ID2D1RoundedRectangleGeometry* pclip = PushRounded(pic, 5);
-                const D2D1_RECT_F src = R((sz.width - sw) / 2, (sz.height - sh) / 2, (sz.width + sw) / 2, (sz.height + sh) / 2);
-                u.dc->DrawBitmap(fnt.samples[i], &pic, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &src, nullptr);
-                PopRounded(pclip);
+            if (!fnt.samples[i] && !fnt.tried[i]) MakeWallPicture(i, wr, pic.right - pic.left, pic.bottom - pic.top);
+            if (fnt.samples[i]) {  // 1:1 on whole pixels
+                const D2D1_SIZE_U px = fnt.samples[i]->GetPixelSize();
+                const float x0 = roundf(pic.left * k) / k, y0 = roundf(pic.top * k) / k;
+                D2D1_RECT_F dst = R(x0, y0, x0 + px.width / k, y0 + px.height / k);
+                u.rt->DrawBitmap(fnt.samples[i], &dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr);
+            } else {
+                Fill(pic, Mix(face, t.text, 0.08f), 5);
             }
             const float tx = pic.right + 14, cy = (r.top + r.bottom) / 2;
             Text(SongName(wr.path), R(tx, cy - 22, r.right - 160, cy), u.fStrong, t.text);
@@ -3733,6 +3851,7 @@ void PaintFontDialog() {
             Button(ID_FNT_GET0 + i, R(r.right - 12 - 150 - 8 - 96, cy - 16, r.right - 12 - 158, cy + 16), L"Get it", L"\uE8A7");
         }
     }
+    if (!lifting) wallFades();
     u.rt->PopAxisAlignedClip();
     for (size_t h = firstHit; h < u.hits.size(); h++) {  // what's scrolled out of the list can't be clicked
         D2D1_RECT_F& hr = u.hits[h].r;
@@ -3940,23 +4059,7 @@ void PaintFeedbackDialog() {
         Stroke(r, focused ? t.accent : t.ctrlStroke, 4, focused ? 2.f : 1.f);
         AddHit(id, K_AREA, r);
     };
-    box(ID_FB_TEXT, fb.boxText, fb.text, fb.bug ? L"What went wrong?" : L"What would you like VideoBG to do?");
-    if (fb.bug) {
-        box(ID_FB_STEPS, fb.boxSteps, fb.steps, L"What were you doing when it happened? (optional)");
-        float y = fb.boxSteps.bottom + 14;
-        Text(L"How often does it happen?", R(L + 24, y, L + 260, y + 32), u.fBody, t.text);
-        {  // typed in: once, now and then, every time I...
-            const bool focused = fb.often && GetFocus() == fb.often;
-            Fill(fb.boxOften, face, 4);
-            Stroke(fb.boxOften, focused ? t.accent : t.ctrlStroke, 4, focused ? 2.f : 1.f);
-            AddHit(ID_FB_OFTEN, K_AREA, fb.boxOften);
-        }
-        y += 32 + 14;
-        Toggle(ID_FB_LOG, L + 24, y + 14, fb.withLog);
-        Text(L"Include VideoBG's log (it helps find the cause)", R(L + 76, y, L + W - 24 - 130, y + 28), u.fBody, t.text);
-        Link(ID_FB_PREVIEW, R(L + W - 24 - 130, y + 5, L + W - 24, y + 23), L"See what's sent");
-        box(ID_FB_EMAIL, fb.boxEmail, fb.email, L"Your email, if you'd like a reply (optional)");
-    }
+    box(ID_FB_TEXT, fb.boxText, fb.text, fb.bug ? L"What went wrong, and what were you doing when it happened?" : L"What would you like VideoBG to do?");
     // Pictures: added from files, or a screenshot pasted into a text box; then shown in a strip under
     // the rest, each with a cross that takes it out (the strip scrolls sideways if they don't fit).
     {
@@ -3964,7 +4067,7 @@ void PaintFeedbackDialog() {
         const size_t n = fb.pictures.size();
         Button(ID_FB_PICS, b, L"Add pictures", L"\uEB9F", false, n < kFeedbackPictures && !fb.sending);
         float px = b.right + 12;
-        if (n && !fb.bug) {
+        if (n) {
             const std::wstring count = Fmt(L"%zu of %zu", n, kFeedbackPictures);
             Text(count, R(px, b.top, px + 60, b.bottom), u.fSmall, t.text2);
             px += TextWidth(count, u.fSmall) + 14;
@@ -3975,7 +4078,7 @@ void PaintFeedbackDialog() {
                 px += 90;
             }
         }
-        if (!fb.bug) Text(L"or paste a screenshot into the box (Ctrl+V)", R(px, b.top, L + W - 24, b.bottom), u.fSmall, t.text2);
+        Text(L"or paste a screenshot into the box (Ctrl+V)", R(px, b.top, L + W - 24, b.bottom), u.fSmall, t.text2);
         if (n) {
             const D2D1_RECT_F& s = fb.strip;
             float total = 0;
@@ -4015,6 +4118,22 @@ void PaintFeedbackDialog() {
                 if (hr.right <= hr.left) hr = R(0, 0, 0, 0);
             }
         }
+    }
+    // A problem report's details: a label on the left, its control on the right.
+    if (fb.bug) {
+        auto row = [&](int id, const D2D1_RECT_F& r, HWND edit, const wchar_t* label) {
+            Text(label, R(L + 24, r.top, r.left - 12, r.bottom), u.fBody, t.text);
+            const bool focused = edit && GetFocus() == edit;
+            Fill(r, face, 4);
+            Stroke(r, focused ? t.accent : t.ctrlStroke, 4, focused ? 2.f : 1.f);
+            AddHit(id, K_AREA, r);
+        };
+        row(ID_FB_OFTEN, fb.boxOften, fb.often, L"How often does it happen?");
+        row(ID_FB_EMAIL, fb.boxEmail, fb.email, L"Your email, for a reply (optional)");
+        const float y = fb.boxEmail.bottom + 10, right = L + W - 24, lw = TextWidth(L"See what's sent", u.fSmall) + 4;
+        Text(L"Include VideoBG's log (it helps find the cause)", R(L + 24, y, right - 40 - 12 - lw - 12, y + 28), u.fBody, t.text);
+        Link(ID_FB_PREVIEW, R(right - 40 - 12 - lw, y + 5, right - 40 - 12, y + 23), L"See what's sent");
+        Toggle(ID_FB_LOG, right - 40, y + 14, fb.withLog);
     }
     const float by = T + H - 48;
     const bool canSend = !fb.sending && FbGet(fb.text).size() >= 3;
@@ -4065,6 +4184,11 @@ void PaintLookTip() {
 }
 
 void PaintMain() {
+    if (u.wallBack && WallsMoving()) {  // (only the list changes: the page and its dimming as they were)
+        u.rt->DrawBitmap(u.wallBack, nullptr, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, nullptr);
+        PaintFontDialog(true);
+        return;
+    }
     PaintHeader();
     PaintSidebar();
     const float x = kContentX, w = kW - 24 - kContentX;
@@ -5308,11 +5432,10 @@ void CloseFeedback() {
     if (!fb.open) return;
     (fb.bug ? fb.what : fb.idea) = FbGet(fb.text);  // kept for next time
     if (fb.bug) {
-        fb.doing = FbGet(fb.steps);
         fb.mail = FbGet(fb.email);
         fb.howOften = FbGet(fb.often);
     }
-    for (HWND* e : {&fb.text, &fb.steps, &fb.often, &fb.email})
+    for (HWND* e : {&fb.text, &fb.often, &fb.email})
         if (*e) {
             DestroyWindow(*e);
             *e = nullptr;
@@ -5448,7 +5571,6 @@ void OpenFeedback(bool bug) {
     fb.brush = CreateSolidBrush(fb.face);
     fb.text = FbEdit(ID_FB_TEXT, fb.boxText, true, bug ? fb.what : fb.idea);
     if (bug) {
-        fb.steps = FbEdit(ID_FB_STEPS, fb.boxSteps, true, fb.doing);
         fb.often = FbEdit(ID_FB_OFTEN, fb.boxOften, false, fb.howOften);
         if (fb.often) {
             SendMessageW(fb.often, EM_SETLIMITTEXT, 40, 0);
@@ -5510,7 +5632,6 @@ FeedbackReport FeedbackCollect() {
     r.bug = fb.bug;
     r.text = FbGet(fb.text);
     if (fb.bug) {
-        r.steps = FbGet(fb.steps);
         r.email = FbGet(fb.email);
         r.often = FbGet(fb.often);
         r.system = FeedbackSystem();
@@ -6146,6 +6267,7 @@ bool OnKeyInner(UINT vk) {
             WallsMove(i, to);
             WallsSave();
             u.focus = u.hot = ID_FNT_ROW0 + to;
+            FontScrollToFocus();
         }
         InvalidateRect(u.hwnd, nullptr, FALSE);
         return true;
@@ -6280,6 +6402,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             BeginPaint(h, &ps);
             Paint();
             EndPaint(h, &ps);
+            if (WallsMoving()) {  // the next frame, on the screen's next refresh
+                DwmFlush();
+                InvalidateRect(h, nullptr, FALSE);
+            }
             return 0;
         }
         case WM_ERASEBKGND: return 1;
@@ -6444,6 +6570,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 u.wallMove = ht->id - ID_WALL_GRIP0;
                 u.wallY = y;
                 u.wallGrab = y - (fnt.view.top - fnt.scroll + u.wallMove * PickerRowH());
+                u.wallEdgeSince = 0;
                 InvalidateRect(h, nullptr, FALSE);
                 return 0;
             }
@@ -6530,7 +6657,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 if (u.wallMove >= 0 && u.wallMove < (int)g_walls.size()) {
                     fnt.shift.resize(g_walls.size(), 0.f);  // (from under the pointer into its place)
                     fnt.shift[u.wallMove] = WallLiftTop() - (fnt.view.top - fnt.scroll + u.wallMove * PickerRowH());
-                    SetTimer(h, TIMER_SCROLL, 15, nullptr);
+                    fnt.target = fnt.scroll;
                     WallsSave();
                     Log(L"ui: %ls moved to place %d", g_walls[u.wallMove].path.c_str(), u.wallMove + 1);
                 }
@@ -6640,17 +6767,15 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 KillTimer(h, TIMER_SHARPEN);
                 InvalidateRect(h, nullptr, FALSE);
             }
-            if (w == TIMER_SCROLL) {  // ease towards the target: a third of the way each frame (and moved rows to their places)
-                fnt.scroll += (fnt.target - fnt.scroll) * 0.3f;
-                const bool there = std::abs(fnt.target - fnt.scroll) < 0.5f;
-                if (there) fnt.scroll = fnt.target;
-                bool gliding = false;
-                for (float& d : fnt.shift) {
-                    d *= 0.7f;
-                    if (std::abs(d) < 0.5f) d = 0;
-                    else gliding = true;
+            if (w == TIMER_SCROLL) {  // ease towards the target: a third of the way each frame
+                if (fnt.open && fnt.walls) {  // (Your wallpapers moves frame by frame by itself: WallsStep)
+                    KillTimer(h, TIMER_SCROLL);
+                } else {
+                    fnt.scroll += (fnt.target - fnt.scroll) * 0.3f;
+                    const bool there = std::abs(fnt.target - fnt.scroll) < 0.5f;
+                    if (there) fnt.scroll = fnt.target;
+                    if (!fnt.open || there) KillTimer(h, TIMER_SCROLL);
                 }
-                if (!fnt.open || (there && !gliding)) KillTimer(h, TIMER_SCROLL);
                 InvalidateRect(h, nullptr, FALSE);
             }
             return 0;
@@ -6743,11 +6868,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             fb.sending = false;
             if (ok) {
                 if (fb.open && fb.bug == bug) {
-                    for (HWND e : {fb.text, fb.steps, fb.often, fb.email})
+                    for (HWND e : {fb.text, fb.often, fb.email})
                         if (e) SetWindowTextW(e, L"");
                     CloseFeedback();
                 }
-                if (bug) fb.what.clear(), fb.doing.clear(), fb.howOften.clear();
+                if (bug) fb.what.clear(), fb.howOften.clear();
                 else fb.idea.clear();
                 fb.pictures.clear();
                 fb.sent = L"Thanks, it's sent!";
