@@ -926,31 +926,32 @@ void Orbit(Canvas& cv, const ClockLook&, const SYSTEMTIME&, const Says& s, float
 }
 
 // Flip: the hours and minutes on split-flap tiles, each number cut across the middle with its halves
-// on the two flaps; at a new minute the top flap falls over (g_flip). AM/PM in the corner; the day
+// on the two flaps (pulled apart by the gap between them, so nothing of it is hidden); at a new minute the top flap falls over (g_flip). AM/PM in the corner; the day
 // and date under them.
 void FlipTile(Canvas& cv, float x0, float W, float H, float u, const std::wstring& now, const std::wstring& was, float p) {
     const float split = 3 * u, px = 84 * u, cap = P.faces[F_ORBITRON].cap * px, half = H / 2 - split / 2;
     p *= p;  // it falls: faster as it goes
     const D2D1_RECT_F upper = D2D1::RectF(x0 - u, -H / 2 - u, x0 + W + u, -split / 2), lower = D2D1::RectF(x0 - u, split / 2, x0 + W + u, H / 2 + u);
-    auto flap = [&](const std::wstring& digits, D2D1_RECT_F clip, float squash, float a) {
+    const float up = -split / 2, down = split / 2;  // a half's number moved off the cut, to its flap's edge
+    auto flap = [&](const std::wstring& digits, D2D1_RECT_F clip, float squash, float a, float dy) {
         const size_t from = cv.items.size();
         cv.Rect(D2D1::RectF(x0, -H / 2, x0 + W, H / 2), 20 * u, a);
-        Put(cv, digits, F_ORBITRON, px, 0, x0 + W / 2, -cap / 2, 0, 1);
+        Put(cv, digits, F_ORBITRON, px, 0, x0 + W / 2, -cap / 2 + dy, 0, 1);
         cv.Fold(from, clip, 0, squash);
     };
     if (p >= 1 || now == was) {
-        flap(now, upper, 1, 0.18f);
-        flap(now, lower, 1, 0.18f);
+        flap(now, upper, 1, 0.18f, up);
+        flap(now, lower, 1, 0.18f, down);
     } else if (p < 0.5f) {  // the top flap (the number before) folds down; the new number's top shows above it
         const float s = cosf(p * kPi);
-        flap(now, D2D1::RectF(upper.left, upper.top, upper.right, -split / 2 - half * s), 1, 0.18f);
-        flap(was, upper, s, 0.18f + 0.1f * (1 - s));  // (lit as it turns towards you)
-        flap(was, lower, 1, 0.18f);
+        flap(now, D2D1::RectF(upper.left, upper.top, upper.right, -split / 2 - half * s), 1, 0.18f, up);
+        flap(was, upper, s, 0.18f + 0.1f * (1 - s), up);  // (lit as it turns towards you)
+        flap(was, lower, 1, 0.18f, down);
     } else {  // and comes down over the bottom half: the new number's bottom
         const float s = -cosf(p * kPi);
-        flap(now, upper, 1, 0.18f);
-        flap(was, D2D1::RectF(lower.left, split / 2 + half * s, lower.right, lower.bottom), 1, 0.18f);
-        flap(now, lower, s, 0.18f + 0.1f * (1 - s));
+        flap(now, upper, 1, 0.18f, up);
+        flap(was, D2D1::RectF(lower.left, split / 2 + half * s, lower.right, lower.bottom), 1, 0.18f, down);
+        flap(now, lower, s, 0.18f + 0.1f * (1 - s), down);
     }
 }
 
