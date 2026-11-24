@@ -270,7 +270,7 @@ struct Picker {
     UINT seekKeyMs = 0;               // the arrows' last seek (held, they go on from there, not from where the song last said)
     ULONGLONG seekKeyAt = 0;
     int menuFocus = -1;               // the Settings menu's keyboard focus (an item), -1 none
-    int actFocus = -1, verFocus = 0;  // the card's buttons' keyboard focus (0 bin, 1 versions, 2 crop; -1 none), and the versions' row
+    int actFocus = -1, verFocus = 0;  // the card's buttons' keyboard focus (0 versions, 1 crop, 2 the bin; -1 none), and the versions' row
     std::wstring search;              // what's typed in it
     int searchHit = -1;               // the song that matches it best
     ID2D1Bitmap* player = nullptr;    // the desktop player's style, as it looks (redrawn while it turns)
@@ -2163,9 +2163,8 @@ void DrawMusicEditPanel(float a) {
             Stroke(R(f.left - 7, f.top - 2, f.right + 7, f.bottom + 2), Col(0xFFFFFF, 0.85f * a), 7, 1.5f);
         }
         P.hits.push_back({ID_MU_PICK, pr});
-        if (n) {
-            const int rows = std::max(1, (int)((fy - 6 - yy) / kSongRow));
-            DrawSongs(R(x + 8, yy, box.right - 8, yy + std::min(n, rows) * kSongRow), a);
+        if (n) {  // (the list ends as far above the links as they are above the panel's bottom)
+            DrawSongs(R(x + 8, yy, box.right - 8, std::min(yy + n * kSongRow, fy - (box.bottom - fy - 24))), a);
         } else {
             Text(L"Choose songs (a whole folder works too), and they play with the wallpaper.", R(x + 18, yy, box.right - 18, yy + 44),
                  G.fWrap, Col(0xFFFFFF, 0.7f * a));
@@ -2310,10 +2309,10 @@ void DrawMenu() {
         {ID_M_OFF, L"\uE7E8", L"Turn off video wallpaper"},
         {ID_M_NATIVE, L"\uE7F4", L"Switch to the classic look"},
     };
-    const float h = 12 + 40 * (float)std::size(items) + 12 + 8;
+    const float h = 6 + 40 * (float)std::size(items) + 12 + 6;  // (6 all round the rows, as at the sides)
     const D2D1_RECT_F box = R(x, y, x + w, y + h);
     PanelBox(box, a, 14);
-    float yy = box.top + 10;
+    float yy = box.top + 6;
     for (size_t n = 0; n < std::size(items); n++) {
         if (n == std::size(items) - 1) {  // the look switch, set apart
             G.br->SetColor(Col(0xFFFFFF, 0.08f * a));
@@ -2376,7 +2375,7 @@ void DrawVersions() {
     if (P.versionsA <= 0) return;
     const float a = P.versionsA;
     Card& c = P.cards[P.actionsCard];
-    const D2D1_POINT_2F b = ActionAt(1, 1);
+    const D2D1_POINT_2F b = ActionAt(0, 1);  // (the versions button: the top one)
     const int n = 1 + (int)P.versionList.size();
     const float w = 300, rowH = 48, h = 58 + n * rowH + 40;
     float x = b.x + 34;
@@ -2424,15 +2423,16 @@ void DrawCardActions() {
     G.ctx->SetTransform(D2D1::Matrix3x2F::Identity());
     const bool wallpaper = P.actionsCard == P.applied;
     if (P.actions && P.actionsA > 0.5f) {  // over the buttons and between them, the cards underneath don't light up
-        const D2D1_POINT_2F b0 = ActionAt(0, 1), b2 = ActionAt(2, 1);
+        const D2D1_POINT_2F b0 = ActionAt(0, 1), b2 = ActionAt(2, 1);  // (top and bottom)
         P.hits.push_back({ID_A_ZONE, R(b0.x - 44, b0.y - 40, b0.x + 44, b2.y + 40)});
     }
-    for (int k = 0; k < 3; k++) {
-        const float t = Clamp01(P.actionsA * 1.6f - k * 0.3f), e = EaseBack(t), a = Clamp01(t * 2.5f);
+    for (int at = 0; at < 3; at++) {  // from the top: versions, crop, the bin
+        const int k = at == 0 ? 1 : at == 1 ? 2 : 0;  // (what it is: 0 the bin, 1 versions, 2 crop)
+        const float t = Clamp01(P.actionsA * 1.6f - at * 0.3f), e = EaseBack(t), a = Clamp01(t * 2.5f);
         if (a <= 0) continue;
-        const D2D1_POINT_2F c = ActionAt(k, e);
+        const D2D1_POINT_2F c = ActionAt(at, e);
         const int id = k == 0 ? ID_A_BIN : k == 1 ? ID_A_VERSIONS : ID_A_CROP;
-        const bool focused = P.actions && P.actFocus == k && !P.versions, hot = P.hot == id || focused;
+        const bool focused = P.actions && P.actFocus == at && !P.versions, hot = P.hot == id || focused;
         const float r = 22 * (0.5f + 0.5f * e) * (hot ? 1.06f : 1);
         Circle(c.x, c.y + 3, r + 2, Col(0x000000, 0.3f * a));  // a little shadow
         if (k == 0) {  // the bin; once clicked, a tick: a second click takes the card off
@@ -2887,9 +2887,9 @@ void RemoveFocused() {
     P.dirty = true;
 }
 
-void OpenActions(bool armBin, bool keys) {
+void OpenActions(bool armBin) {
     if (P.focus < 0 || P.focus >= (int)P.cards.size()) return;
-    P.actFocus = keys ? 0 : -1;  // (from the keys: on the bin, the first button)
+    P.actFocus = armBin ? 2 : -1;  // (Delete: on the bin, ready; else nothing until up or down)
     if (!P.actions || P.actionsCard != P.focus) {
         P.actionsA = 0;
         P.binTick = 0;
@@ -4439,7 +4439,7 @@ void OnKey(WPARAM vk) {
         } else {
             P.menu = P.music = false;
             EndMove();  // (a card held up by Alt goes back first)
-            OpenActions(false, true);
+            OpenActions(false);
         }
         P.dirty = true;
         return;
@@ -4450,26 +4450,26 @@ void OnKey(WPARAM vk) {
         if (P.versions) {  // its versions, beside the buttons: their rows (and "Make a lighter version")
             const int rows = 1 + (int)P.versionList.size(), last = rows - (P.actionsCard == P.applied ? 0 : 1);
             if (up || down) {
-                P.actFocus = 1;
+                P.actFocus = 0;
                 P.verFocus = std::clamp(P.verFocus + (down ? 1 : -1), 0, last);
             } else if (use) {
                 Command(P.verFocus < rows ? ID_V0 + P.verFocus : ID_V_MORE);
-                if (!P.versions && P.actions) P.actFocus = 1;  // (back on the versions button)
+                if (!P.versions && P.actions) P.actFocus = 0;  // (back on the versions button)
             } else if (vk == VK_ESCAPE) {
                 P.versions = false;
-                P.actFocus = 1;
-            } else if (vk == VK_DELETE) {
                 P.actFocus = 0;
+            } else if (vk == VK_DELETE) {
+                P.actFocus = 2;
                 Command(ID_A_BIN);
             }
         } else if (up || down) {
             const int to = P.actFocus < 0 ? (down ? 0 : 2) : std::clamp(P.actFocus + (down ? 1 : -1), 0, 2);
-            if (to != 0) P.binArmed = false;  // (moved off the bin: it asks again)
+            if (to != 2) P.binArmed = false;  // (moved off the bin: it asks again)
             P.actFocus = to;
         } else if (use && P.actFocus >= 0) {
             const int k = P.actFocus;
-            Command(k == 0 ? ID_A_BIN : k == 1 ? ID_A_VERSIONS : ID_A_CROP);
-            if (k == 1 && P.versions && P.actionsCard >= 0 && P.actionsCard < (int)P.cards.size()) {  // into the list, on the one it plays
+            Command(k == 0 ? ID_A_VERSIONS : k == 1 ? ID_A_CROP : ID_A_BIN);
+            if (k == 0 && P.versions && P.actionsCard >= 0 && P.actionsCard < (int)P.cards.size()) {  // into the list, on the one it plays
                 P.verFocus = 0;
                 for (int i = 0; i < (int)P.versionList.size(); i++)
                     if (SameFile(P.versionList[i].path, P.cards[P.actionsCard].play)) P.verFocus = i + 1;
@@ -4477,7 +4477,7 @@ void OnKey(WPARAM vk) {
         } else if (vk == VK_ESCAPE) {
             CloseActions();
         } else if (vk == VK_DELETE) {  // the bin, as before: ready, then Delete again takes the card off
-            P.actFocus = 0;
+            P.actFocus = 2;
             Command(ID_A_BIN);
         }
         P.dirty = true;
@@ -4529,7 +4529,7 @@ void OnKey(WPARAM vk) {
             break;
         case VK_DELETE:  // the bin, ready: Delete again (or a click on it) takes the card off
             EndMove();
-            OpenActions(true, true);
+            OpenActions(true);
             break;
         case VK_ESCAPE: BeginClose(L"Esc"); break;
         case 'C':  // the Clock, Settings and Music buttons' keys
@@ -4542,7 +4542,6 @@ void OnKey(WPARAM vk) {
             }
             CloseActions();
             Command(vk == 'S' ? ID_MENU : ID_MUSIC);
-            if (vk == 'S' && P.menu) P.menuFocus = 0;  // (opened from the keys: on its first item)
             P.dirty = true;
             break;
     }
@@ -4803,7 +4802,7 @@ LRESULT CALLBACK PickerProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (P.mode == 0 && (P.phase == BROWSING || P.phase == OPENING)) {
                 const float x = GET_X_LPARAM(l) / P.scale, y = GET_Y_LPARAM(l) / P.scale;
                 const int card = HitControl(x, y) == ID_NONE ? HitCard(x, y) : -1;
-                if (card >= 0 && card == P.focus && Settled() && !P.actions) OpenActions(false, false);
+                if (card >= 0 && card == P.focus && Settled() && !P.actions) OpenActions(false);
                 else CloseActions();
                 P.dirty = true;
             }
